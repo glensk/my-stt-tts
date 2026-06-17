@@ -70,10 +70,11 @@ git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts
 uv sync --extra all                 # core + STT/TTS/speaker/VAD/wake/lang backends
 uv tool install piper-tts           # Piper CLI for DE/FR/EN TTS (GPL; run as a subprocess)
 export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .env.example)
-uv run my-stt-tts                   # push-to-talk loop; add --debug for spoken cues
+./mstt                              # push-to-talk loop (runs the venv directly; --debug for cues)
 
-# No API key? Use the logged-in Claude Code CLI (keeps a session for multi-turn):
-uv run my-stt-tts --provider claude-cli --type    # typed input -> spoken replies
+# No API key? Stripped + isolated Claude CLI (no API cost, keeps a session, ~2s/turn):
+./mstt --brain haiku-sub --type     # typed input -> spoken replies
+./mstt --brain haiku-api            # or the API (needs ANTHROPIC_API_KEY) — faster TTFT
 
 # Lighter dev install — pure logic + tests only, no ML backends
 uv sync && uv run pytest
@@ -85,6 +86,13 @@ brew install glensk/tap/my-stt-tts  # Homebrew tap (planned)
 
 macOS `say` gives zero-install fallback voices, and `sounddevice`'s wheel bundles
 PortAudio — no `brew install portaudio` needed.
+
+**Run without `uv run`:** after `uv sync --extra all`, use **`./mstt …`** (or
+`.venv/bin/my-stt-tts`). Avoid `uv run my-stt-tts` for daily use — it re-syncs and
+strips the optional extras. **Customize the spoken style** by editing
+`prompts/system_prompt.md`; choose a voice via `./mstt --list-voices` / `--voice`.
+The `claude-cli` brain runs **stripped + isolated** (its own minimal prompt, no
+tools, no access to your global `~/.claude`/`~/.llm-shared` config).
 
 **Docker is not supported on macOS** for this app: containers there run in a
 Linux VM with **no microphone/speaker access and no Apple-Silicon GPU (Metal/MLX)**
