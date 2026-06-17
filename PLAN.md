@@ -31,11 +31,16 @@ ECAPA) are coded with lazy imports; the push-to-talk loop is wired in
 voices, verifying the exact `parakeet-mlx` result API, training the "maziko"
 wake-word model, and enrolling family voices (`uv run scripts/enroll.py <name>`).
 
-**Update (this session):** added a `claude-cli` provider (uses the logged-in
-Claude Code CLI — no API key, session-continued multi-turn) and a `--type`/`--text`
-keyboard mode; verified the parakeet-mlx API (`AlignedResult.text`); downloaded +
-smoke-tested the three Piper voices (DE/FR/EN). The claude-cli loop runs without a
-mic — only audio capture/STT still need the M1.
+**Update (this session):** `claude-cli` provider (subscription, no API key,
+session-continued), now **stripped + isolated** (own prompt, no tools / CLAUDE.md /
+hooks → ~8x faster, ~280x cheaper); `--brain` presets (haiku/sonnet/opus × sub/api,
+ollama); editable spoken prompt at `prompts/system_prompt.md`; voice menu
+(`--list-voices` / `--voice`) + calmer cadence; `./mstt` launcher (run without
+`uv run`). **Phase 6** — agent dispatch: say "agent, &lt;task&gt;" to delegate to a
+full MCP-capable Claude agent in `AGENT_WORKSPACE` (`agent.py`). **Phase 4** —
+`--wake` mode: wake word → VAD capture → respond → follow-up (`wake.py`, `audio.py`
+VAD helpers); train "maziko" per `wakewords/WAKEWORD.md`. 36 tests, lint-clean.
+Still needs the M1 for: live mic/STT, the trained "maziko" model, enrollment.
 
 ---
 
