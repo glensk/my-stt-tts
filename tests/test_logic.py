@@ -1,9 +1,13 @@
 """Tests for speaker matching, LLM routing/memory, and TTS voice selection."""
 # pylint: disable=missing-function-docstring,protected-access
 
-import numpy as np
+import json
+from unittest.mock import MagicMock, patch
 
-from my_stt_tts.brain import Brain, should_use_deep
+import numpy as np
+import pytest
+
+from my_stt_tts.brain import Brain, LLMError, should_use_deep
 from my_stt_tts.config import Config
 from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, match_speaker
 from my_stt_tts.tts import detect_language, select_voice
@@ -57,3 +61,34 @@ def test_select_voice_piper_then_say_fallback():
 
 def test_detect_language_falls_back_without_lingua():
     assert detect_language("bonjour le monde", default="en") in {"de", "fr", "en"}
+
+
+def test_claude_cli_session_then_resume():
+    cfg = Config(llm_provider="claude-cli", llm_model="haiku")
+    brain = Brain(cfg)
+    completed = MagicMock(returncode=0, stdout=json.dumps({"result": "hi", "is_error": False}))
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/claude"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
+    ):
+        assert "".join(brain.stream("hello")) == "hi"
+        session_id = brain._session_id
+        assert session_id is not None
+        assert "--session-id" in run.call_args.args[0]
+
+        assert "".join(brain.stream("again")) == "hi"
+        assert brain._session_id == session_id  # same session reused
+        assert "--resume" in run.call_args.args[0]
+        assert session_id in run.call_args.args[0]
+
+
+def test_claude_cli_error_propagates():
+    cfg = Config(llm_provider="claude-cli")
+    brain = Brain(cfg)
+    failed = MagicMock(returncode=1, stderr="model not found")
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/claude"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=failed),
+        pytest.raises(LLMError),
+    ):
+        list(brain.stream("hi"))

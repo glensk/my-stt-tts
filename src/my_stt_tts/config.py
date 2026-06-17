@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama")
+PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
 
@@ -55,6 +56,9 @@ class Config:
     vad_silence_seconds: float = 0.7
     mic_gate_tail_seconds: float = 0.2
 
+    # --- STT ---
+    stt_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+
     # --- TTS (per-language voice maps; Piper voice ids and macOS `say` voices) ---
     default_language: str = "en"
     tts_voices: dict[str, str] = field(
@@ -67,6 +71,7 @@ class Config:
     say_voices: dict[str, str] = field(
         default_factory=lambda: {"de": "Anna", "fr": "Thomas", "en": "Ava"}
     )
+    piper_data_dir: str = "voices"
 
     # --- Speaker ID ---
     speaker_threshold: float = 0.45
@@ -87,6 +92,8 @@ class Config:
             llm_base_url=env.get("LLM_BASE_URL") or None,
             anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
             openai_api_key=env.get("OPENAI_API_KEY") or None,
+            stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
+            piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             debug=_env_bool("DEBUG", default=False),
         )
 
@@ -101,6 +108,8 @@ class Config:
             errors.append("OPENAI_API_KEY is required for provider 'openai'")
         if self.llm_provider in {"openai-compatible", "ollama"} and not self.llm_base_url:
             errors.append(f"LLM_BASE_URL is required for provider {self.llm_provider!r}")
+        if self.llm_provider == "claude-cli" and not shutil.which("claude"):
+            errors.append("provider 'claude-cli' needs the `claude` CLI on PATH")
         if self.sample_rate <= 0:
             errors.append(f"sample_rate must be > 0; got {self.sample_rate}")
         if not 0.0 < self.speaker_threshold < 1.0:

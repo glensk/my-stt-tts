@@ -54,3 +54,6 @@ CLAUDE.local.md
 
 # Voice enrollment profiles (private)
 enroll/
+
+# Downloaded Piper TTS voices (large; fetched via piper.download_voices)
+voices/

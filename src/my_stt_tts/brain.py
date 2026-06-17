@@ -2,12 +2,18 @@
 
 Programs against an OpenAI-compatible interface. Anthropic/Claude is the default,
 but OpenAI, Ollama, vLLM, or any OpenAI-compatible server work via ``LLM_BASE_URL``.
-Clients are lazy-imported so the package imports without the ``llm`` extra.
+A ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
+keeps a session id for multi-turn continuity — handy when you have no API key.
+Heavy clients are lazy-imported so the package imports without the ``llm`` extra.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import subprocess
+import uuid
 from collections.abc import Iterator
 
 from .config import Config
@@ -33,10 +39,12 @@ class Brain:
         self.history: list[dict[str, str]] = []
         self._client: object | None = None
         self._rate = RateLimiter(cfg.requests_per_minute)
+        self._session_id: str | None = None  # claude-cli session continuity
 
     def reset(self) -> None:
         """Forget the conversation (e.g. after an idle timeout)."""
         self.history.clear()
+        self._session_id = None
 
     def _trim(self) -> None:
         max_msgs = self.cfg.max_history_turns * 2
@@ -71,11 +79,12 @@ class Brain:
         self._trim()
         reply: list[str] = []
         try:
-            deltas = (
-                self._stream_anthropic(model)
-                if self.cfg.llm_provider == "anthropic"
-                else self._stream_openai(model)
-            )
+            if self.cfg.llm_provider == "claude-cli":
+                deltas = self._stream_claude_cli(model, user_text)
+            elif self.cfg.llm_provider == "anthropic":
+                deltas = self._stream_anthropic(model)
+            else:
+                deltas = self._stream_openai(model)
             for delta in deltas:
                 reply.append(delta)
                 yield delta
@@ -86,6 +95,28 @@ class Brain:
         finally:
             if reply:
                 self.history.append({"role": "assistant", "content": "".join(reply)})
+
+    def _stream_claude_cli(self, model: str, user_text: str) -> Iterator[str]:
+        if not shutil.which("claude"):
+            raise LLMError("`claude` CLI not found on PATH")
+        cmd = ["claude", "-p", user_text, "--model", model, "--output-format", "json"]
+        if self._session_id is None:
+            self._session_id = str(uuid.uuid4())
+            cmd += ["--session-id", self._session_id]  # create + name this session
+        else:
+            cmd += ["--resume", self._session_id]  # continue the conversation
+        proc = subprocess.run(  # noqa: S603
+            cmd, capture_output=True, text=True, check=False, timeout=180
+        )
+        if proc.returncode != 0:
+            raise LLMError(f"claude CLI failed (rc={proc.returncode}): {proc.stderr.strip()[:200]}")
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"claude CLI returned non-JSON output: {exc}") from exc
+        if data.get("is_error"):
+            raise LLMError(str(data.get("result") or "claude CLI error"))
+        yield str(data.get("result", ""))
 
     def _stream_anthropic(self, model: str) -> Iterator[str]:
         client = self._ensure_client()

@@ -2,7 +2,8 @@
 
 The default engine is **Piper**, invoked as a SUBPROCESS (its CLI binary) so this
 Apache-2.0 project never links the GPL-3.0 library in-process. macOS ``say`` is
-the always-available fallback. Language detection (``lingua``) is optional/lazy.
+the always-available fallback. Language detection (``lingua``) is optional/lazy
+and the detector is cached so per-sentence detection is cheap.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from .config import Config
@@ -18,17 +20,23 @@ from .config import Config
 log = logging.getLogger("my_stt_tts.tts")
 
 
+@lru_cache(maxsize=4)
+def _detector(langs: tuple[str, ...]):  # noqa: ANN202 — lingua type is lazy-imported
+    from lingua import IsoCode639_1, LanguageDetectorBuilder
+
+    codes = [IsoCode639_1[c.upper()] for c in langs]
+    return LanguageDetectorBuilder.from_iso_codes_639_1(*codes).build()
+
+
 def detect_language(
     text: str, default: str = "en", langs: tuple[str, ...] = ("de", "fr", "en")
 ) -> str:
     """Detect the language of ``text`` (lingua); fall back to ``default``."""
     try:
-        from lingua import IsoCode639_1, LanguageDetectorBuilder
+        detector = _detector(langs)
     except ImportError:
         return default
     try:
-        codes = [IsoCode639_1[c.upper()] for c in langs]
-        detector = LanguageDetectorBuilder.from_iso_codes_639_1(*codes).build()
         detected = detector.detect_language_of(text)
     except Exception:  # detection must never break the loop
         log.exception("language detection failed; using default %r", default)
@@ -76,9 +84,10 @@ class TTSRouter:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             out = handle.name
         try:
-            subprocess.run(  # noqa: S603, S607
-                ["piper", "-m", voice, "-f", out], input=text.encode(), check=True
-            )
+            cmd = ["piper", "-m", voice, "-f", out]
+            if self.cfg.piper_data_dir:
+                cmd += ["--data-dir", self.cfg.piper_data_dir]
+            subprocess.run(cmd, input=text.encode(), check=True)  # noqa: S603, S607
             _afplay(out)
         finally:
             Path(out).unlink(missing_ok=True)
