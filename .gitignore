@@ -45,3 +45,10 @@ secrets.yml
 .aws/credentials
 
 Icon?
+
+# AI assistant private files (public conventions live in AGENTS.md)
+CLAUDE.md
+CLAUDE.local.md
+
+# Voice enrollment profiles (private)
+enroll/

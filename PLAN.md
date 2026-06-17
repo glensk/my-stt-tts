@@ -22,14 +22,15 @@ speaks the answer back through the Mac speakers, and — as it goes — identifi
 excluding model thinking time), work in **Hochdeutsch (standard German), French,
 and English**, and keep the large language model (LLM) layer pluggable so we can
 start on a fast cheap model and later default to a stronger one and orchestrate
-other agents.
+other agents. The repository is **public and meant to be polished for external
+users** (§8, §9).
 
-Abbreviations used below: **STT** = Speech-to-Text, **TTS** = Text-to-Speech,
-**LLM** = Large Language Model, **VAD** = Voice Activity Detection, **AEC** =
-Acoustic Echo Cancellation, **MCP** = Model Context Protocol, **TTFA** =
-time-to-first-audio, **TTFT** = time-to-first-token, **RTF** = Real-Time Factor,
-**EER** = Equal Error Rate, **G2P** = Grapheme-to-Phoneme, **TCC** = macOS
-Transparency/Consent/Control (privacy permissions).
+Abbreviations: **STT** = Speech-to-Text, **TTS** = Text-to-Speech, **LLM** =
+Large Language Model, **VAD** = Voice Activity Detection, **AEC** = Acoustic Echo
+Cancellation, **MCP** = Model Context Protocol, **TTFA** = time-to-first-audio,
+**TTFT** = time-to-first-token, **RTF** = Real-Time Factor, **EER** = Equal Error
+Rate, **EOU** = End-Of-Utterance, **G2P** = Grapheme-to-Phoneme, **CI** =
+Continuous Integration, **TCC** = macOS Transparency/Consent/Control (privacy).
 
 ---
 
@@ -37,15 +38,17 @@ Transparency/Consent/Control (privacy permissions).
 
 | # | Decision | Choice | Why |
 |:--|:---------|:-------|:----|
-| D1 | **Implementation language** | **Python** for the orchestrator; optional thin **Swift** audio front-end deferred to Phase 7 | End-to-end latency is dominated by model inference (native Metal/MLX/C++) and the Claude network round-trip. The orchestration glue is <0.2 % of a ~1–2 s turn; the GIL is released inside every native call and during I/O. Rust/Swift/C++ would win single-digit milliseconds while costing weeks and fighting immature M1 ML bindings. Python's Apple-Silicon ML ecosystem (MLX, `mlx-audio`, `parakeet-mlx`, PyTorch MPS, ONNX) is the most mature by far. |
-| D2 | **STT engine** | **`parakeet-mlx`** (`parakeet-tdt-0.6b-v3`, multilingual) primary; `whisper.cpp` large-v3-turbo as alternate | v3 is multilingual (25 EU languages incl. DE/FR/EN with auto language-ID), MLX-native on M1, sub-second on short commands, and beats Whisper-large on word error rate. `whisper.cpp` (Metal/CoreML) is the fallback if Parakeet's language-ID or punctuation disappoints. **Do not use `faster-whisper` on Mac — it is CPU-only there (no Metal).** |
-| D3 | **TTS engine** | **Piper** for all three languages in v1 (`de_DE-thorsten-high`, `fr_FR-tom-medium`, `en_US-lessac-medium`); **macOS `say` premium** as instant fallback; optional **Kokoro via `mlx-audio`** for nicer English later | Piper is the *only* local engine that has strong **German** (Thorsten, audiobook-grade), correct French, good English, **and** actually hits sub-300 ms TTFA on M1 CPU without fighting broken MPS. Kokoro has **no German** (disqualified as primary). XTTS-v2 (non-commercial, MPS hangs) and Qwen3-TTS (GPU-oriented; only immature MLX ports on M1) are deferred behind the same interface. |
-| D4 | **Speaker identification** | **SpeechBrain ECAPA-TDNN** embeddings + enrollment + cosine-similarity to per-person centroids, with unknown/ambiguous rejection | Best accuracy (≈0.80 % EER), text-independent and cross-lingual-robust (matters for DE/FR/EN), trivial Python API, ~80–150 ms on M1 CPU — and it runs **in parallel with STT on the same clip**, so ≈0 added wall-clock. Resemblyzer rejected (English-biased, weakest). |
-| D5 | **LLM layer** | **Anthropic SDK**, streaming, model **pluggable**: default **`claude-haiku-4-5`** (fast path) now → **`claude-opus-4-8`** (deep path) on a trigger word; designed for tool-use / MCP so it can dispatch to other home/work agents | Voice turns want a fast, cheap default; Opus is a latency + cost tax for routine queries. Keep a `Brain` interface so the model and (later) multi-agent routing are config, not code rewrites. |
-| D6 | **Stage confirmations** | **Earcons (short chimes)**, not spoken phrases. One chime on wake (mic live), optional chime on end-of-record. Spoken stage narration ("analyzing using opus 4.8", …) kept **behind a `--debug` flag** only | The four spoken phrases the original sketch proposed add **~6–7 s of dead air per query** — 5× the entire acceptable turn budget. Chimes are ~150 ms, language-neutral (no DE/FR/EN translation needed), and don't risk re-triggering the wake word. |
-| D7 | **End-of-turn detection** | **Push-to-talk** in v1 (deterministic), then **Silero VAD** silence-timeout; always a hard max-recording cap | Endpointing is the hardest part of voice UX. Push-to-talk removes it entirely so we can validate STT→Claude→TTS first; VAD comes once the core loop is proven. |
-| D8 | **Process model** | **One warm long-running process**, all models pre-loaded at startup; stages overlapped with `asyncio` + a worker thread/queue for blocking native calls | Model load + Metal kernel warm-up is hundreds of ms–seconds; pay it **once**. This (not the language) is the single biggest latency lever. |
-| D9 | **Echo / self-trigger** | **Half-duplex mic gating**: suspend wake-word + capture during all playback + a ~200 ms tail. Full AEC + barge-in deferred to Phase 7 (Swift `VoiceProcessingIO`) | Speaker and mic share the laptop enclosure; without gating the assistant records and re-triggers on its own voice. Gating kills ~95 % of the problem at ~zero cost. |
+| D1 | **Implementation language** | **Python** orchestrator; optional thin **Swift** audio front-end deferred to Phase 7 | Latency is dominated by native model inference (Metal/MLX/C++) and the Claude network round-trip. Glue is <0.2 % of a ~1–2 s turn; the GIL is released inside native calls and I/O. Rust/Swift win single-digit ms while costing weeks against immature M1 ML bindings. Python's Apple-Silicon ML ecosystem (MLX, `mlx-audio`, `parakeet-mlx`, PyTorch MPS, ONNX) is the most mature. |
+| D2 | **STT engine** | **`parakeet-mlx`** (`parakeet-tdt-0.6b-v3`, multilingual) primary; `whisper.cpp` large-v3-turbo alternate | v3 is multilingual (DE/FR/EN + auto language-ID), MLX-native, sub-second, beats Whisper-large on WER. **`faster-whisper` is CPU-only on Mac — do not use it.** |
+| D3 | **TTS engine** | **Piper** (DE `thorsten-high`, FR `tom-medium`, EN `lessac`) primary, **invoked as a subprocess** (see D10); **macOS `say` premium** instant fallback; optional **Kokoro via `mlx-audio`** (English, espeak disabled) | Piper is the only local engine with strong **German**, correct French, good English, **and** sub-300 ms TTFA on M1 CPU. Kokoro has **no German**. XTTS-v2 (non-commercial, MPS hangs) and Qwen3-TTS (GPU-oriented) deferred behind the Router. |
+| D4 | **Speaker identification** | **SpeechBrain ECAPA-TDNN** embeddings + enrollment + cosine to per-person centroids, with unknown/ambiguous rejection | Best accuracy (~0.80 % EER), text-independent + cross-lingual-robust (DE/FR/EN), runs **in parallel with STT** → ~0 added latency. Resemblyzer rejected (English-biased). No surveyed repo ships this — bespoke. |
+| D5 | **LLM layer** | **Anthropic SDK**, streaming, model **pluggable**: default **`claude-haiku-4-5`** → **`claude-opus-4-8`** (deep path) on trigger; tool-use / MCP-ready for multi-agent dispatch | Voice turns want a fast cheap default; Opus is a latency/cost tax for routine queries. A `Brain` interface keeps model + routing as config. |
+| D6 | **Stage confirmations** | **Earcons (chimes)**, not spoken phrases. Wake chime + optional end-of-record chime. Spoken narration behind `--debug` only | The four spoken phrases in the original sketch add **~6–7 s dead air/query**. Chimes are ~150 ms, language-neutral, don't re-trigger the wake word. |
+| D7 | **End-of-turn detection** | **Push-to-talk** (v1) → **two-stage VAD** (WebRTC gate → Silero confirm) → **smart-turn** model-based endpointing; hard max-recording cap | Endpointing is the hardest part of voice UX. PTT removes it so we validate the core loop; VAD then smart-turn (prosody-aware) follow. |
+| D8 | **Process model** | **One warm long-running process**; all models pre-loaded at startup; **threaded producer-consumer spine** (one queue per stage, generator stages stream), `SESSION_END` vs `PIPELINE_END` signals | Model load + Metal warm-up is hundreds of ms–seconds; pay once. This (not language) is the biggest latency lever. Spine pattern from HF `speech-to-speech`. |
+| D9 | **Echo / self-trigger** | **Half-duplex mic gating** (suspend wake + capture during playback + ~200 ms tail), built **barge-in-ready**. Full AEC + barge-in in Phase 7 (Swift `VoiceProcessingIO`) | Speaker+mic share the enclosure; gating kills ~95 % of self-trigger at ~zero cost. Design the gate so interruption can be switched on later (GLaDOS mute-event pattern). |
+| D10 | **Licensing & distribution** | Project is **Apache-2.0**. **GPL backends (Piper, espeak-ng) invoked as subprocesses (CLI), never imported.** Non-permissive backends (XTTS CPML non-commercial, openWakeWord bundled models CC-BY-NC-SA) are **opt-in extras**; shipped default leans permissive (Kokoro espeak-disabled / `say`). | `pip install piper-tts` now pulls GPL-3.0 `OHF-Voice/piper1-gpl` (embeds espeak-ng); the old MIT `rhasspy/piper` was archived Oct 2025. Subprocess use = "mere aggregation" (FSF) → project stays Apache-2.0. Apache > MIT here for the explicit ML patent grant. |
+| D11 | **AI/contributor docs** | Commit a **public `AGENTS.md`** (build/lint/run conventions); **gitignore `CLAUDE.md`** (a shim that `@AGENTS.md`-imports) and `CLAUDE.local.md` (private notes). README links AGENTS.md. | Don't link a gitignored file from a public README. AGENTS.md is the tool-agnostic standard; Claude Code still reads CLAUDE.md, hence the gitignored import shim. Avoids leaking infra the way the sibling repo's CLAUDE.md would. |
 
 ---
 
@@ -53,32 +56,35 @@ Transparency/Consent/Control (privacy permissions).
 
 ```text
                          ┌─────────────────────────────────────────────┐
-                         │   one warm Python process (asyncio loop)     │
+                         │  one warm Python process — threaded spine    │
+                         │  (one queue per arrow; generator stages;     │
+                         │   SESSION_END = per-turn reset, PIPELINE_END │
+                         │   = shutdown; shared speech_id for telemetry)│
                          │                                              │
-  mic ──► ring buffer ──►│  Wake word        Endpointing                │
-        (pre-roll ~300ms)│  (openWakeWord/   (push-to-talk → Silero VAD)│
-                         │   Porcupine)            │                    │
-                         │        │                ▼                    │
-                         │        ▼          ┌───────────┐              │
-                         │   [chime: live]   │  utterance │             │
-                         │                   │  PCM clip  │             │
-                         │                   └─────┬─────┘              │
-                         │            ┌────────────┴───────────┐        │
+  mic ──► ring buffer ──►│  Wake word         Endpointing               │
+        (pre-roll deque) │  (openWakeWord     PTT → 2-stage VAD         │
+                         │   "maziko")         → smart-turn (prosody)   │
+                         │        │                │                    │
+                         │   [chime: live]   ┌──────▼──────┐            │
+                         │                   │ utterance    │           │
+                         │                   │ PCM clip      │          │
+                         │                   └──────┬───────┘           │
+                         │            ┌─────────────┴───────────┐       │
                          │            ▼ (parallel)             ▼        │
-                         │     STT (parakeet-mlx)      Speaker-ID        │
-                         │     → text + lang           (ECAPA centroid   │
-                         │            │                 cosine match)    │
-                         │            ▼                     │            │
-                         │     Brain (Claude SDK, streaming)│            │
-                         │     Haiku default / Opus deep    │            │
-                         │     + conversation memory        │            │
-                         │            │ tokens                           │
-                         │            ▼ sentence-chunked                 │
-                         │     TTS Router (per-language)                 │
-                         │     DE→Piper-thorsten  FR→Piper-tom           │
-                         │     EN→Piper/Kokoro    fallback→say           │
-                         │            │ stream first sentence early      │
-   speakers ◄────────────│            ▼  (mic gated during playback)     │
+                         │      STT (parakeet-mlx)      Speaker-ID       │
+                         │      → text + lang           (ECAPA centroid  │
+                         │            │                  cosine match)   │
+                         │            ▼                      │           │
+                         │      Brain (Claude SDK, streaming)│           │
+                         │      Haiku / Opus + memory        │           │
+                         │      strip non-spoken text        │           │
+                         │            │ tokens → sentence/fragment       │
+                         │            ▼  (decimal/comma guard)           │
+                         │      TTS Router (per-language, subprocess)    │
+                         │      DE→Piper-thorsten  FR→Piper-tom          │
+                         │      EN→Kokoro/Piper    fallback→say          │
+                         │            │ stream first fragment early      │
+   speakers ◄────────────│            ▼  (mic gated; barge-in-ready)     │
                          └─────────────────────────────────────────────┘
 ```
 
@@ -86,156 +92,256 @@ Transparency/Consent/Control (privacy permissions).
 
 | Stage | Target | Notes |
 |:------|:-------|:------|
-| Wake-word detection lag | 80–150 ms | continuous, low-power on efficiency cores |
-| Endpointing | push-to-talk ≈0 / VAD 300–700 ms | VAD silence wait is a *timer*, not compute — tune aggressively |
-| STT (parakeet-mlx) | 80–400 ms | native MLX/Metal; runs concurrently with speaker-ID |
+| Wake-word detection lag | 80–150 ms | continuous, low-power |
+| Endpointing | PTT ≈0 / VAD 300–700 ms / smart-turn ~10 ms decision | smart-turn catches "let me think…" pauses VAD would cut |
+| STT (parakeet-mlx) | 80–400 ms | native MLX; concurrent with speaker-ID |
 | Speaker-ID (ECAPA) | hidden under STT | ~80–150 ms in parallel → ~0 added |
-| LLM TTFT (Haiku, streaming) | 400–800 ms | network-bound; Opus higher — that's the deep-path tradeoff |
-| TTS first sentence (Piper) | 40–200 ms | sentence-chunked; start playback before full answer |
+| LLM TTFT (Haiku, streaming) | 400–800 ms | network-bound; Opus higher (deep-path tradeoff) |
+| TTS first fragment (Piper/Kokoro) | 40–200 ms | fragment-streamed; playback before full answer |
 | Playback start | 10–30 ms | CoreAudio buffer |
 | **Perceived first audio** | **~1.0–1.5 s** | with streaming + overlap; physics floor for a cloud LLM |
 
 ---
 
-## 4. Repository layout (planned)
+## 4. Repository layout (target)
 
 ```text
 my-stt-tts/
-├── PLAN.md                  # this file
-├── README.md                # project overview + quickstart
-├── pyproject.toml           # deps + tool config (uv-managed)
-├── .env.example             # ANTHROPIC_API_KEY=..., config knobs
+├── README.md                # overview, install methods, license note  [done]
+├── PLAN.md                  # this file                                 [done]
+├── AGENTS.md                # AI/contributor conventions (public)       [done]
+├── LICENSE                  # Apache-2.0                                [done]
+├── CLAUDE.md                # gitignored shim → @AGENTS.md              [done]
+├── pyproject.toml           # PEP 621; deps + ruff/mypy/pytest config; uv-managed
+├── uv.lock                  # committed lockfile
+├── .python-version          # pin interpreter
+├── .env.example             # ANTHROPIC_API_KEY=…                       [done]
 ├── config.toml              # voices, models, thresholds, wake phrase
-├── src/voiceloop/
-│   ├── __main__.py          # entrypoint: warm models, run async loop
-│   ├── audio.py             # capture, ring buffer, playback, mic-gating
-│   ├── wake.py              # wake-word backend (openWakeWord/Porcupine)
-│   ├── stt.py               # parakeet-mlx / whisper.cpp backend
+├── .pre-commit-config.yaml  # gitleaks (+ ruff hooks)                   [seeded]
+├── .github/
+│   ├── workflows/ci.yml     # macos-15 runner: ruff + mypy + pytest
+│   ├── dependabot.yml       # uv + github-actions, weekly
+│   └── ISSUE_TEMPLATE/      # YAML forms (OS/chip/backend fields)
+├── SECURITY.md  CHANGELOG.md  CONTRIBUTING.md
+├── src/my_stt_tts/
+│   ├── __main__.py          # entrypoint: warm models, run spine
+│   ├── spine.py             # threaded producer-consumer; signals; speech_id
+│   ├── config.py            # central Config + fail-fast validate
+│   ├── audio.py             # capture, pre-roll ring buffer, playback, mic-gating
+│   ├── wake.py              # openWakeWord ("maziko")
+│   ├── vad.py               # 2-stage VAD (WebRTC→Silero) + smart-turn endpointing
+│   ├── stt.py               # parakeet-mlx / whisper.cpp
 │   ├── speaker_id.py        # ECAPA enrollment + match + reject
-│   ├── brain.py             # Claude SDK streaming + model routing + memory
-│   ├── tts.py               # TTS Router (Piper/Kokoro/say) + lang detect
+│   ├── brain.py             # Claude streaming + routing + memory + text-strip
+│   ├── tts.py               # TTS Router (Piper subprocess / Kokoro / say) + lang detect
 │   ├── chimes.py            # earcons; pre-synth error clips
-│   └── metrics.py           # per-stage latency + transcript logging
+│   └── metrics.py           # per-stage latency + transcript logging (speech_id)
 ├── scripts/
-│   ├── enroll.py            # record ~30s/person → store ECAPA centroid
+│   ├── enroll.py            # record ~30s/person → ECAPA centroid
 │   └── bench.py             # measure per-stage latency on this Mac
+├── tests/                   # smoke tests; audio + backends mocked
+├── samples/                 # audio demo clips for README/Pages gallery
 └── enroll/                  # gitignored: per-person voice profiles
 ```
 
 Every script gets `-h/--help`, is made executable + git-exec-bit set, and follows
-`$mygit/README_SETUP_PYTHON_ENVIRONMENT.md` (read it before writing the first
-Python file). Lint gate before every commit: `ruff format && ruff check && mypy &&
-pylint` (Python), `shellcheck` (shell).
+`$mygit/README_SETUP_PYTHON_ENVIRONMENT.md` (read before the first Python file).
+Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
+(Python), `shellcheck` (shell).
 
 ---
 
 ## 5. Phased plan (checkboxes)
 
-### Phase 0 — Scaffold & environment
+### Phase 0 — Scaffold, spine & environment
 
-- [ ] Read `$mygit/README_SETUP_PYTHON_ENVIRONMENT.md`; create `uv` venv + `pyproject.toml`
-- [ ] `.env.example` (`ANTHROPIC_API_KEY`) and `config.toml` (wake phrase, voices, thresholds)
-- [ ] Package skeleton `src/voiceloop/`; `metrics.py` logging first (we tune by numbers)
-- [ ] `scripts/bench.py` to measure STT/TTS/LLM latency on *this* M1 (validate budget above)
+- [ ] Read `$mygit/README_SETUP_PYTHON_ENVIRONMENT.md`; `uv init --package`; `pyproject.toml` (PEP 621, `license = "Apache-2.0"`); commit `uv.lock`
+- [ ] `config.py`: central Config (string-dispatch backends) + fail-fast `validate()`; `.env.example`; `config.toml`
+- [ ] `spine.py`: threaded producer-consumer (queue per stage, generator stages, `SESSION_END`/`PIPELINE_END`) — HF `speech-to-speech` pattern
+- [ ] `metrics.py` first: per-stage timing keyed by shared **`speech_id`** (we tune by numbers) — LiveKit pattern
+- [ ] `scripts/bench.py`: measure real STT/TTS/LLM latency on *this* M1
 
 ### Phase 1 — Core loop (push-to-talk, English, batch)
 
-- [ ] `audio.py`: capture via `sounddevice`, explicit input/output device, push-to-talk hotkey, max-recording cap
-- [ ] `stt.py`: `parakeet-mlx` warm-loaded; transcribe captured clip
-- [ ] `brain.py`: Claude streaming call (Haiku), accumulate answer
-- [ ] `tts.py`: Piper English voice → playback via CoreAudio
-- [ ] `chimes.py`: wake chime; wire `--debug` spoken stage cues (the original "yes/recorded/analyzing" narration lives here, off by default)
-- [ ] End-to-end: press key → speak → hear Claude. Log per-stage latency.
+- [ ] `audio.py`: `sounddevice` capture, explicit device, **pre-roll ring buffer** (no clipped onset), push-to-talk hotkey, max-recording cap
+- [ ] `stt.py`: `parakeet-mlx` warm-loaded
+- [ ] `brain.py`: Claude streaming (Haiku); **strip non-spoken text** before TTS (markdown, `(parentheticals)`, reasoning blocks) — GLaDOS pattern
+- [ ] `tts.py`: Piper English **via subprocess** → playback
+- [ ] `chimes.py`: wake chime; `--debug` spoken cues (the original "yes/recorded/analyzing" narration, off by default)
+- [ ] End-to-end: press key → speak → hear Claude; log per-stage latency
 
 ### Phase 2 — Responsiveness (streaming + safety)
 
-- [ ] Stream Claude tokens → sentence-boundary chunker → TTS starts on first sentence
-- [ ] `asyncio` + worker thread so STT/LLM/TTS/playback overlap; mic pre-roll ring buffer
-- [ ] Half-duplex **mic gating** during playback + 200 ms tail (D9)
-- [ ] Graceful failure: catch every stage; play **pre-synthesized** error clips ("sorry, network problem") even if TTS is what failed
-- [ ] Runaway guard: per-minute request cap + cooldown (protects against self-trigger loops and cost)
+- [ ] **Prosody-preserving fragment streaming**: Claude tokens → sentence/fragment chunker (first-fragment-fast, full prosody after) with **decimal/comma guard** (keep `3.14` / German `3,14`) — RealtimeTTS + GLaDOS patterns; BufferStream bridge (Linguflex)
+- [ ] Overlap stages on the spine; confirm pre-roll + streaming feel
+- [ ] Half-duplex **mic gating** during playback + 200 ms tail, **barge-in-ready** (D9)
+- [ ] Graceful failure: catch every stage; play **pre-synthesized** error clips even if TTS is what failed
+- [ ] Runaway guard: per-minute request cap + cooldown (self-trigger / cost protection)
 
 ### Phase 3 — Multilingual (DE / FR / EN)
 
 - [ ] STT multilingual: Parakeet v3 language-ID (or Whisper auto-detect); expose detected language
-- [ ] `tts.py` **Router**: `lingua-py` language detection on the answer → voice map (`de→thorsten-high`, `fr→tom-medium`, `en→lessac/Kokoro`), `say` premium fallback + low-confidence fallback
-- [ ] Test Hochdeutsch and French answers end-to-end; verify pronunciation, not just EN
-- [ ] (Optional) add Kokoro-via-`mlx-audio` for higher-quality English
+- [ ] `tts.py` **Router**: `lingua-py` detection on the answer → voice map (`de→thorsten-high`, `fr→tom-medium`, `en→Kokoro/lessac`), `say` premium + low-confidence fallback
+- [ ] Test Hochdeutsch + French end-to-end; verify pronunciation
+- [ ] (Optional) Kokoro-via-`mlx-audio` for higher-quality English
 
 ### Phase 4 — Wake word & always-listening
 
-- [ ] Train + integrate **openWakeWord** for the wake phrase **"maziko"** (custom model, ~1 h via the openWakeWord training notebook; no vendor lock; Porcupine only as a zero-training fallback)
-- [ ] Replace push-to-talk with wake-word + **Silero VAD** endpointing (tune silence timeout)
-- [ ] Conversation **follow-up window** (~8 s open mic after a reply, no re-wake needed)
-- [ ] Multi-turn **memory** (rolling `messages`, capped length, idle reset)
+- [ ] Train + integrate **openWakeWord** for **"maziko"** (custom model, ~1 h via the training notebook; no vendor lock)
+- [ ] Replace PTT with wake-word + **two-stage VAD** (WebRTC gate → Silero confirm) — RealtimeSTT pattern; tune `silero_sensitivity`, silence durations
+- [ ] **smart-turn** model-based endpointing (vendor pipecat smart-turn, CoreML variant for the Neural Engine) to augment the silence timeout
+- [ ] Wake-word debounce; conversation **follow-up window** (~8 s open mic, no re-wake); multi-turn **memory** (rolling `messages`, capped, idle reset)
 
-### Phase 5 — Speaker identification
+### Phase 5 — Speaker identification (bespoke)
 
-- [ ] `scripts/enroll.py`: record ~30 s/person across 5–10 clips in each language they use → store L2-normalized ECAPA **centroid** per person (gitignored)
+- [ ] `scripts/enroll.py`: ~30 s/person across 5–10 clips per language → L2-normalized ECAPA **centroid** (gitignored)
 - [ ] `speaker_id.py`: extract embedding **in parallel** with STT; cosine `argmax` over centroids
-- [ ] Rejection: absolute threshold (~0.40–0.50, **calibrated on our own family + guest clips**) + margin gate (~0.06) → `unknown` / `ambiguous`
-- [ ] Bias toward `unknown` over misattribution; **never gate safety-critical actions on child ID**; re-enroll children quarterly
-- [ ] Pass identified speaker into the Brain prompt for per-person personalization
+- [ ] Rejection: absolute threshold (~0.40–0.50, **calibrated on our family + guest clips**) + margin gate (~0.06) → `unknown` / `ambiguous`
+- [ ] Bias to `unknown` over misattribution; **never gate safety-critical actions on child ID**; re-enroll children quarterly
+- [ ] Pass identified speaker into the Brain prompt for personalization
 
 ### Phase 6 — LLM flexibility & agent orchestration
 
-- [ ] Model routing: Haiku fast path / Opus deep path via trigger ("think hard…") or per-speaker default
-- [ ] Prompt caching for the stable system prompt (cut input cost/latency)
-- [ ] Tool-use / **MCP** wiring so the assistant can dispatch to other home/work agents (the longer-term goal); start with one or two local tools
-- [ ] Per-speaker + per-language system-prompt context (Swiss defaults: metric, ISO-8601)
+- [ ] Model routing: Haiku fast / Opus deep via trigger or per-speaker default
+- [ ] Prompt caching for the stable system prompt
+- [ ] **Layered context** assembly (system + prefs + tools + compacted history) — GLaDOS `context.py`
+- [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
+- [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
-### Phase 7 — Barge-in & native audio (deferred, only if needed)
+### Phase 7 — Barge-in & native audio (deferred)
 
-- [ ] Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python over a socket
-- [ ] True barge-in: keep mic live during playback, abort TTS on detected intentional speech
-- [ ] Package as menubar app (`rumps`) / `launchd` agent with a **stable bundle id** (TCC permissions are keyed to it)
+- [ ] **Barge-in**: keep mic live during playback, abort TTS on confirmed speech (mute-event empty-array cancel — GLaDOS); **false-interrupt suppression** (min-words/min-duration — pipecat `MinWordsUserTurnStartStrategy`); decide history truncation (spoken-prefix vs keep-full)
+- [ ] Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python
+- [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
+- [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 
 ### Phase 8 — Whole-house / Home Assistant (future)
 
 - [ ] Move brain to a server, mics/speakers to satellites; integrate with `home-assistant-sandbox` Assist + Wyoming; revisit Sonos vs satellite-local playback latency
+
+### Phase 9 — External polish / OSS readiness (parallel track)
+
+- [x] LICENSE (Apache-2.0), public AGENTS.md, gitignored CLAUDE.md shim, README with install methods + license note
+- [x] Repo description + topics + (todo) social-preview image
+- [ ] `pyproject.toml` (PEP 621, SPDX license string, extras for opt-in backends), `uv.lock`, src layout
+- [ ] pre-commit: add **ruff** hooks beside gitleaks; `pytest` smoke suite
+- [ ] GitHub Actions CI on **`macos-15`** (arm64): `brew install` native deps → `uv sync --locked` → ruff/mypy/pytest (audio mocked); Dependabot (uv + actions)
+- [ ] SECURITY.md, CHANGELOG.md (Keep a Changelog), CONTRIBUTING.md, YAML issue forms
+- [ ] README hero **demo with audio** (MP4 — a voice app must be heard; VHS GIF secondary); GitHub Pages **voice-sample gallery** (`<audio>` can't play inline in README); comparison table
+- [ ] Homebrew tap (`glensk/tap/my-stt-tts`) — primary install; PyPI + `uv tool install` secondary; Docker documented as unsupported on macOS
 
 ---
 
 ## 6. Dependencies (initial)
 
 ```commands
-uv add anthropic parakeet-mlx mlx-audio piper-tts speechbrain torchaudio \
-       sounddevice silero-vad openwakeword onnxruntime lingua-language-detector
-brew install whisper-cpp espeak-ng portaudio ffmpeg
+uv add anthropic parakeet-mlx mlx-audio speechbrain torchaudio \
+       sounddevice silero-vad webrtcvad-wheels openwakeword onnxruntime \
+       lingua-language-detector
+brew install whisper-cpp espeak-ng portaudio ffmpeg piper        # piper = CLI binary (subprocess)
+# vendor pipecat smart-turn (CoreML) model for endpointing (Phase 4)
 python -m piper.download_voices de_DE-thorsten-high fr_FR-tom-medium en_US-lessac-medium
 # macOS premium voices: System Settings → Accessibility → Spoken Content → Manage Voices
-#   (download Anna (Premium) [de], Thomas [fr], Ava (Premium) [en])
+#   (Anna (Premium) [de], Thomas [fr], Ava (Premium) [en])
 ```
+
+Notes: **Piper is used via its CLI binary (subprocess), not `import piper`** (D10).
+Kokoro (via `mlx-audio`) is run with `misaki` espeak-ng **disabled** to stay
+permissive. `mlx-audio` can also expose an OpenAI-compatible local server
+(`python -m mlx_audio.server`) if we later want to process-isolate the engine.
 
 ---
 
-## 7. Risk register
+## 7. Borrowed building blocks (vendor / study)
+
+| Feature | Source repo | Verdict |
+|:--------|:------------|:--------|
+| **smart-turn** model-based endpointing (8 MB, CoreML, DE/FR/EN) | `pipecat-ai/smart-turn` | **vendor** the model |
+| **Two-stage VAD** (WebRTC gate → Silero confirm) + endpointing knobs | `KoljaB/RealtimeSTT` `core/voice_activity.py` | **vendor/copy** |
+| **Pre-roll ring buffer** (no clipped onset) | RealtimeSTT (`pre_recording_buffer_duration`), GLaDOS (`BUFFER_SIZE=800ms`) | **copy** |
+| **Prosody-preserving fragment streaming** TTS (first-fragment-fast; decimal guard) | `KoljaB/RealtimeTTS` `text_to_stream.py`, GLaDOS `llm_processor.py` | **copy** |
+| **Threaded producer-consumer spine** (generator stages; SESSION/PIPELINE end) | `huggingface/speech-to-speech` `baseHandler.py` | **adopt as skeleton** |
+| **Per-turn latency telemetry** with shared `speech_id` | `livekit/agents` `metrics/base.py` | **copy hooks** |
+| **Strip non-spoken text** before TTS (markdown / parentheticals / reasoning) | GLaDOS `llm_processor.py` | **copy** |
+| **Barge-in + false-interrupt suppression** | GLaDOS (cancel), pipecat `MinWordsUserTurnStartStrategy` | **study → Phase 7** |
+| **BufferStream bridge** (Claude stream → TTS without blocking) | `KoljaB/Linguflex` `modules/speech/logic.py` | **copy** |
+| **Streaming engine** (Kokoro/Parakeet on M1; per-segment `sample_rate`/RTF) | `Blaizzy/mlx-audio` `tts/generate.py` | **primary engine** |
+| **MCP tools + multi-agent handoff / floor-control** | `livekit/agents`, `mbailey/voicemode` (conch) | **study → Phase 7** |
+| **Config seam** (string-dispatch providers + fail-fast validate) | `PromtEngineer/Verbi` `config.py` | **copy (lightweight)** |
+
+`RealtimeSTT` and `RealtimeTTS` are pip-installable (MIT) — consider using them
+directly in Phases 1–2 rather than reimplementing, then specialize.
+
+---
+
+## 8. Third-party licenses & distribution
+
+Project license: **Apache-2.0**. Backends are invoked as **separate processes**
+(subprocess / local HTTP), which is "mere aggregation" under the FSF GPL FAQ — so
+they do **not** make this project a derivative work.
+
+| Backend | License | Handling |
+|:--------|:--------|:---------|
+| Piper, espeak-ng | **GPL-3.0** | subprocess (CLI) only; never `import` |
+| XTTS-v2 (Coqui) | **CPML — non-commercial** | optional extra; personal use only |
+| openWakeWord (pretrained models) | **CC-BY-NC-SA-4.0** | self-trained "maziko" model avoids this |
+| Kokoro, SpeechBrain, Silero-VAD, parakeet-mlx, mlx-audio, PortAudio | Apache-2.0 / MIT | permissive; Kokoro run espeak-disabled |
+| ffmpeg | LGPL-2.1+ | subprocess |
+
+A `Third-party licenses` section in the README mirrors this so external users
+aren't misled. Default shipped TTS leans permissive (Kokoro/`say`); Piper/XTTS are
+opt-in.
+
+---
+
+## 9. External-readiness checklist (condensed)
+
+**Tier 0 (done / quick):** Apache-2.0 LICENSE ✅ · third-party-license note ✅ ·
+repo description + topics ✅ · social-preview image (todo).
+**Tier 1 (hygiene):** `pyproject.toml` (PEP 621) + `uv.lock` · src layout · ruff +
+mypy · pre-commit (ruff + gitleaks) · pytest smoke · CI on `macos-15` · Dependabot ·
+SECURITY.md.
+**Tier 2 (attract):** README hero **demo with audio** (MP4) · Pages voice gallery ·
+mermaid diagram ✅ · badges ✅ · comparison table.
+**Tier 3 (docs):** AGENTS.md ✅ (commit) / CLAUDE.md gitignored shim ✅ · CONTRIBUTING ·
+CODE_OF_CONDUCT · CHANGELOG.
+**Install:** Homebrew tap (primary) · `uv tool` / PyPI (secondary) · from-source ·
+Docker **documented as unsupported on macOS** (no mic/speaker/Metal in container).
+**Skip (over-engineering for one dev):** Renovate, semantic-release, multi-OS CI
+matrix, codecov, Astral `ty` in CI.
+
+---
+
+## 10. Risk register
 
 | Risk | Severity | Confidence | Mitigation |
 |:-----|:---------|:-----------|:-----------|
-| **Children's voices** misidentified / confused (esp. youngest, 2-word commands) | High for kids | High | Buffer full utterance, bias to `unknown`, margin gate for son/daughter pair, never gate safety actions on child ID, accept lower accuracy |
-| **German TTS quality ceiling** — Piper-Thorsten is best local but below ElevenLabs/XTTS | Medium | High | Accept for v1; `say -v "Anna (Premium)"` fallback; re-evaluate Qwen3-TTS-MLX / Chatterbox-multilingual when their Apple-Silicon paths stabilize |
-| **No usable Metal TTS acceleration** on M1 today (XTTS MPS hangs; Qwen3 GPU-oriented) | Medium | Moderate | Stay on Piper (CPU, predictable) + `say`; keep heavy models behind the Router interface, deferred |
-| **Echo / self-trigger** on a single-box laptop | High | High | Half-duplex mic gating (Phase 2); real AEC only in Phase 7 if barge-in is wanted |
-| **Porcupine free-tier license** (non-commercial, platform-locked custom keyword) | Low | Moderate | Prefer openWakeWord (Apache, self-trained, no lock); Porcupine only if zero-training matters |
-| **Cost / runaway loop** (self-trigger firing Claude repeatedly) | Medium | High | Per-minute request cap + cooldown; default Haiku not Opus (~1¢/query on Opus, less on Haiku) |
-| **M1 latency numbers** are indicative, not lab-measured on base M1 | Low | Moderate | `scripts/bench.py` in Phase 0 measures the real budget on this exact machine before we optimize |
-| **Swiss German dialect** degrades STT | Low (household speaks Hochdeutsch) | High | N/A per user — household uses standard German/French/English; note only if guests speak dialect |
+| **Children's voices** misidentified (esp. youngest, 2-word commands) | High for kids | High | Buffer full utterance, bias to `unknown`, margin gate, never gate safety actions on child ID |
+| **Piper/espeak GPL-3.0** contaminating an Apache-2.0 project if imported | High (legal) | High | Invoke as subprocess only (D10); default to permissive engines; third-party-license table |
+| **German TTS quality ceiling** (Piper-Thorsten best local but below ElevenLabs) | Medium | High | Accept v1; `say -v "Anna (Premium)"` fallback; revisit Qwen3-TTS-MLX / Chatterbox when stable |
+| **No usable Metal TTS acceleration** on M1 (XTTS MPS hangs; Qwen3 GPU-oriented) | Medium | Moderate | Stay on Piper (CPU) + `say`/Kokoro; heavy models deferred behind Router |
+| **Echo / self-trigger** on a single-box laptop | High | High | Half-duplex mic gating (Phase 2); AEC only in Phase 7 |
+| **Cost / runaway loop** (self-trigger firing Claude) | Medium | High | Per-minute cap + cooldown; default Haiku |
+| **M1 latency numbers indicative**, not lab-measured on base M1 | Low | Moderate | `scripts/bench.py` measures the real budget first |
+| **CI can't exercise audio** (no mic on runners) | Low | High | Mock `sounddevice`/backends; CI tests glue/config, `macos-15` only for the MLX path |
 
 ---
 
-## 8. Open items to confirm (defaulting as noted unless you object)
+## 11. Open items (defaulting as noted unless overridden)
 
-1. **Wake-word engine + phrase** — **LOCKED: openWakeWord** (no vendor lock) with the custom wake phrase **"maziko"** (distinctive, multi-syllabic → low false-accept). Needs a custom-trained openWakeWord model (~1 h via the openWakeWord training notebook); Phases 1–3 run on push-to-talk, so training is not a blocker until Phase 4.
-2. **STT** — defaulting to **`parakeet-mlx` v3**; will fall back to `whisper.cpp` large-v3-turbo if multilingual punctuation/accuracy disappoints in Phase 3.
-3. **TTS** — defaulting to **Piper for all three languages** (one runtime) in v1; Kokoro-for-English is optional polish.
-4. **Speaker-ID scope** — phased to Phase 5 (core loop first). Confirm the roster (who to enroll) when we get there.
+1. **Wake word** — **LOCKED:** openWakeWord, phrase **"maziko"** (custom model, ~1 h; PTT until Phase 4).
+2. **STT** — default **`parakeet-mlx` v3**; `whisper.cpp` fallback if multilingual punctuation/accuracy disappoints.
+3. **TTS** — default **Piper (subprocess) for all three languages** v1; Kokoro-for-English optional.
+4. **License** — **LOCKED: Apache-2.0** (MIT is a one-file swap if preferred).
+5. **Primary install** — **Homebrew tap**; PyPI/`uv tool` secondary; Docker unsupported on macOS.
+6. **AI docs** — **LOCKED:** commit AGENTS.md; gitignore CLAUDE.md/CLAUDE.local.md.
+7. **Speaker-ID roster** — confirm who to enroll at Phase 5.
 
 ---
 
-## 9. Data / privacy note (SDSC context)
+## 12. Data / privacy note (SDSC context)
 
 Local STT + TTS keep voice audio **on-device**; only the transcribed *text* leaves
-the machine (to Anthropic, same as ordinary Claude Code use). Do not dictate
-Confidential / Strictly-Confidential content into the assistant. Enrollment voice
-profiles stay local and gitignored.
+the machine (to Anthropic, as with ordinary Claude usage). Do not dictate
+Confidential / Strictly-Confidential content. Enrollment voice profiles stay local
+and gitignored.
