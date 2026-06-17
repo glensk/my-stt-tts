@@ -61,22 +61,27 @@ LM Studio, or a local server. Select it via `.env` (see `.env.example`):
 
 ## Install
 
-> Not implemented yet — the methods below land as the build progresses
-> (tracked in [`PLAN.md`](PLAN.md), Phase 9). Planned, in order of preference:
+> The voice loop runs from source today (Phases 1–2). Packaged installs land in
+> Phase 9. **uv-first** — Homebrew is only a fallback for anything without a wheel.
 
 ```bash
-# 1) Homebrew tap (planned, recommended) — installs the app AND native deps
-brew install glensk/tap/my-stt-tts
-
-# 2) uv tool (planned) — Python tool install; bring your own native deps
-brew install portaudio espeak-ng ffmpeg          # prerequisites
-uv tool install my-stt-tts
-
-# 3) From source (for contributors)
+# From source (works now)
 git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts
-brew install portaudio espeak-ng ffmpeg whisper-cpp
-uv sync && uv run my-stt-tts
+uv sync --extra all                 # core + STT/TTS/speaker/VAD/wake/lang backends
+uv tool install piper-tts           # Piper CLI for DE/FR/EN TTS (GPL; run as a subprocess)
+export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .env.example)
+uv run my-stt-tts                   # push-to-talk loop; add --debug for spoken cues
+
+# Lighter dev install — pure logic + tests only, no ML backends
+uv sync && uv run pytest
+
+# Planned (Phase 9): packaged installs
+uv tool install my-stt-tts          # PyPI (planned)
+brew install glensk/tap/my-stt-tts  # Homebrew tap (planned)
 ```
+
+macOS `say` gives zero-install fallback voices, and `sounddevice`'s wheel bundles
+PortAudio — no `brew install portaudio` needed.
 
 **Docker is not supported on macOS** for this app: containers there run in a
 Linux VM with **no microphone/speaker access and no Apple-Silicon GPU (Metal/MLX)**

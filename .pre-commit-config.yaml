@@ -1,7 +1,14 @@
-# Run secret scanning before each commit.
-# Setup (once per machine):  brew install pre-commit gitleaks
+# Format, lint, and secret-scan before each commit.
+# Setup (once per machine):  uv tool install pre-commit   (or: brew install pre-commit)
 # Setup (once per clone):    pre-commit install
+# The gitleaks binary is fetched automatically by its hook (no system install).
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:

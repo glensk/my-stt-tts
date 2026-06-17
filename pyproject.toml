@@ -1,0 +1,54 @@
+[project]
+name = "my-stt-tts"
+version = "0.0.1"
+description = "Local voice assistant for macOS Apple Silicon: wake-word -> on-device STT -> an LLM -> natural TTS, with speaker ID and DE/FR/EN."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Albert Glensk" }]
+keywords = ["voice-assistant", "stt", "tts", "wake-word", "mlx", "apple-silicon", "claude", "llm"]
+dependencies = [
+    "python-dotenv>=1.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Native/ML backends are opt-in extras so the core package stays light and the
+# orchestrator imports without them (backends are lazy-imported). Prefer wheels
+# that bundle native libs (uv-first; see AGENTS.md).
+llm = ["anthropic>=0.40", "openai>=1.40"]
+audio = ["sounddevice>=0.4"]
+stt = ["parakeet-mlx"]
+tts = ["mlx-audio"]
+speaker = ["speechbrain", "torchaudio"]
+vad = ["silero-vad", "webrtcvad-wheels"]
+wake = ["openwakeword", "onnxruntime"]
+lang = ["lingua-language-detector"]
+all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang]"]
+
+[project.scripts]
+my-stt-tts = "my_stt_tts.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/glensk/my-stt-tts"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pylint>=3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

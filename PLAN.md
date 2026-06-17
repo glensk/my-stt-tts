@@ -11,6 +11,26 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-17)
+
+**Implemented + unit-tested (31 tests passing, lint-clean):** project scaffold
+(`pyproject.toml` / `uv.lock`, `src/` layout, ruff/mypy/pytest, ruff+gitleaks
+pre-commit, CI on `macos-15`); **Phase 0** (`config` + fail-fast validate,
+`metrics` with shared `speech_id`, threaded `spine`); the pure logic of
+**Phases 1–2** (`text` sentence-chunker with decimal/comma guard + non-spoken
+stripping, `RateLimiter`, `PreRollBuffer`, half-duplex `MicGate`); the
+provider-agnostic streaming `Brain` (Anthropic / OpenAI-compatible); the
+`TTSRouter` (Piper-subprocess / `say` + language routing); `chimes`; and the
+testable cores of **Phases 4–5** (`SilenceEndpointer`, `match_speaker`).
+Backends (`stt` parakeet-mlx, `vad` Silero, `wake` openWakeWord, `speaker_id`
+ECAPA) are coded with lazy imports; the push-to-talk loop is wired in
+`__main__.py` with chimes, mic-gating, streaming, and graceful failure.
+
+**Needs your machine (cannot run here):** live end-to-end test (mic + speakers +
+`ANTHROPIC_API_KEY`), installing the heavy extras + the `piper-tts` CLI + Piper
+voices, verifying the exact `parakeet-mlx` result API, training the "maziko"
+wake-word model, and enrolling family voices (`uv run scripts/enroll.py <name>`).
+
 ---
 
 ## 1. Goal (restatement)
