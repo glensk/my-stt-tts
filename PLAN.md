@@ -31,6 +31,12 @@ ECAPA) are coded with lazy imports; the push-to-talk loop is wired in
 voices, verifying the exact `parakeet-mlx` result API, training the "maziko"
 wake-word model, and enrolling family voices (`uv run scripts/enroll.py <name>`).
 
+**Update (this session):** added a `claude-cli` provider (uses the logged-in
+Claude Code CLI — no API key, session-continued multi-turn) and a `--type`/`--text`
+keyboard mode; verified the parakeet-mlx API (`AlignedResult.text`); downloaded +
+smoke-tested the three Piper voices (DE/FR/EN). The claude-cli loop runs without a
+mic — only audio capture/STT still need the M1.
+
 ---
 
 ## 1. Goal (restatement)

@@ -54,7 +54,7 @@ LM Studio, or a local server. Select it via `.env` (see `.env.example`):
 
 | Variable | Example | Meaning |
 |:---------|:--------|:--------|
-| `LLM_PROVIDER`   | `anthropic`                    | `anthropic` / `openai` / `openai-compatible` / `ollama` |
+| `LLM_PROVIDER`   | `anthropic`                    | `anthropic` / `openai` / `openai-compatible` / `ollama` / `claude-cli` |
 | `LLM_MODEL`      | `claude-haiku-4-5`             | fast-path model id |
 | `LLM_MODEL_DEEP` | `claude-opus-4-8`              | optional "deep" model |
 | `LLM_BASE_URL`   | `http://localhost:11434/v1`    | for OpenAI-compatible / local servers |
@@ -71,6 +71,9 @@ uv sync --extra all                 # core + STT/TTS/speaker/VAD/wake/lang backe
 uv tool install piper-tts           # Piper CLI for DE/FR/EN TTS (GPL; run as a subprocess)
 export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .env.example)
 uv run my-stt-tts                   # push-to-talk loop; add --debug for spoken cues
+
+# No API key? Use the logged-in Claude Code CLI (keeps a session for multi-turn):
+uv run my-stt-tts --provider claude-cli --type    # typed input -> spoken replies
 
 # Lighter dev install — pure logic + tests only, no ML backends
 uv sync && uv run pytest
