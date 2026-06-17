@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Convenience launcher: run my-stt-tts straight from the project venv, WITHOUT
+# `uv run` (which re-syncs the env and would strip the optional extras such as
+# parakeet-mlx / lingua). Run `uv sync --extra all` once first, then `./mstt ...`.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${here}/.venv/bin/my-stt-tts" "$@"

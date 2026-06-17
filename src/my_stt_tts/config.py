@@ -26,6 +26,14 @@ BRAIN_PRESETS: dict[str, tuple[str, str]] = {
     "ollama": ("ollama", "llama3.1"),  # also set LLM_BASE_URL=http://localhost:11434/v1
 }
 
+# Fallback if the editable repo's prompts/system_prompt.md can't be found.
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a calm, concise voice assistant. Your reply is spoken aloud and the "
+    "user never sees text: no markdown, lists, code, emoji, or URLs. Speak in one "
+    "to three short sentences, spell numbers and dates as words, reply in the "
+    "language the user spoke, and use metric units and ISO-8601 dates."
+)
+
 
 class ConfigError(ValueError):
     """Raised when the resolved configuration is invalid."""
@@ -36,6 +44,21 @@ def _env_bool(name: str, *, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _repo_prompt_file() -> Path:
+    """Path to the editable in-repo system prompt (resolved from this package)."""
+    return Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
+
+
+def load_system_prompt(override: str | os.PathLike[str] | None = None) -> str:
+    """Read the system prompt from a file (override or repo default), or fall back."""
+    path = Path(override) if override else _repo_prompt_file()
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return _DEFAULT_SYSTEM_PROMPT
+    return text or _DEFAULT_SYSTEM_PROMPT
 
 
 @dataclass(slots=True)
@@ -56,15 +79,8 @@ class Config:
     deep_trigger: str = "think hard"
     max_history_turns: int = 10
     requests_per_minute: int = 30
-    # The reply is SPOKEN, never shown — keep the model's output speech-shaped.
-    system_prompt: str = (
-        "Your entire reply is converted to speech and played aloud; the user never "
-        "sees any text. Never use markdown, bullet lists, headings, code blocks, "
-        "emoji, URLs, or symbols that don't read aloud naturally. Speak in short, "
-        "calm, conversational sentences (usually one to three). Spell out numbers "
-        "and units as words. Reply in the language the user spoke. Use metric units "
-        "and ISO-8601 dates."
-    )
+    # Spoken-output system prompt; edit prompts/system_prompt.md to change it.
+    system_prompt: str = _DEFAULT_SYSTEM_PROMPT
 
     # --- Wake / capture ---
     wake_phrase: str = "maziko"
@@ -111,6 +127,7 @@ class Config:
             llm_base_url=env.get("LLM_BASE_URL") or None,
             anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
             openai_api_key=env.get("OPENAI_API_KEY") or None,
+            system_prompt=load_system_prompt(env.get("SYSTEM_PROMPT_FILE")),
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             debug=_env_bool("DEBUG", default=False),

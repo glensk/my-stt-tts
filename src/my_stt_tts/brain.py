@@ -2,11 +2,17 @@
 
 Programs against an OpenAI-compatible interface. Anthropic/Claude is the default,
 but OpenAI, Ollama, vLLM, or any OpenAI-compatible server work via ``LLM_BASE_URL``.
-A ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
+
+The ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
 keeps a session id for multi-turn continuity — handy when you have no API key. It
-runs in a NON-git scratch directory so the user's global auto-commit hook can
-never touch this project, and injects the speech-only system prompt.
-Heavy clients are lazy-imported so the package imports without the ``llm`` extra.
+is deliberately STRIPPED and ISOLATED from your general Claude use:
+  * ``--system-prompt`` replaces the agentic prompt with this project's spoken
+    prompt (from prompts/system_prompt.md),
+  * ``--setting-sources ""`` skips your ~/.claude/CLAUDE.md, ~/.llm-shared, hooks,
+  * ``--tools ""`` disables all tools,
+  * it runs in a non-git scratch dir.
+That cuts per-turn context from ~28k tokens to ~0 (≈8x faster, ≈280x cheaper) and
+means the nested CLI cannot touch this repo. Heavy clients are lazy-imported.
 """
 
 from __future__ import annotations
@@ -102,8 +108,7 @@ class Brain:
 
     @staticmethod
     def _claude_cwd() -> str:
-        # A non-git scratch dir: the nested `claude -p` inherits the user's global
-        # hooks, so running it here means an auto-commit hook has no repo to touch.
+        # A non-git scratch dir: even if a hook slips through, there is no repo here.
         scratch = Path(tempfile.gettempdir()) / "my-stt-tts-claude-cwd"
         scratch.mkdir(parents=True, exist_ok=True)
         return str(scratch)
@@ -119,8 +124,12 @@ class Brain:
             model,
             "--output-format",
             "json",
-            "--append-system-prompt",
-            self.cfg.system_prompt,
+            "--system-prompt",
+            self.cfg.system_prompt,  # replace the agentic prompt
+            "--setting-sources",
+            "",  # skip ~/.claude/CLAUDE.md, ~/.llm-shared, hooks
+            "--tools",
+            "",  # no tools: minimal context, ~8x faster, project-isolated
         ]
         if self._session_id is None:
             self._session_id = str(uuid.uuid4())
@@ -130,8 +139,8 @@ class Brain:
         proc = subprocess.run(  # noqa: S603
             cmd, cwd=self._claude_cwd(), capture_output=True, text=True, check=False, timeout=180
         )
-        # Parse stdout even on a non-zero rc: a failing (harmless) post-hook in the
-        # nested CLI must not discard an otherwise-valid result.
+        # Parse stdout even on a non-zero rc so a harmless post-hook can't discard
+        # an otherwise-valid result.
         data = None
         if proc.stdout.strip():
             try:
