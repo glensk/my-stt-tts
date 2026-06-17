@@ -1,7 +1,7 @@
 # PLAN — `my-stt-tts`: local voice assistant on a MacBook M1
 
 > A hand-wired, low-latency voice loop running entirely on a MacBook M1 (Apple
-> Silicon): **wake word → record → speech-to-text → Claude (streaming) →
+> Silicon): **wake word → record → speech-to-text → an LLM (streaming) →
 > text-to-speech → playback**, with speaker identification and German / French /
 > English support. The Mac is the prototype target; the design stays portable so
 > the brain can later move to a server and the mics/speakers to whole-house
@@ -16,7 +16,7 @@ Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; thi
 ## 1. Goal (restatement)
 
 Build a single, always-on Python process on the M1 that listens for a wake word,
-records one utterance, transcribes it, sends the text to Claude (streaming),
+records one utterance, transcribes it, sends the text to an LLM (streaming),
 speaks the answer back through the Mac speakers, and — as it goes — identifies
 *who* spoke. It must feel responsive (target perceived first-audio ≈ 1–1.5 s
 excluding model thinking time), work in **Hochdeutsch (standard German), French,
@@ -42,7 +42,7 @@ Continuous Integration, **TCC** = macOS Transparency/Consent/Control (privacy).
 | D2 | **STT engine** | **`parakeet-mlx`** (`parakeet-tdt-0.6b-v3`, multilingual) primary; `whisper.cpp` large-v3-turbo alternate | v3 is multilingual (DE/FR/EN + auto language-ID), MLX-native, sub-second, beats Whisper-large on WER. **`faster-whisper` is CPU-only on Mac — do not use it.** |
 | D3 | **TTS engine** | **Piper** (DE `thorsten-high`, FR `tom-medium`, EN `lessac`) primary, **invoked as a subprocess** (see D10); **macOS `say` premium** instant fallback; optional **Kokoro via `mlx-audio`** (English, espeak disabled) | Piper is the only local engine with strong **German**, correct French, good English, **and** sub-300 ms TTFA on M1 CPU. Kokoro has **no German**. XTTS-v2 (non-commercial, MPS hangs) and Qwen3-TTS (GPU-oriented) deferred behind the Router. |
 | D4 | **Speaker identification** | **SpeechBrain ECAPA-TDNN** embeddings + enrollment + cosine to per-person centroids, with unknown/ambiguous rejection | Best accuracy (~0.80 % EER), text-independent + cross-lingual-robust (DE/FR/EN), runs **in parallel with STT** → ~0 added latency. Resemblyzer rejected (English-biased). No surveyed repo ships this — bespoke. |
-| D5 | **LLM layer** | **Anthropic SDK**, streaming, model **pluggable**: default **`claude-haiku-4-5`** → **`claude-opus-4-8`** (deep path) on trigger; tool-use / MCP-ready for multi-agent dispatch | Voice turns want a fast cheap default; Opus is a latency/cost tax for routine queries. A `Brain` interface keeps model + routing as config. |
+| D5 | **LLM layer** | **Provider-agnostic** via an OpenAI-compatible interface (Anthropic default; OpenAI / Ollama / vLLM / local also work). Streaming; default **`claude-haiku-4-5`** → **`claude-opus-4-8`** (deep path) on trigger; chosen by `LLM_PROVIDER`/`LLM_MODEL`/`LLM_BASE_URL`; tool-use / MCP-ready for multi-agent dispatch | Voice turns want a fast cheap default; Opus is a latency/cost tax. Anthropic exposes an OpenAI-compatible endpoint (as do most providers), so one client targets all. A `Brain` interface keeps provider + model as config. |
 | D6 | **Stage confirmations** | **Earcons (chimes)**, not spoken phrases. Wake chime + optional end-of-record chime. Spoken narration behind `--debug` only | The four spoken phrases in the original sketch add **~6–7 s dead air/query**. Chimes are ~150 ms, language-neutral, don't re-trigger the wake word. |
 | D7 | **End-of-turn detection** | **Push-to-talk** (v1) → **two-stage VAD** (WebRTC gate → Silero confirm) → **smart-turn** model-based endpointing; hard max-recording cap | Endpointing is the hardest part of voice UX. PTT removes it so we validate the core loop; VAD then smart-turn (prosody-aware) follow. |
 | D8 | **Process model** | **One warm long-running process**; all models pre-loaded at startup; **threaded producer-consumer spine** (one queue per stage, generator stages stream), `SESSION_END` vs `PIPELINE_END` signals | Model load + Metal warm-up is hundreds of ms–seconds; pay once. This (not language) is the biggest latency lever. Spine pattern from HF `speech-to-speech`. |
@@ -75,7 +75,7 @@ Continuous Integration, **TCC** = macOS Transparency/Consent/Control (privacy).
                          │      → text + lang           (ECAPA centroid  │
                          │            │                  cosine match)   │
                          │            ▼                      │           │
-                         │      Brain (Claude SDK, streaming)│           │
+                         │      Brain (LLM/Claude, streaming)│           │
                          │      Haiku / Opus + memory        │           │
                          │      strip non-spoken text        │           │
                          │            │ tokens → sentence/fragment       │
@@ -235,7 +235,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 ## 6. Dependencies (initial)
 
 ```commands
-uv add anthropic parakeet-mlx mlx-audio speechbrain torchaudio \
+uv add anthropic openai parakeet-mlx mlx-audio speechbrain torchaudio \
        sounddevice silero-vad webrtcvad-wheels openwakeword onnxruntime \
        lingua-language-detector
 brew install whisper-cpp espeak-ng portaudio ffmpeg piper        # piper = CLI binary (subprocess)
@@ -342,6 +342,6 @@ matrix, codecov, Astral `ty` in CI.
 ## 12. Data / privacy note (SDSC context)
 
 Local STT + TTS keep voice audio **on-device**; only the transcribed *text* leaves
-the machine (to Anthropic, as with ordinary Claude usage). Do not dictate
+the machine (to your chosen LLM provider — Anthropic by default). Do not dictate
 Confidential / Strictly-Confidential content. Enrollment voice profiles stay local
 and gitignored.

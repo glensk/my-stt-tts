@@ -7,7 +7,7 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 A hand-wired, low-latency **voice assistant that runs on a MacBook (Apple
-Silicon)**: **wake word → speech-to-text → Claude (streaming) → text-to-speech →
+Silicon)**: **wake word → speech-to-text → an LLM (streaming) → text-to-speech →
 playback**, with **speaker identification** and **German / French / English**
 support. On-device STT/TTS; only transcribed text ever leaves the machine.
 
@@ -17,7 +17,7 @@ support. On-device STT/TTS; only transcribed text ever leaves the machine.
 ## Why this exists
 
 Off-the-shelf assistants are cloud-tethered, single-voice, and can't tell who's
-speaking. This is a local, swappable pipeline where the "brain" is Claude (Haiku
+speaking. This is a local, swappable pipeline where the "brain" is a pluggable LLM — Claude by default (Haiku
 for speed, Opus for depth), the voices are yours to choose per language, and the
 mic audio stays on your machine.
 
@@ -29,7 +29,7 @@ flowchart LR
   WW --> VAD["Two-stage VAD<br/>+ smart-turn endpointing"]
   VAD --> STT["STT<br/>(parakeet-mlx)"]
   VAD --> SID["Speaker ID<br/>(ECAPA)"]
-  STT --> Brain["Claude<br/>(streaming)"]
+  STT --> Brain["LLM<br/>(Claude/OpenAI/local)"]
   SID --> Brain
   Brain --> TTS["TTS router<br/>(Piper / Kokoro / say)"]
   TTS --> Spk["Speakers"]
@@ -41,10 +41,23 @@ flowchart LR
 | Wake word      | openWakeWord, custom phrase **"maziko"**      | Free, no vendor lock, on-device |
 | Speech-to-text | `parakeet-mlx` (multilingual)                 | MLX-native, sub-second, DE/FR/EN auto-detect |
 | Speaker ID     | SpeechBrain ECAPA-TDNN, enrollment + cosine   | Runs in parallel with STT → ~0 added latency |
-| LLM            | Anthropic SDK, streaming; Haiku → Opus        | Fast/cheap default, pluggable, MCP-ready |
+| LLM            | Any provider — Anthropic (default), OpenAI, Ollama, local; streaming | Pluggable via OpenAI-compatible API; Haiku→Opus deep path; MCP-ready |
 | Text-to-speech | Piper (DE/FR/EN) · Kokoro (EN) · `say` fallback | Only local engine strong in German *and* fast on M1 |
 | Confirmations  | short **chimes**, not spoken phrases          | Spoken stage cues add ~6 s/query; chimes are language-neutral |
 | Turn-taking    | push-to-talk → Silero VAD → smart-turn        | Deterministic first, then voice-activated, then prosody-aware |
+
+## LLM provider
+
+The "brain" is **provider-agnostic**. Anthropic/Claude is the default and the
+recommendation, but any OpenAI-compatible endpoint works — OpenAI, Ollama, vLLM,
+LM Studio, or a local server. Select it via `.env` (see `.env.example`):
+
+| Variable | Example | Meaning |
+|:---------|:--------|:--------|
+| `LLM_PROVIDER`   | `anthropic`                    | `anthropic` / `openai` / `openai-compatible` / `ollama` |
+| `LLM_MODEL`      | `claude-haiku-4-5`             | fast-path model id |
+| `LLM_MODEL_DEEP` | `claude-opus-4-8`              | optional "deep" model |
+| `LLM_BASE_URL`   | `http://localhost:11434/v1`    | for OpenAI-compatible / local servers |
 
 ## Install
 
@@ -84,8 +97,8 @@ project's license:
 
 ## Privacy
 
-Local STT/TTS keep audio **on-device**; only transcribed text reaches Anthropic
-(as with ordinary Claude usage). Voice-enrollment profiles stay local and
+Local STT/TTS keep audio **on-device**; only transcribed text reaches your chosen LLM provider
+(Anthropic by default, as with ordinary Claude usage). Voice-enrollment profiles stay local and
 gitignored. Don't dictate confidential content.
 
 ## Development
