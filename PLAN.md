@@ -164,7 +164,7 @@ pylint` (Python), `shellcheck` (shell).
 
 ### Phase 4 — Wake word & always-listening
 
-- [ ] Integrate **openWakeWord** (custom phrase, no vendor lock) — or Porcupine if zero-training preferred; pick a multi-syllable, uncommon wake phrase
+- [ ] Train + integrate **openWakeWord** for the wake phrase **"maziko"** (custom model, ~1 h via the openWakeWord training notebook; no vendor lock; Porcupine only as a zero-training fallback)
 - [ ] Replace push-to-talk with wake-word + **Silero VAD** endpointing (tune silence timeout)
 - [ ] Conversation **follow-up window** (~8 s open mic after a reply, no re-wake needed)
 - [ ] Multi-turn **memory** (rolling `messages`, capped length, idle reset)
@@ -226,7 +226,7 @@ python -m piper.download_voices de_DE-thorsten-high fr_FR-tom-medium en_US-lessa
 
 ## 8. Open items to confirm (defaulting as noted unless you object)
 
-1. **Wake-word engine + phrase** — defaulting to **openWakeWord** with a custom multi-syllable phrase (no vendor lock). Need: the wake phrase itself.
+1. **Wake-word engine + phrase** — **LOCKED: openWakeWord** (no vendor lock) with the custom wake phrase **"maziko"** (distinctive, multi-syllabic → low false-accept). Needs a custom-trained openWakeWord model (~1 h via the openWakeWord training notebook); Phases 1–3 run on push-to-talk, so training is not a blocker until Phase 4.
 2. **STT** — defaulting to **`parakeet-mlx` v3**; will fall back to `whisper.cpp` large-v3-turbo if multilingual punctuation/accuracy disappoints in Phase 3.
 3. **TTS** — defaulting to **Piper for all three languages** (one runtime) in v1; Kokoro-for-English is optional polish.
 4. **Speaker-ID scope** — phased to Phase 5 (core loop first). Confirm the roster (who to enroll) when we get there.
