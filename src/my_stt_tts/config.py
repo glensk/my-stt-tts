@@ -12,6 +12,20 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Friendly one-word brain presets -> (provider, model).
+# "-sub" uses your Claude subscription via the Claude Code CLI (no API key); the
+# bare aliases haiku/sonnet/opus resolve to the latest version automatically.
+# "-api" uses the Anthropic API (needs ANTHROPIC_API_KEY) pinned to latest ids.
+BRAIN_PRESETS: dict[str, tuple[str, str]] = {
+    "haiku-sub": ("claude-cli", "haiku"),
+    "sonnet-sub": ("claude-cli", "sonnet"),
+    "opus-sub": ("claude-cli", "opus"),
+    "haiku-api": ("anthropic", "claude-haiku-4-5"),
+    "sonnet-api": ("anthropic", "claude-sonnet-4-6"),
+    "opus-api": ("anthropic", "claude-opus-4-8"),
+    "ollama": ("ollama", "llama3.1"),  # also set LLM_BASE_URL=http://localhost:11434/v1
+}
+
 
 class ConfigError(ValueError):
     """Raised when the resolved configuration is invalid."""
@@ -42,10 +56,14 @@ class Config:
     deep_trigger: str = "think hard"
     max_history_turns: int = 10
     requests_per_minute: int = 30
+    # The reply is SPOKEN, never shown — keep the model's output speech-shaped.
     system_prompt: str = (
-        "You are a concise spoken-voice assistant. Answer in at most a few short "
-        "sentences suitable for text-to-speech. Reply in the language the user "
-        "spoke. Use metric units and ISO-8601 dates."
+        "Your entire reply is converted to speech and played aloud; the user never "
+        "sees any text. Never use markdown, bullet lists, headings, code blocks, "
+        "emoji, URLs, or symbols that don't read aloud naturally. Speak in short, "
+        "calm, conversational sentences (usually one to three). Spell out numbers "
+        "and units as words. Reply in the language the user spoke. Use metric units "
+        "and ISO-8601 dates."
     )
 
     # --- Wake / capture ---
@@ -72,6 +90,7 @@ class Config:
         default_factory=lambda: {"de": "Anna", "fr": "Thomas", "en": "Ava"}
     )
     piper_data_dir: str = "voices"
+    tts_length_scale: float = 1.1  # Piper duration multiplier; >1 = slower/calmer
 
     # --- Speaker ID ---
     speaker_threshold: float = 0.45
@@ -85,7 +104,7 @@ class Config:
         """Build a Config from environment variables (loading ``.env`` first)."""
         load_dotenv(dotenv_path, override=False)
         env = os.environ
-        return cls(
+        cfg = cls(
             llm_provider=env.get("LLM_PROVIDER", "anthropic"),
             llm_model=env.get("LLM_MODEL", "claude-haiku-4-5"),
             llm_model_deep=env.get("LLM_MODEL_DEEP", "claude-opus-4-8"),
@@ -96,6 +115,17 @@ class Config:
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             debug=_env_bool("DEBUG", default=False),
         )
+        if env.get("TTS_VOICE_EN"):
+            cfg.tts_voices["en"] = env["TTS_VOICE_EN"]
+        if env.get("TTS_LENGTH_SCALE"):
+            cfg.tts_length_scale = float(env["TTS_LENGTH_SCALE"])
+        return cfg
+
+    def apply_brain_preset(self, name: str) -> None:
+        """Set provider + model from a :data:`BRAIN_PRESETS` key."""
+        if name not in BRAIN_PRESETS:
+            raise ConfigError(f"unknown brain preset {name!r}; choose from {tuple(BRAIN_PRESETS)}")
+        self.llm_provider, self.llm_model = BRAIN_PRESETS[name]
 
     def validate(self) -> None:
         """Raise :class:`ConfigError` listing every problem (fail-fast)."""

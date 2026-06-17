@@ -3,7 +3,9 @@
 Programs against an OpenAI-compatible interface. Anthropic/Claude is the default,
 but OpenAI, Ollama, vLLM, or any OpenAI-compatible server work via ``LLM_BASE_URL``.
 A ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
-keeps a session id for multi-turn continuity — handy when you have no API key.
+keeps a session id for multi-turn continuity — handy when you have no API key. It
+runs in a NON-git scratch directory so the user's global auto-commit hook can
+never touch this project, and injects the speech-only system prompt.
 Heavy clients are lazy-imported so the package imports without the ``llm`` extra.
 """
 
@@ -13,8 +15,10 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 from .config import Config
 from .util import RateLimiter
@@ -96,24 +100,47 @@ class Brain:
             if reply:
                 self.history.append({"role": "assistant", "content": "".join(reply)})
 
+    @staticmethod
+    def _claude_cwd() -> str:
+        # A non-git scratch dir: the nested `claude -p` inherits the user's global
+        # hooks, so running it here means an auto-commit hook has no repo to touch.
+        scratch = Path(tempfile.gettempdir()) / "my-stt-tts-claude-cwd"
+        scratch.mkdir(parents=True, exist_ok=True)
+        return str(scratch)
+
     def _stream_claude_cli(self, model: str, user_text: str) -> Iterator[str]:
         if not shutil.which("claude"):
             raise LLMError("`claude` CLI not found on PATH")
-        cmd = ["claude", "-p", user_text, "--model", model, "--output-format", "json"]
+        cmd = [
+            "claude",
+            "-p",
+            user_text,
+            "--model",
+            model,
+            "--output-format",
+            "json",
+            "--append-system-prompt",
+            self.cfg.system_prompt,
+        ]
         if self._session_id is None:
             self._session_id = str(uuid.uuid4())
             cmd += ["--session-id", self._session_id]  # create + name this session
         else:
             cmd += ["--resume", self._session_id]  # continue the conversation
         proc = subprocess.run(  # noqa: S603
-            cmd, capture_output=True, text=True, check=False, timeout=180
+            cmd, cwd=self._claude_cwd(), capture_output=True, text=True, check=False, timeout=180
         )
-        if proc.returncode != 0:
-            raise LLMError(f"claude CLI failed (rc={proc.returncode}): {proc.stderr.strip()[:200]}")
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError as exc:
-            raise LLMError(f"claude CLI returned non-JSON output: {exc}") from exc
+        # Parse stdout even on a non-zero rc: a failing (harmless) post-hook in the
+        # nested CLI must not discard an otherwise-valid result.
+        data = None
+        if proc.stdout.strip():
+            try:
+                data = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                data = None
+        if data is None:
+            detail = (proc.stderr or proc.stdout or "").strip()[:200]
+            raise LLMError(f"claude CLI failed (rc={proc.returncode}): {detail}")
         if data.get("is_error"):
             raise LLMError(str(data.get("result") or "claude CLI error"))
         yield str(data.get("result", ""))
