@@ -57,3 +57,7 @@ enroll/
 
 # Downloaded Piper TTS voices (large; fetched via piper.download_voices)
 voices/
+
+# Trained wake-word models (generated; see wakewords/WAKEWORD.md)
+wakewords/*.onnx
+wakewords/*.tflite

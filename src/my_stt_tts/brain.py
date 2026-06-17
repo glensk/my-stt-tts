@@ -5,14 +5,14 @@ but OpenAI, Ollama, vLLM, or any OpenAI-compatible server work via ``LLM_BASE_UR
 
 The ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
 keeps a session id for multi-turn continuity — handy when you have no API key. It
-is deliberately STRIPPED and ISOLATED from your general Claude use:
-  * ``--system-prompt`` replaces the agentic prompt with this project's spoken
-    prompt (from prompts/system_prompt.md),
-  * ``--setting-sources ""`` skips your ~/.claude/CLAUDE.md, ~/.llm-shared, hooks,
-  * ``--tools ""`` disables all tools,
-  * it runs in a non-git scratch dir.
-That cuts per-turn context from ~28k tokens to ~0 (≈8x faster, ≈280x cheaper) and
-means the nested CLI cannot touch this repo. Heavy clients are lazy-imported.
+is deliberately STRIPPED and ISOLATED from your general Claude use
+(``--system-prompt`` replaces the agentic prompt with prompts/system_prompt.md,
+``--setting-sources ""`` skips ~/.claude & ~/.llm-shared & hooks, ``--tools ""``
+disables tools, runs in a non-git scratch dir) — ~8x faster, ~280x cheaper, and
+unable to touch this repo.
+
+When the utterance starts with the agent trigger ("agent, <task>"), the request
+is instead delegated to a FULL, MCP-capable Claude agent (see :mod:`.agent`).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
+from .agent import AgentError, dispatch_to_agent
 from .config import Config
 from .util import RateLimiter
 
@@ -42,19 +43,21 @@ def should_use_deep(cfg: Config, text: str) -> bool:
 
 
 class Brain:
-    """Streaming chat with short conversation memory and fast/deep routing."""
+    """Streaming chat with short conversation memory, fast/deep + agent routing."""
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.history: list[dict[str, str]] = []
         self._client: object | None = None
         self._rate = RateLimiter(cfg.requests_per_minute)
-        self._session_id: str | None = None  # claude-cli session continuity
+        self._session_id: str | None = None  # claude-cli chat session
+        self._agent_session_id: str | None = None  # delegated-agent session
 
     def reset(self) -> None:
         """Forget the conversation (e.g. after an idle timeout)."""
         self.history.clear()
         self._session_id = None
+        self._agent_session_id = None
 
     def _trim(self) -> None:
         max_msgs = self.cfg.max_history_turns * 2
@@ -89,7 +92,10 @@ class Brain:
         self._trim()
         reply: list[str] = []
         try:
-            if self.cfg.llm_provider == "claude-cli":
+            agent_task = self._agent_task(user_text)
+            if agent_task is not None:
+                deltas = self._dispatch_agent(agent_task)
+            elif self.cfg.llm_provider == "claude-cli":
                 deltas = self._stream_claude_cli(model, user_text)
             elif self.cfg.llm_provider == "anthropic":
                 deltas = self._stream_anthropic(model)
@@ -106,9 +112,42 @@ class Brain:
             if reply:
                 self.history.append({"role": "assistant", "content": "".join(reply)})
 
+    # --- Agent dispatch ("agent, <task>" -> full MCP-capable Claude) ---
+
+    def _agent_task(self, text: str) -> str | None:
+        """Return the task if ``text`` starts with the agent trigger word, else None."""
+        trigger = self.cfg.agent_trigger.strip().lower()
+        if not trigger:
+            return None
+        stripped = text.strip()
+        low = stripped.lower()
+        if low == trigger or low.startswith(f"{trigger} ") or low.startswith(f"{trigger},"):
+            return stripped[len(trigger) :].lstrip(" ,:").strip()
+        return None
+
+    def _dispatch_agent(self, task: str) -> Iterator[str]:
+        if not self.cfg.agent_workspace:
+            yield "Agent mode is not configured. Set an agent workspace to enable it."
+            return
+        if not task:
+            yield "What should the agent do?"
+            return
+        try:
+            result = dispatch_to_agent(
+                task,
+                workspace=self.cfg.agent_workspace,
+                model=self.cfg.agent_model,
+                session_id=self._agent_session_id,
+            )
+        except AgentError as exc:
+            raise LLMError(str(exc)) from exc
+        self._agent_session_id = result.session_id
+        yield result.text
+
+    # --- Chat backends ---
+
     @staticmethod
     def _claude_cwd() -> str:
-        # A non-git scratch dir: even if a hook slips through, there is no repo here.
         scratch = Path(tempfile.gettempdir()) / "my-stt-tts-claude-cwd"
         scratch.mkdir(parents=True, exist_ok=True)
         return str(scratch)
@@ -133,14 +172,12 @@ class Brain:
         ]
         if self._session_id is None:
             self._session_id = str(uuid.uuid4())
-            cmd += ["--session-id", self._session_id]  # create + name this session
+            cmd += ["--session-id", self._session_id]
         else:
-            cmd += ["--resume", self._session_id]  # continue the conversation
+            cmd += ["--resume", self._session_id]
         proc = subprocess.run(  # noqa: S603
             cmd, cwd=self._claude_cwd(), capture_output=True, text=True, check=False, timeout=180
         )
-        # Parse stdout even on a non-zero rc so a harmless post-hook can't discard
-        # an otherwise-valid result.
         data = None
         if proc.stdout.strip():
             try:

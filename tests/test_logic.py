@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from my_stt_tts.agent import AgentResult
 from my_stt_tts.brain import Brain, LLMError, should_use_deep
 from my_stt_tts.config import Config
 from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, match_speaker
@@ -92,3 +93,36 @@ def test_claude_cli_error_propagates():
         pytest.raises(LLMError),
     ):
         list(brain.stream("hi"))
+
+
+def test_agent_trigger_extracts_task():
+    cfg = Config(llm_provider="claude-cli", agent_trigger="agent")
+    brain = Brain(cfg)
+    assert brain._agent_task("what is two plus two") is None
+    assert brain._agent_task("agent, check my email") == "check my email"
+    assert brain._agent_task("Agent summarize the notes") == "summarize the notes"
+
+
+def test_agent_dispatch_uses_workspace_and_session():
+    cfg = Config(llm_provider="claude-cli", agent_workspace="/tmp/ws", agent_model="sonnet")
+    brain = Brain(cfg)
+    with patch(
+        "my_stt_tts.brain.dispatch_to_agent",
+        return_value=AgentResult(text="done", session_id="s1"),
+    ) as disp:
+        assert "".join(brain.stream("agent, do the thing")) == "done"
+    assert disp.call_args.args[0] == "do the thing"
+    assert disp.call_args.kwargs["workspace"] == "/tmp/ws"
+    assert brain._agent_session_id == "s1"
+    with patch(
+        "my_stt_tts.brain.dispatch_to_agent",
+        return_value=AgentResult(text="more", session_id="s1"),
+    ) as disp2:
+        list(brain.stream("agent, again"))
+    assert disp2.call_args.kwargs["session_id"] == "s1"
+
+
+def test_agent_disabled_without_workspace():
+    cfg = Config(llm_provider="claude-cli", agent_workspace=None)
+    brain = Brain(cfg)
+    assert "not configured" in "".join(brain.stream("agent, do something")).lower()

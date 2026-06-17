@@ -82,8 +82,18 @@ class Config:
     # Spoken-output system prompt; edit prompts/system_prompt.md to change it.
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT
 
+    # --- Agent dispatch (Phase 6): "agent, <task>" hands off to a full,
+    # MCP-capable Claude Code agent in `agent_workspace`. Disabled until a
+    # workspace is set (a capable agent should not run in an arbitrary dir). ---
+    agent_trigger: str = "agent"
+    agent_workspace: str | None = None
+    agent_model: str = "sonnet"
+
     # --- Wake / capture ---
     wake_phrase: str = "maziko"
+    wake_model_path: str = "wakewords/maziko.onnx"
+    wake_threshold: float = 0.5
+    follow_up_seconds: float = 8.0
     sample_rate: int = 16000
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
@@ -128,6 +138,10 @@ class Config:
             anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
             openai_api_key=env.get("OPENAI_API_KEY") or None,
             system_prompt=load_system_prompt(env.get("SYSTEM_PROMPT_FILE")),
+            agent_trigger=env.get("AGENT_TRIGGER", "agent"),
+            agent_workspace=env.get("AGENT_WORKSPACE") or None,
+            agent_model=env.get("AGENT_MODEL", "sonnet"),
+            wake_model_path=env.get("WAKE_MODEL_PATH", "wakewords/maziko.onnx"),
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             debug=_env_bool("DEBUG", default=False),

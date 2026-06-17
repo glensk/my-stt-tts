@@ -1,15 +1,15 @@
-"""CLI entrypoint: push-to-talk OR typed voice loop (Phases 1-2).
+"""CLI entrypoint: wake-word / push-to-talk / typed voice loop (Phases 1-6).
 
 Modes:
   (default)     push-to-talk: press Enter to start/stop recording each turn
+  --wake        always-listening: say the wake phrase ("maziko"), then speak
   --type        interactive typed input (no mic/STT) — for testing/dev
   --text "..."  run one typed turn, then exit
 
-Brain presets (``--brain``) switch provider+model in one word, e.g.
-``haiku-sub`` (subscription via the Claude CLI, no API key) or ``opus-api``.
+Brain presets (``--brain``) switch provider+model in one word, e.g. ``haiku-sub``
+(subscription via the Claude CLI, no API key) or ``opus-api``. Say "agent, <task>"
+to delegate to a full MCP-capable Claude agent (set AGENT_WORKSPACE to enable).
 ``--voice`` picks an English Piper voice; ``--list-voices`` shows the menu.
-Each turn: [chime] -> capture/typed -> [STT] -> stream the LLM -> sentence-chunk
--> speak each sentence (mic gated during playback). ``--debug`` adds spoken cues.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="my-stt-tts",
         description="Local voice assistant: wake/typed -> STT -> LLM -> TTS (Anthropic by default).",
     )
+    parser.add_argument("--wake", action="store_true", help="Always-listen for the wake phrase.")
     parser.add_argument(
         "--type",
         dest="type_mode",
@@ -89,43 +90,10 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
     gate.release()
 
 
-def _capture_transcript(cfg: Config, stt: object, gate: audio.MicGate, metrics: TurnMetrics) -> str:
-    gate.gate()
-    _play(chimes.chime_listening())
-    gate.release()
-    with metrics.stage("capture"):
-        clip = audio.record_push_to_talk(cfg.sample_rate, cfg.max_record_seconds)
-    gate.gate()
-    _play(chimes.chime_done())
-    gate.release()
-    if clip.size == 0:
-        return ""
-    with metrics.stage("stt"):
-        result = stt.transcribe(clip, cfg.sample_rate)  # type: ignore[attr-defined]
-    return str(result.text)
-
-
-def run_turn(
-    cfg: Config,
-    brain: Brain,
-    tts: TTSRouter,
-    gate: audio.MicGate,
-    *,
-    stt: object | None = None,
-    typed_text: str | None = None,
-) -> None:
-    """Run one capture/typed -> LLM -> TTS turn."""
+def _respond(cfg: Config, brain: Brain, tts: TTSRouter, gate: audio.MicGate, text: str) -> None:
+    """Stream the LLM for ``text`` and speak it sentence-by-sentence."""
     metrics = TurnMetrics()
-    text = (
-        typed_text.strip()
-        if typed_text is not None
-        else _capture_transcript(cfg, stt, gate, metrics)
-    )
-    if not text:
-        return
     metrics.note(transcript=text)
-    if cfg.debug and typed_text is None:
-        tts.speak("recorded")
     chunker = SentenceChunker()
     try:
         with metrics.stage("llm_tts"):
@@ -138,6 +106,74 @@ def run_turn(
         _play(chimes.chime_error())
         tts.speak("Sorry, I had a problem.")
     metrics.log()
+
+
+def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> str:
+    gate.gate()
+    _play(chimes.chime_listening())
+    gate.release()
+    clip = audio.record_push_to_talk(cfg.sample_rate, cfg.max_record_seconds)
+    gate.gate()
+    _play(chimes.chime_done())
+    gate.release()
+    if clip.size == 0:
+        return ""
+    return str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
+
+
+def run_turn(
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    gate: audio.MicGate,
+    *,
+    stt: object | None = None,
+    typed_text: str | None = None,
+) -> None:
+    """Run one push-to-talk or typed turn."""
+    text = typed_text.strip() if typed_text is not None else _capture_ptt(cfg, stt, gate)
+    if not text:
+        return
+    if cfg.debug and typed_text is None:
+        tts.speak("recorded")
+    _respond(cfg, brain, tts, gate, text)
+
+
+def run_wake_loop(
+    cfg: Config, brain: Brain, tts: TTSRouter, gate: audio.MicGate, stt: object
+) -> int:
+    """Always-listen: on the wake phrase, capture (VAD), respond, then follow up."""
+    from .vad import SilenceEndpointer, SileroVad
+    from .wake import WakeWord
+
+    wake = WakeWord.from_config(cfg)
+    if not wake.available():
+        print(
+            f'Wake model not found at {cfg.wake_model_path}. Train "{cfg.wake_phrase}" first '
+            "— see wakewords/WAKEWORD.md.",
+            file=sys.stderr,
+        )
+        return 2
+    vad = SileroVad(cfg.sample_rate)
+    frame_seconds = 512 / cfg.sample_rate
+    print(f'Listening for "{cfg.wake_phrase}". Ctrl-C to quit.')
+    while True:
+        audio.listen_for_wake(wake, cfg.sample_rate)
+        gate.gate()
+        _play(chimes.chime_listening())
+        gate.release()
+        follow_up = False
+        while True:
+            endpointer = SilenceEndpointer(cfg.vad_silence_seconds, frame_seconds=frame_seconds)
+            max_s = cfg.follow_up_seconds if follow_up else cfg.max_record_seconds
+            clip = audio.record_with_vad(cfg.sample_rate, vad, endpointer, max_seconds=max_s)
+            if clip.size == 0:
+                break  # silence -> back to listening for the wake word
+            text = str(stt.transcribe(clip, cfg.sample_rate).text).strip()  # type: ignore[attr-defined]
+            if not text:
+                break
+            _respond(cfg, brain, tts, gate, text)
+            follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     typed_mode = args.type_mode or args.text is not None
     stt: object | None = None
     if not typed_mode:
-        from .stt import ParakeetSTT  # heavy (MLX); only needed for mic mode
+        from .stt import ParakeetSTT  # heavy (MLX); only needed for mic modes
 
         stt = ParakeetSTT(cfg.stt_model)
 
@@ -176,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
                 if line in {"", "quit", "exit"}:
                     break
                 run_turn(cfg, brain, tts, gate, typed_text=line)
+        elif args.wake:
+            return run_wake_loop(cfg, brain, tts, gate, stt)
         else:
             print("Push-to-talk: Enter to start/stop each turn. Ctrl-C to quit.")
             while True:

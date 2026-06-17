@@ -1,13 +1,18 @@
-"""Audio capture, pre-roll ring buffer, playback, and half-duplex mic gating.
+"""Audio capture, pre-roll ring buffer, playback, half-duplex mic gating, and
+wake-word / VAD-gated capture helpers.
 
-``sounddevice`` is lazy-imported (needs PortAudio, from the ``audio`` extra);
-the buffer and gate logic are pure and unit-tested.
+``sounddevice`` is lazy-imported (needs PortAudio, from the ``audio`` extra); the
+buffer and gate logic are pure and unit-tested. The streaming helpers
+(``record_*`` and ``listen_for_wake``) need a real mic, so they are not unit-tested.
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 import threading
+import time
+from typing import Any
 
 import numpy as np
 
@@ -66,7 +71,7 @@ class MicGate:
         self._timer.start()
 
 
-def _sd():  # noqa: ANN202 — thin lazy accessor
+def _sd() -> Any:  # noqa: ANN401 — thin lazy accessor
     import sounddevice as sd
 
     return sd
@@ -85,11 +90,7 @@ def record_push_to_talk(
     preroll: PreRollBuffer | None = None,
     prompt: str = "[Enter] start / stop recording: ",
 ) -> np.ndarray:
-    """Record between two Enter presses (deterministic v1 endpointing).
-
-    Press Enter to start, Enter again (or ``max_seconds``) to stop. Returns the
-    captured float32 mono audio, with any pre-roll prepended.
-    """
+    """Record between two Enter presses (deterministic v1 endpointing)."""
     sd = _sd()
     input(prompt)
     frames: list[np.ndarray] = []
@@ -111,3 +112,79 @@ def record_push_to_talk(
     if preroll is not None:
         captured = np.concatenate([preroll.get(), captured])
     return captured
+
+
+def record_with_vad(
+    sample_rate: int,
+    vad: Any,
+    endpointer: Any,
+    *,
+    max_seconds: float,
+    preroll: PreRollBuffer | None = None,
+    frame_samples: int = 512,
+) -> np.ndarray:
+    """Stream from the mic until the endpointer signals end-of-turn (or timeout).
+
+    ``vad.is_speech(frame)`` drives ``endpointer.update(...)`` (see :mod:`.vad`).
+    """
+    sd = _sd()
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    collected: list[np.ndarray] = []
+    spoke = False
+    endpointer.reset()
+    start = time.monotonic()
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=frame_samples,
+        callback=_callback,
+    ):
+        while time.monotonic() - start < max_seconds:
+            try:
+                frame = frames_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            collected.append(frame)
+            is_speech = vad.is_speech(frame)
+            spoke = spoke or is_speech
+            if endpointer.update(is_speech):
+                break
+
+    if not spoke:
+        return np.zeros(0, dtype=np.float32)  # nothing was said -> end the turn
+    captured = np.concatenate(collected)
+    if preroll is not None:
+        captured = np.concatenate([preroll.get(), captured])
+    return captured
+
+
+def listen_for_wake(
+    wake: Any, sample_rate: int, *, frame_samples: int = 1280, poll_seconds: float = 0.1
+) -> None:
+    """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame."""
+    sd = _sd()
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    wake.reset()
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=frame_samples,
+        callback=_callback,
+    ):
+        while True:
+            try:
+                frame = frames_q.get(timeout=poll_seconds)
+            except queue.Empty:
+                continue
+            if wake.detect(frame):
+                return
