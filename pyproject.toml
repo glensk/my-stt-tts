@@ -30,10 +30,15 @@ aec = ["pyobjc-framework-AVFoundation; sys_platform == 'darwin'"]
 # Smart Turn v3 endpointing (R2-4): the ONNX runtime + the Whisper feature
 # extractor. The model file itself is auto-downloaded on first run.
 turn = ["onnxruntime", "transformers"]
-all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn]"]
+# Network audio transport (R2-5): the WebSocket server/client for whole-house
+# satellites + the browser GUI. Kept out of core deps so the orchestrator stays
+# light; only needed when TRANSPORT=websocket or running the satellite client.
+transport = ["websockets>=12"]
+all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport]"]
 
 [project.scripts]
 my-stt-tts = "my_stt_tts.__main__:main"
+my-stt-tts-satellite = "my_stt_tts.satellite:main"
 
 [project.urls]
 Homepage = "https://github.com/glensk/my-stt-tts"
