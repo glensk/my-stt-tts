@@ -36,3 +36,26 @@ an hour on a free Colab GPU.
   which `--extra wake` installs (`openwakeword`, `onnxruntime`).
 - "maziko" is a good choice: multi-syllabic and uncommon, so it rarely false-fires.
 - Frames are 80 ms (1280 samples at 16 kHz); that's what `--wake` feeds the model.
+
+## Trained model (maziko)
+
+`maziko.onnx` was trained on the CSCS RunAI cluster (NVIDIA GH200, namespace
+`runai-test-test3`) with openWakeWord on 2026-06-18 — no Colab needed. The `.onnx`
+lives in this folder but is **gitignored** (generated binary).
+
+| Metric | Value |
+|:-------|:------|
+| Accuracy            | 0.878 |
+| Recall              | 0.760 |
+| False positives/hr  | 0.0   |
+| Size / format       | ~201 KB · ONNX IR v7 (PyTorch 2.6.0 export) |
+
+Both openWakeWord targets (accuracy ≥ 0.7, recall ≥ 0.5) are exceeded. If live
+testing shows missed activations, lower `WAKE_THRESHOLD` or retrain with more
+steps/samples. To re-fetch the trained model from the (still-running) pod:
+
+```commands
+
+kubectl --context sdsc-fqdn -n runai-test-test3 cp \
+  maziko-wakeword-0-0:/output/maziko.onnx wakewords/maziko.onnx
+```
