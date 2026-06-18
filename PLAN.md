@@ -11,6 +11,19 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19)
+
+**Phase 7 — natural conversation (this session):** interruptible spoken dialogue.
+Barge-in (G1, cancellable playback + live-mic VAD + LLM-stream cancel), Smart Turn
+v3 prosodic end-of-turn with silence fallback (G2), false-interrupt suppression
+(G4, min-words/min-duration gate), post-interruption context repair (G5,
+spoken-prefix history), and streaming STT partial transcripts (G6). New config
+knobs (`barge_in`, `interrupt_min_*`, `turn_analyzer`, `smart_turn_*`,
+`stt_streaming`) with env + CLI overrides, surfaced in `--settings` and the web UI.
+**66 tests passing, lint-clean** (ruff/mypy/pylint). Still pending: full AEC (G3 —
+needs the Swift `VoiceProcessingIO` front-end; until then barge-in is reliable on
+headphones / energy-gated on open speakers) and network transport (G7).
+
 ## Build status (2026-06-17)
 
 **Implemented + unit-tested (31 tests passing, lint-clean):** project scaffold
@@ -239,10 +252,15 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
 - [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
-### Phase 7 — Barge-in & native audio (deferred) ⬜ deferred
+### Phase 7 — Barge-in & native audio ◑ barge-in/smart-turn/false-interrupt/context-repair done; AEC + transport pending
 
-- [ ] **Barge-in**: keep mic live during playback, abort TTS on confirmed speech (mute-event empty-array cancel — GLaDOS); **false-interrupt suppression** (min-words/min-duration — pipecat `MinWordsUserTurnStartStrategy`); decide history truncation (spoken-prefix vs keep-full)
-- [ ] Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python
+- [x] **Barge-in** (G1): cancellable TTS playback (`tts.Playback` kills the `afplay`/`say` subprocess mid-utterance; `TTSRouter.start_speaking`), mic kept LIVE during playback (`audio.monitor_during_playback`), in-flight LLM stream cancelled (generator `.close()`), `bus.interrupted(...)` event for the UI. Configurable `barge_in` mode (`off`/`headphones`/`always`) + energy gate (`barge_in_energy`) for open-speaker bleed.
+- [x] **Smart-turn / prosodic end-of-turn** (G2): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). Selected by `turn_analyzer` config.
+- [x] **False-interrupt suppression** (G4): `interrupt.InterruptGate` — min speech duration AND/OR min word count (pipecat `MinWords` equivalent) so backchannels/coughs/TV don't abort the assistant. Thresholds in config (`interrupt_min_speech_ms`, `interrupt_min_words`).
+- [x] **Post-interruption context repair** (G5): track voiced prefix; `Brain.commit_spoken()` stores only what was actually spoken (dropping the assistant turn if nothing was voiced) — fixed the `finally`-block full-append.
+- [x] **Streaming STT** (G6, bonus from Phase 4 group): `stt.StreamingTranscriber` re-transcribes the growing buffer and emits `bus.transcript(text, partial=True)` during the turn; finalises on end-of-turn. Toggle via `stt_streaming`.
+- [ ] **G3 — full AEC**: Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python. **Still pending** — until then barge-in needs headphones (or the energy gate on open speakers) to avoid self-trigger.
+- [ ] **G7 — network transport**: move audio over the wire (WebRTC/WebSocket) for whole-house satellites. **Still pending.**
 - [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
 - [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 

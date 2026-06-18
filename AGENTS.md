@@ -46,5 +46,8 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
 
 - Decisions + roadmap → `PLAN.md`
 - Per-stage code → `src/my_stt_tts/{audio,wake,stt,speaker_id,brain,tts,chimes,metrics}.py`
+- Conversation (Phase 7) → `turn.py` (end-of-turn analyzers), `interrupt.py`
+  (false-interrupt gate). Barge-in lives in `audio.monitor_during_playback` +
+  `tts.Playback`; context repair in `brain.commit_spoken`.
 - Private/local notes → `CLAUDE.local.md` (gitignored); `CLAUDE.md` is a gitignored
   shim that imports this file.
