@@ -8,6 +8,7 @@ from :data:`events.bus`, and exposes ``/api/settings``, ``/api/turn``,
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import queue
@@ -17,16 +18,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from . import ws_frame
 from .config import (
     AEC_MODES,
     BARGE_IN_MODES,
     BRAIN_PRESETS,
     PROVIDERS,
+    TRANSPORT_MODES,
     TURN_ANALYZERS,
     Config,
 )
 from .events import bus
 from .tts import _VOICE_NOTES, VOICE_PRESETS
+from .ws_transport import WebSocketTransport
 
 log = logging.getLogger("my_stt_tts.webui")
 
@@ -39,9 +43,15 @@ _FALLBACK_HTML = (
 )
 
 
-def settings_dict(cfg: Config) -> dict[str, Any]:
-    """The settable subset of the config plus the choice lists, for the UI."""
+def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]:
+    """The settable subset of the config plus the choice lists, for the UI.
+
+    ``audio_enabled`` tells the page whether the backend can carry real mic/TTS
+    audio over the WebSocket channel (R2-5); when False the page stays state /
+    transcript only and uses the demo fallback offline.
+    """
     return {
+        "audio_enabled": audio_enabled,
         "provider": cfg.llm_provider,
         "model": cfg.llm_model,
         "model_deep": cfg.llm_model_deep,
@@ -58,11 +68,16 @@ def settings_dict(cfg: Config) -> dict[str, Any]:
         "stt_window_s": cfg.stt_window_s,
         "interrupt_min_words": cfg.interrupt_min_words,
         "interrupt_predict": cfg.interrupt_predict,
+        "transport": cfg.transport,
+        "stt_backend": cfg.stt_backend,
+        "tts_backend": cfg.tts_backend,
+        "tools_enabled": cfg.tools_enabled,
         "brain_presets": sorted(BRAIN_PRESETS),
         "providers": list(PROVIDERS),
         "barge_in_modes": list(BARGE_IN_MODES),
         "aec_modes": list(AEC_MODES),
         "turn_analyzers": list(TURN_ANALYZERS),
+        "transport_modes": list(TRANSPORT_MODES),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
             for name in VOICE_PRESETS
@@ -141,11 +156,40 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", self._ui.html.encode("utf-8"))
         elif self.path == "/api/settings":
-            self._json(200, settings_dict(self._ui.cfg))
+            self._json(
+                200,
+                settings_dict(self._ui.cfg, audio_enabled=self._ui.on_audio_session is not None),
+            )
         elif self.path == "/events":
             self._sse()
+        elif self.path == "/ws/audio":
+            self._ws_audio()
         else:
             self._send(404, "text/plain", b"not found")
+
+    def _ws_audio(self) -> None:
+        """Upgrade to a WebSocket and bridge browser PCM ⇄ the pipeline (R2-5).
+
+        Performs the RFC 6455 handshake on the same-origin connection (so the page
+        CSP ``connect-src 'self'`` permits it), then runs a
+        :class:`~my_stt_tts.ws_transport.WebSocketTransport` session: inbound binary
+        frames are decoded mic PCM fed to the loop, and TTS PCM the loop produces is
+        framed back to the browser for playback. Audio carriage is only enabled when
+        the WebUI was built with an ``on_audio_session`` callback.
+        """
+        if self._ui.on_audio_session is None:
+            self._send(404, "text/plain", b"audio transport disabled")
+            return
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key or self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send(400, "text/plain", b"expected a websocket upgrade")
+            return
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", ws_frame.accept_key(key))
+        self.end_headers()
+        self._ui.run_audio_session(self.connection)
 
     def do_POST(self) -> None:  # noqa: N802
         body = self._body()
@@ -155,7 +199,10 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # bad value from the UI shouldn't 500-crash
                 self._json(400, {"error": str(exc)})
                 return
-            self._json(200, settings_dict(self._ui.cfg))
+            self._json(
+                200,
+                settings_dict(self._ui.cfg, audio_enabled=self._ui.on_audio_session is not None),
+            )
         elif self.path == "/api/turn":
             text = str(body.get("text", "")).strip()
             if text:
@@ -200,10 +247,15 @@ class WebUI:
         on_action: Callable[[str, dict[str, Any]], None] | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
+        on_audio_session: Callable[[WebSocketTransport], None] | None = None,
     ) -> None:
         self.cfg = cfg
         self._on_turn = on_turn
         self._on_action = on_action
+        # When set, the GUI can carry REAL audio over a same-origin WebSocket
+        # (browser mic PCM in, TTS PCM out). When None, the page stays state/transcript
+        # only (and falls back to demo mode offline) — the prior behaviour (R2-5).
+        self.on_audio_session = on_audio_session
         self.host = host
         self.port = port
         self.html = (
@@ -215,6 +267,68 @@ class WebUI:
 
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/"
+
+    def run_audio_session(self, sock: Any) -> None:
+        """Bridge an upgraded WebSocket ``sock`` to the pipeline (R2-5, browser audio).
+
+        Decodes inbound (masked) client frames into mic PCM fed to a
+        :class:`WebSocketTransport`, runs ``on_audio_session`` (the turn loop) in a
+        worker thread, and frames the transport's outbound TTS PCM back to the
+        browser. Runs until the socket closes; all socket/frame errors are swallowed
+        so a dropped tab can't crash the server.
+        """
+        assert self.on_audio_session is not None
+        transport = WebSocketTransport(sample_rate=self.cfg.sample_rate)
+        worker = threading.Thread(target=self.on_audio_session, args=(transport,), daemon=True)
+        worker.start()
+        sender = threading.Thread(target=self._ws_send_loop, args=(sock, transport), daemon=True)
+        sender.start()
+        try:
+            self._ws_recv_loop(sock, transport)
+        finally:
+            transport.end_mic()
+            transport.close()
+            with contextlib.suppress(Exception):
+                sock.sendall(ws_frame.close_frame())
+
+    @staticmethod
+    def _ws_recv_loop(sock: Any, transport: WebSocketTransport) -> None:
+        """Read masked client frames; feed binary PCM to ``transport`` until close."""
+        buf = b""
+        while not transport.closed:
+            try:
+                chunk = sock.recv(65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                try:
+                    decoded = ws_frame.decode_frame(buf)
+                except ValueError:
+                    return  # protocol violation -> drop the connection
+                if decoded is None:
+                    break  # need more bytes
+                frame, consumed = decoded
+                buf = buf[consumed:]
+                if frame.opcode == ws_frame.OP_CLOSE:
+                    return
+                if frame.opcode == ws_frame.OP_BINARY:
+                    transport.feed_mic(frame.payload)
+
+    @staticmethod
+    def _ws_send_loop(sock: Any, transport: WebSocketTransport) -> None:
+        """Frame the transport's outbound TTS PCM back to the browser as binary."""
+        while not transport.closed:
+            data = transport.iter_outbound(timeout=0.1)
+            if not data:
+                continue
+            try:
+                sock.sendall(ws_frame.encode_frame(data, opcode=ws_frame.OP_BINARY))
+            except OSError:
+                transport.close()
+                return
 
     def run_turn_async(self, text: str) -> None:
         """Run a turn in a worker thread (ignores overlapping requests)."""
