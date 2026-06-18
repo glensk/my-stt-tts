@@ -3,7 +3,7 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey)
-![Status](https://img.shields.io/badge/status-planning-orange)
+![Status](https://img.shields.io/badge/status-prototype-brightgreen)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 A hand-wired, low-latency **voice assistant that runs on a MacBook (Apple
@@ -11,8 +11,11 @@ Silicon)**: **wake word → speech-to-text → an LLM (streaming) → text-to-sp
 playback**, with **speaker identification** and **German / French / English**
 support. On-device STT/TTS; only transcribed text ever leaves the machine.
 
-> **Status: planning.** No code yet — the full design, locked decisions, latency
-> budget, phased roadmap, and risk register live in **[`PLAN.md`](PLAN.md)**.
+> **Status: working prototype.** Phases 0–6 are built and tested — push-to-talk,
+> typed, and wake-word modes; streaming; provider-agnostic brain (incl. no-API-key
+> Claude CLI); speaker ID; and "agent, …" dispatch. Design + roadmap: **[`PLAN.md`](PLAN.md)**.
+
+**🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
 
 ## Why this exists
 
