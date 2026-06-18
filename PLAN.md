@@ -11,18 +11,55 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
-## Build status (2026-06-19)
+## Build status (2026-06-19) — round-2 conversation gaps (R2-1/2/3/4/6)
 
-**Phase 7 — natural conversation (this session):** interruptible spoken dialogue.
+**Phase 7 round 2 — closing the pipecat gaps (this session):**
+
+- **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` protocol +
+  three backends — `VoiceProcessingEchoCanceller` (macOS **hardware** AEC via
+  `AVAudioEngine`/`VoiceProcessingIO` through PyObjC; the `aec` extra installs on
+  arm64 and the API is live), a pure-numpy **NLMS adaptive filter** (`NlmsEchoCanceller`,
+  ~19 dB ERLE in tests, no native deps, the cross-platform fallback), and a null
+  pass-through. `Playback` now carries its synthesized PCM as the AEC **reference**;
+  `audio.monitor_during_playback` feeds it to the canceller, processes every mic
+  frame before VAD, and **relaxes the energy floor when AEC is active**. `aec_mode`
+  config (`off`/`nlms`/`voiceprocessing`/`auto`) + `--aec` flag + web UI.
+- **R2-2 — Bounded sliding-window streaming STT** (`stt.py`): replaced whole-buffer
+  re-decode with a `window_s`-bounded trailing re-decode stitched onto a committed
+  prefix (`stitch_partial` de-dupes word overlap). Per-partial decode is bounded
+  (≤ ~1.5× window) regardless of utterance length; `final()` still decodes the full
+  clip for accuracy. `stt_window_s` config + `--stt-window` flag + web UI.
+- **R2-3 — Acoustic interruption prediction** (`interrupt.py` `InterruptPredictor`):
+  a 3rd barge-in guard scoring sustained voiced energy + spectral flux + ZCR for
+  intent-to-take-the-floor; composes with the duration/word gate in the monitor
+  loop (either may fire), so it talks through backchannels but yields to a sustained
+  interruption before two words transcribe. `interrupt_predict*` config + flag + UI.
+- **R2-4 — Smart-turn by default** (`turn.py`): `turn_analyzer` now defaults to
+  **`smart`**; the Smart Turn v3 ONNX is **auto-downloaded on first run**
+  (`ensure_smart_turn_model`, mirroring `_ensure_piper_voice`), with a clean
+  fallback to silence when the model/runtime is genuinely unavailable.
+  `smart_turn_model_url` / `smart_turn_auto_download` config.
+- **R2-6 — Robust interrupt plumbing** (`events.py`, `__main__.py`): interruption is
+  now formalised as **bus events** (`interrupt_start`/`interrupt_stop`/
+  `bot_stopped_speaking`); on barge-in the captured audio is handed **straight into
+  the streaming transcriber** (`StreamingTranscriber.feed_clip`) for the next turn
+  instead of being re-transcribed from scratch.
+
+**101 tests passing (66 baseline + 35 new in `tests/test_round2.py`), lint-clean**
+(ruff/mypy/pylint) on every touched file. Caveats: hardware AEC enables the OS
+unit but capture still flows through `sounddevice`, so software NLMS does the
+in-Python cancellation when the HAL path isn't wired end-to-end; the Smart Turn
+download is mocked in tests (not exercised against the live network). Still pending:
+network transport (R2-5/G7) and cloud-backend breadth + tool-calling (R2-7).
+
+### Round-1 (prior session)
+
 Barge-in (G1, cancellable playback + live-mic VAD + LLM-stream cancel), Smart Turn
 v3 prosodic end-of-turn with silence fallback (G2), false-interrupt suppression
 (G4, min-words/min-duration gate), post-interruption context repair (G5,
 spoken-prefix history), and streaming STT partial transcripts (G6). New config
 knobs (`barge_in`, `interrupt_min_*`, `turn_analyzer`, `smart_turn_*`,
 `stt_streaming`) with env + CLI overrides, surfaced in `--settings` and the web UI.
-**66 tests passing, lint-clean** (ruff/mypy/pylint). Still pending: full AEC (G3 —
-needs the Swift `VoiceProcessingIO` front-end; until then barge-in is reliable on
-headphones / energy-gated on open speakers) and network transport (G7).
 
 ## Build status (2026-06-17)
 
@@ -252,15 +289,18 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
 - [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
-### Phase 7 — Barge-in & native audio ◑ barge-in/smart-turn/false-interrupt/context-repair done; AEC + transport pending
+### Phase 7 — Barge-in & native audio ◑ round-2 closed AEC/streaming-STT/interrupt-prediction/smart-turn-default/interrupt-plumbing; transport + tools pending
 
 - [x] **Barge-in** (G1): cancellable TTS playback (`tts.Playback` kills the `afplay`/`say` subprocess mid-utterance; `TTSRouter.start_speaking`), mic kept LIVE during playback (`audio.monitor_during_playback`), in-flight LLM stream cancelled (generator `.close()`), `bus.interrupted(...)` event for the UI. Configurable `barge_in` mode (`off`/`headphones`/`always`) + energy gate (`barge_in_energy`) for open-speaker bleed.
-- [x] **Smart-turn / prosodic end-of-turn** (G2): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). Selected by `turn_analyzer` config.
+- [x] **Smart-turn / prosodic end-of-turn** (G2 + R2-4): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). **Now the DEFAULT** `turn_analyzer`, with the ONNX **auto-downloaded on first run** (`ensure_smart_turn_model`).
 - [x] **False-interrupt suppression** (G4): `interrupt.InterruptGate` — min speech duration AND/OR min word count (pipecat `MinWords` equivalent) so backchannels/coughs/TV don't abort the assistant. Thresholds in config (`interrupt_min_speech_ms`, `interrupt_min_words`).
 - [x] **Post-interruption context repair** (G5): track voiced prefix; `Brain.commit_spoken()` stores only what was actually spoken (dropping the assistant turn if nothing was voiced) — fixed the `finally`-block full-append.
-- [x] **Streaming STT** (G6, bonus from Phase 4 group): `stt.StreamingTranscriber` re-transcribes the growing buffer and emits `bus.transcript(text, partial=True)` during the turn; finalises on end-of-turn. Toggle via `stt_streaming`.
-- [ ] **G3 — full AEC**: Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python. **Still pending** — until then barge-in needs headphones (or the energy gate on open speakers) to avoid self-trigger.
-- [ ] **G7 — network transport**: move audio over the wire (WebRTC/WebSocket) for whole-house satellites. **Still pending.**
+- [x] **Streaming STT** (G6 + R2-2): `stt.StreamingTranscriber` emits `bus.transcript(text, partial=True)` during the turn; finalises on end-of-turn. Now uses a **bounded sliding-window** re-decode (`stt_window_s`) stitched onto a committed prefix (`stitch_partial`) so latency/CPU don't grow with utterance length. Toggle via `stt_streaming`.
+- [x] **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` seam + macOS hardware `VoiceProcessingEchoCanceller` (PyObjC `aec` extra) + pure-numpy `NlmsEchoCanceller` (~19 dB ERLE) + null. `Playback` carries the synthesized PCM reference; the monitor loop cancels per-frame and relaxes the energy floor when AEC is active. `aec_mode` config + `--aec`.
+- [x] **R2-3 — Acoustic interruption prediction** (`interrupt.InterruptPredictor`): a 3rd, purely-acoustic barge-in guard (sustained voiced energy + spectral flux + ZCR) composed with the gate so a real interruption wins before two words transcribe while backchannels are talked through. `interrupt_predict*` config + `--no-interrupt-predict`.
+- [x] **R2-6 — Robust interrupt plumbing**: interruption formalised as bus events (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`); captured barge-in audio fed straight into the streaming transcriber (`feed_clip`) — no from-scratch re-transcribe.
+- [ ] **G3 — full hardware-AEC path end-to-end**: route the `VoiceProcessingIO`-cancelled PCM into the Python capture path (today capture is `sounddevice`; software NLMS does the in-Python cancellation). **Partially done (R2-1).**
+- [ ] **G7 / R2-5 — network transport**: move audio over the wire (WebRTC/WebSocket) for whole-house satellites. **Still pending.**
 - [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
 - [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 

@@ -46,8 +46,14 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
 
 - Decisions + roadmap → `PLAN.md`
 - Per-stage code → `src/my_stt_tts/{audio,wake,stt,speaker_id,brain,tts,chimes,metrics}.py`
-- Conversation (Phase 7) → `turn.py` (end-of-turn analyzers), `interrupt.py`
-  (false-interrupt gate). Barge-in lives in `audio.monitor_during_playback` +
-  `tts.Playback`; context repair in `brain.commit_spoken`.
+- Conversation (Phase 7) → `turn.py` (end-of-turn analyzers; smart-turn is the
+  default and auto-downloads via `ensure_smart_turn_model`), `interrupt.py`
+  (false-interrupt `InterruptGate` + acoustic `InterruptPredictor`), `aec.py`
+  (echo cancellation: `EchoCanceller` protocol, hardware `VoiceProcessingEchoCanceller`,
+  software `NlmsEchoCanceller`). Barge-in lives in `audio.monitor_during_playback`
+  (which runs the AEC + predictor) + `tts.Playback` (carries the AEC reference PCM);
+  context repair in `brain.commit_spoken`. Interruption is published as bus events
+  (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`) and the captured
+  barge-in audio is fed straight into `StreamingTranscriber.feed_clip`.
 - Private/local notes → `CLAUDE.local.md` (gitignored); `CLAUDE.md` is a gitignored
   shim that imports this file.

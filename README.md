@@ -15,10 +15,12 @@ support. On-device STT/TTS; only transcribed text ever leaves the machine.
 > typed, and wake-word modes; streaming; provider-agnostic brain (incl. no-API-key
 > Claude CLI); speaker ID; "agent, …" dispatch; and **natural interruptible
 > conversation** — barge-in (cancel speech mid-sentence), Smart Turn v3 prosodic
-> end-of-turn, false-interrupt suppression, context repair, and streaming STT.
-> Full acoustic echo cancellation (so barge-in works on open speakers without
-> headphones) and network transport are the remaining Phase 7/8 items. Design +
-> roadmap: **[`PLAN.md`](PLAN.md)**.
+> end-of-turn (**default**, auto-downloaded on first run), false-interrupt
+> suppression with an acoustic interruption predictor, context repair, bounded
+> sliding-window streaming STT, and **acoustic echo cancellation** (`--aec`:
+> macOS hardware `VoiceProcessingIO`, or a software NLMS filter) so barge-in
+> works on open speakers, not just headphones. Network transport is the remaining
+> Phase 7/8 item. Design + roadmap: **[`PLAN.md`](PLAN.md)**.
 
 **🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
 **🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)** — the live `--browser` GUI (in demo mode).
@@ -53,8 +55,8 @@ flowchart LR
 | LLM            | Any provider — Anthropic (default), OpenAI, Ollama, local; streaming | Pluggable via OpenAI-compatible API; Haiku→Opus deep path; MCP-ready |
 | Text-to-speech | Piper (DE/FR/EN) · Kokoro (EN) · `say` fallback | Only local engine strong in German *and* fast on M1 |
 | Confirmations  | short **chimes**, not spoken phrases          | Spoken stage cues add ~6 s/query; chimes are language-neutral |
-| Turn-taking    | push-to-talk → Silero VAD → Smart Turn v3     | Deterministic first, then voice-activated, then prosody-aware (`--turn-analyzer smart`) |
-| Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate; headphones (or energy gate) until AEC lands |
+| Turn-taking    | push-to-talk → Silero VAD → Smart Turn v3     | Smart Turn v3 prosody is the **default** (`--turn-analyzer`, auto-downloaded on first run); falls back to a silence timer if the model/runtime is unavailable |
+| Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate **+ acoustic interruption predictor**; **AEC** (`--aec`) removes the bot's own voice so it works on open speakers |
 
 ## LLM provider
 
@@ -82,9 +84,10 @@ uv tool install piper-tts           # Piper CLI for DE/FR/EN TTS (GPL; run as a 
 export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .env.example)
 ./mstt                              # push-to-talk loop (runs the venv directly; --debug for cues)
 
-# Natural conversation: interrupt the assistant mid-sentence (use headphones until
-# AEC lands), prosodic end-of-turn, and partial transcripts as you speak:
-./mstt --wake --barge-in headphones --turn-analyzer smart --stt-streaming
+# Natural conversation: interrupt the assistant mid-sentence on OPEN speakers
+# (AEC removes the bot's own voice), prosodic end-of-turn (default), and partial
+# transcripts as you speak:
+./mstt --wake --barge-in always --aec auto --stt-streaming
 
 # No API key? Stripped + isolated Claude CLI (no API cost, keeps a session, ~2s/turn):
 ./mstt --brain haiku-sub --type     # typed input -> spoken replies
