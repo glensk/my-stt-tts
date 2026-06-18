@@ -89,8 +89,12 @@ def test_gate_reset_clears_state():
 
 
 def _streamed_brain(reply_parts: list[str]) -> Brain:
-    """A Brain whose backend yields ``reply_parts`` (no network)."""
-    brain = Brain(Config(llm_provider="anthropic", anthropic_api_key="x"))
+    """A Brain whose backend yields ``reply_parts`` (no network).
+
+    Tools are disabled so this exercises the plain (no-tool-use) streaming path —
+    the tool-call round-trip is covered separately in ``tests/test_tools.py``.
+    """
+    brain = Brain(Config(llm_provider="anthropic", anthropic_api_key="x", tools_enabled=False))
     brain._stream_anthropic = lambda model: iter(reply_parts)  # type: ignore[assignment]
     return brain
 
