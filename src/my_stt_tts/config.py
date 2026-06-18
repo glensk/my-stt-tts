@@ -12,6 +12,17 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Barge-in safety modes (see Config.barge_in). Without acoustic echo cancellation
+# (AEC) an open speaker bleeds into the mic, so interruption is opt-in:
+#   off         — half-duplex: mic is gated shut during playback (legacy behaviour)
+#   headphones  — barge-in ON; safe because headphones don't leak into the mic
+#   always      — barge-in ON even on open speakers (relies on the energy gate;
+#                 may self-trigger without AEC — documented caveat)
+BARGE_IN_MODES = ("off", "headphones", "always")
+
+# End-of-turn analyzer choices (see turn.py).
+TURN_ANALYZERS = ("silence", "smart")
+
 # Friendly one-word brain presets -> (provider, model).
 # "-sub" uses your Claude subscription via the Claude Code CLI (no API key); the
 # bare aliases haiku/sonnet/opus resolve to the latest version automatically.
@@ -100,8 +111,33 @@ class Config:
     vad_silence_seconds: float = 0.7
     mic_gate_tail_seconds: float = 0.2
 
+    # --- Barge-in / interruption (Phase 7) ---
+    # Keep the mic live during playback and abort TTS + the in-flight LLM stream
+    # on confirmed user speech. `barge_in` is the master switch (see BARGE_IN_MODES).
+    barge_in: str = "off"
+    # Ignore playback bleed: a frame only counts as a barge-in candidate when its
+    # RMS energy clears this floor (0..1, float32 mono). Tuned to reject the
+    # low-level speaker leak heard by an open mic without AEC.
+    barge_in_energy: float = 0.02
+    # False-interrupt suppression (pipecat MinWords equivalent): an interruption
+    # is only honoured once the user has spoken for at least this long AND/OR
+    # produced at least this many words. Backchannels / coughs / TV stay ignored.
+    interrupt_min_speech_ms: float = 350.0
+    interrupt_min_words: int = 2
+
+    # --- End-of-turn analysis (Phase 4/7) ---
+    # "silence": fixed silence timer (always available). "smart": Smart Turn v3
+    # prosodic model with graceful fallback to silence when the model is absent.
+    turn_analyzer: str = "silence"
+    smart_turn_model_path: str = "models/smart-turn-v3.1.onnx"
+    smart_turn_threshold: float = 0.5
+
     # --- STT ---
     stt_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    # Incremental STT: emit partial transcripts by re-transcribing the growing
+    # audio buffer during the turn (lower perceived latency); final on end-of-turn.
+    stt_streaming: bool = False
+    stt_partial_interval_ms: float = 600.0
 
     # --- TTS (per-language voice maps; Piper voice ids and macOS `say` voices) ---
     default_language: str = "en"
@@ -144,12 +180,24 @@ class Config:
             wake_model_path=env.get("WAKE_MODEL_PATH", "wakewords/maziko.onnx"),
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
+            barge_in=env.get("BARGE_IN", "off"),
+            turn_analyzer=env.get("TURN_ANALYZER", "silence"),
+            smart_turn_model_path=env.get("SMART_TURN_MODEL_PATH", "models/smart-turn-v3.1.onnx"),
+            stt_streaming=_env_bool("STT_STREAMING", default=False),
             debug=_env_bool("DEBUG", default=False),
         )
         if env.get("TTS_VOICE_EN"):
             cfg.tts_voices["en"] = env["TTS_VOICE_EN"]
         if env.get("TTS_LENGTH_SCALE"):
             cfg.tts_length_scale = float(env["TTS_LENGTH_SCALE"])
+        if env.get("BARGE_IN_ENERGY"):
+            cfg.barge_in_energy = float(env["BARGE_IN_ENERGY"])
+        if env.get("INTERRUPT_MIN_WORDS"):
+            cfg.interrupt_min_words = int(env["INTERRUPT_MIN_WORDS"])
+        if env.get("INTERRUPT_MIN_SPEECH_MS"):
+            cfg.interrupt_min_speech_ms = float(env["INTERRUPT_MIN_SPEECH_MS"])
+        if env.get("SMART_TURN_THRESHOLD"):
+            cfg.smart_turn_threshold = float(env["SMART_TURN_THRESHOLD"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -177,5 +225,21 @@ class Config:
             errors.append(f"speaker_threshold must be in (0, 1); got {self.speaker_threshold}")
         if self.requests_per_minute <= 0:
             errors.append(f"requests_per_minute must be > 0; got {self.requests_per_minute}")
+        if self.barge_in not in BARGE_IN_MODES:
+            errors.append(f"barge_in must be one of {BARGE_IN_MODES}; got {self.barge_in!r}")
+        if self.turn_analyzer not in TURN_ANALYZERS:
+            errors.append(
+                f"turn_analyzer must be one of {TURN_ANALYZERS}; got {self.turn_analyzer!r}"
+            )
+        if not 0.0 <= self.smart_turn_threshold <= 1.0:
+            errors.append(
+                f"smart_turn_threshold must be in [0, 1]; got {self.smart_turn_threshold}"
+            )
+        if self.interrupt_min_words < 0:
+            errors.append(f"interrupt_min_words must be >= 0; got {self.interrupt_min_words}")
+        if self.interrupt_min_speech_ms < 0:
+            errors.append(
+                f"interrupt_min_speech_ms must be >= 0; got {self.interrupt_min_speech_ms}"
+            )
         if errors:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(errors))
