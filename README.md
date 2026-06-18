@@ -19,8 +19,10 @@ support. On-device STT/TTS; only transcribed text ever leaves the machine.
 > suppression with an acoustic interruption predictor, context repair, bounded
 > sliding-window streaming STT, and **acoustic echo cancellation** (`--aec`:
 > macOS hardware `VoiceProcessingIO`, or a software NLMS filter) so barge-in
-> works on open speakers, not just headphones. Network transport is the remaining
-> Phase 7/8 item. Design + roadmap: **[`PLAN.md`](PLAN.md)**.
+> works on open speakers, not just headphones. Now also **network audio transport**
+> (`--transport websocket`) for whole-house satellites + real browser audio, and
+> **in-conversation tool/function calling** (the model calls tools mid-reply) with
+> an **optional cloud STT/TTS backend** (local-first). Design + roadmap: **[`PLAN.md`](PLAN.md)**.
 
 **🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
 **🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)** — the live `--browser` GUI (in demo mode).
@@ -57,6 +59,8 @@ flowchart LR
 | Confirmations  | short **chimes**, not spoken phrases          | Spoken stage cues add ~6 s/query; chimes are language-neutral |
 | Turn-taking    | push-to-talk → Silero VAD → Smart Turn v3     | Smart Turn v3 prosody is the **default** (`--turn-analyzer`, auto-downloaded on first run); falls back to a silence timer if the model/runtime is unavailable |
 | Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate **+ acoustic interruption predictor**; **AEC** (`--aec`) removes the bot's own voice so it works on open speakers |
+| Transport      | local sound card · **WebSocket** (`--transport`) | `AudioTransport` seam: mic/TTS PCM over the wire for whole-house satellites + real browser audio (R2-5) |
+| Tools          | in-conversation **function calling** (`tools.py`) | Model calls tools mid-reply (get_time, calculator, home_control); Anthropic + OpenAI round-trip; legacy "agent, …" still works (R2-7) |
 
 ## LLM provider
 
@@ -70,6 +74,47 @@ LM Studio, or a local server. Select it via `.env` (see `.env.example`):
 | `LLM_MODEL`      | `claude-haiku-4-5`             | fast-path model id |
 | `LLM_MODEL_DEEP` | `claude-opus-4-8`              | optional "deep" model |
 | `LLM_BASE_URL`   | `http://localhost:11434/v1`    | for OpenAI-compatible / local servers |
+
+## Network audio transport (R2-5)
+
+By default the loop owns the local mic + speaker. An `AudioTransport` seam
+(`transport.py`) lets it instead source mic audio and sink TTS audio **over the
+wire**, so it can serve a whole-house satellite or a remote browser while the
+STT/LLM/TTS pipeline stays on one machine. `LocalTransport` (sounddevice) is the
+default; `WebSocketTransport` carries int16 PCM frames over a WebSocket.
+
+```bash
+# Host: run the pipeline as a WebSocket audio server (needs the `transport` extra)
+uv sync --extra all                  # `all` now includes the transport extra
+./mstt --transport websocket --transport-port 8770   # optional: --transport-token <secret>
+
+# Satellite (another room / a Pi): stream its mic up, play TTS back
+python -m my_stt_tts.satellite ws://192.168.1.10:8770          # --token <secret> if set
+```
+
+**Browser audio.** With `--browser --browser-audio`, the GUI's *Live Audio* button
+captures your real mic via `getUserMedia`, streams 16 kHz PCM to a **same-origin**
+WebSocket (`/ws/audio`, so the page's strict CSP `connect-src 'self'` allows it),
+and plays the TTS PCM streamed back — the page now carries real audio, not just
+state. Without `--browser-audio` the GUI stays state/transcript only (and falls
+back to the scripted demo offline). The WebSocket framing is hand-rolled on the
+stdlib `http.server` (`ws_frame.py`) so the GUI keeps zero runtime web deps.
+
+## In-conversation tools + cloud backends (R2-7)
+
+The brain supports **function/tool calling mid-conversation** (`tools.py`): the
+model emits a tool call, the loop executes it, feeds the result back, and continues
+streaming the spoken answer — the Anthropic *and* OpenAI tool-use round-trips are
+both implemented. Shipped example tools: `get_time`, a safe `calculator`, and
+`home_control` (routes to the existing agent / Home Assistant dispatch). The legacy
+`"agent, …"` trigger still works; this is the inline upgrade. Toggle with
+`TOOLS_ENABLED`.
+
+An **optional cloud STT/TTS backend** sits behind the existing seams (`STT_BACKEND` /
+`TTS_BACKEND` = `local`|`cloud`) — useful for a high-quality cloud **German** voice,
+since local German TTS is the weak spot. It is **local-first**: cloud is selected
+only when a key is present, and degrades gracefully to on-device otherwise. Both
+speak an OpenAI-compatible API; no secrets are hard-coded (see `.env.example`).
 
 ## Install
 

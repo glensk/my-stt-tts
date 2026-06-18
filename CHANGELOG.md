@@ -8,6 +8,19 @@ may still change.
 
 ### Added
 
+- **Network audio transport (R2-5)**: an `AudioTransport` seam (`transport.py`) —
+  `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a `websockets`
+  server (`ws_transport.py`, the `transport` extra) that bridges remote clients into
+  the pipeline (`net_loop.run_transport_session`); a `satellite.py` mic+speaker
+  client (`python -m my_stt_tts.satellite ws://HOST:PORT`); and **real browser audio**
+  in the GUI (`getUserMedia` → 16 kHz PCM over a same-origin `/ws/audio` WebSocket,
+  TTS PCM streamed back) via a stdlib RFC-6455 codec (`ws_frame.py`). `--transport`,
+  `--transport-port`, `--transport-token`, `--browser-audio` flags.
+- **In-conversation tool/function calling (R2-7)**: `tools.py` (`ToolRegistry` →
+  Anthropic + OpenAI schemas; `get_time`, `calculator`, `home_control`) with the full
+  tool-use round-trip wired into `Brain.stream` for both providers. Optional,
+  local-first cloud STT (`CloudTranscriber`) + cloud TTS (`CloudTTS`) behind the
+  seams. `TOOLS_ENABLED`, `STT_BACKEND`, `TTS_BACKEND` config.
 - Core voice loop (Phases 0–3): `config` + threaded `spine` + per-turn `metrics`;
   push-to-talk and typed (`--type`/`--text`) modes; `parakeet-mlx` STT;
   provider-agnostic streaming brain; Piper / macOS `say` TTS with per-language

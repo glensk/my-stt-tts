@@ -45,12 +45,41 @@ Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; thi
   the streaming transcriber** (`StreamingTranscriber.feed_clip`) for the next turn
   instead of being re-transcribed from scratch.
 
-**101 tests passing (66 baseline + 35 new in `tests/test_round2.py`), lint-clean**
-(ruff/mypy/pylint) on every touched file. Caveats: hardware AEC enables the OS
-unit but capture still flows through `sounddevice`, so software NLMS does the
-in-Python cancellation when the HAL path isn't wired end-to-end; the Smart Turn
-download is mocked in tests (not exercised against the live network). Still pending:
-network transport (R2-5/G7) and cloud-backend breadth + tool-calling (R2-7).
+**Phase 7 round 3 — network transport + tool calling (this session):**
+
+- **R2-5 — Network audio transport** (`transport.py`, `ws_transport.py`,
+  `net_loop.py`, `satellite.py`, `ws_frame.py`, browser audio): an `AudioTransport`
+  seam (PCM frames in/out + control) with `LocalTransport` (sounddevice, default)
+  and a `WebSocketTransport`. A real `websockets` server (`serve_websocket` /
+  `WsSession`, the `transport` extra) accepts remote mic PCM and streams TTS PCM
+  back, driving the existing pipeline via `run_transport_session` (capture →
+  streaming STT → Brain → TTS-to-PCM sink). A **satellite** client
+  (`python -m my_stt_tts.satellite ws://HOST:PORT`) captures mic + plays TTS over
+  the link. The **browser GUI** now carries REAL audio: `getUserMedia` → 16 kHz PCM
+  over a same-origin WebSocket (`/ws/audio`, CSP `connect-src 'self'`), TTS PCM
+  streamed back for Web-Audio playback — implemented on the stdlib `http.server`
+  with a hand-rolled RFC-6455 codec (`ws_frame.py`), so the GUI keeps zero web deps
+  and the demo fallback is intact. `transport` config + `--transport`/`--browser-audio`.
+- **R2-7 — In-conversation tool calling + cloud backends** (`tools.py`, `brain.py`,
+  `stt.py`, `tts.py`): a `Tool`/`ToolRegistry` that serializes to **both** Anthropic
+  and OpenAI wire formats, with the full tool-use round-trip wired into
+  `Brain.stream` (model requests a tool → executed → result fed back → final answer
+  streamed) for both providers. Example tools: `get_time`, a safe `calculator`
+  (AST-guarded), and `home_control` (routes to the agent / HA dispatch). The legacy
+  "agent, …" path still works. Optional **cloud STT** (`CloudTranscriber`) and **cloud
+  TTS** (`CloudTTS`, e.g. a high-quality German voice) sit behind the existing
+  seams — **local-first**, selected only when a key is present, graceful fallback
+  otherwise. `tools_enabled` / `stt_backend` / `tts_backend` config.
+
+**146 tests passing (101 baseline + 28 in `tests/test_transport.py` + 17 in
+`tests/test_tools.py`), lint-clean** (ruff/mypy/pylint) on every touched file.
+Verified live: a real `websockets` client handshakes, streams mic PCM, and receives
+TTS PCM back through the server end-to-end (STT/Brain/TTS faked). Caveats: hardware
+AEC enables the OS unit but capture still flows through `sounddevice`; the Smart
+Turn download and all provider/network/mic boundaries are mocked in tests; the
+WebSocket lib installed is `websockets` 16.0 (the `transport` extra). Pending: full
+WebRTC for the browser (the PCM channel is real and sufficient), and the broader
+Phase 8 whole-house / Home Assistant integration.
 
 ### Round-1 (prior session)
 
@@ -289,7 +318,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
 - [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
-### Phase 7 — Barge-in & native audio ◑ round-2 closed AEC/streaming-STT/interrupt-prediction/smart-turn-default/interrupt-plumbing; transport + tools pending
+### Phase 7 — Barge-in & native audio ◑ round-3 closed network transport (R2-5) + tool calling / cloud backends (R2-7); only the full HW-AEC HAL path + menubar packaging remain
 
 - [x] **Barge-in** (G1): cancellable TTS playback (`tts.Playback` kills the `afplay`/`say` subprocess mid-utterance; `TTSRouter.start_speaking`), mic kept LIVE during playback (`audio.monitor_during_playback`), in-flight LLM stream cancelled (generator `.close()`), `bus.interrupted(...)` event for the UI. Configurable `barge_in` mode (`off`/`headphones`/`always`) + energy gate (`barge_in_energy`) for open-speaker bleed.
 - [x] **Smart-turn / prosodic end-of-turn** (G2 + R2-4): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). **Now the DEFAULT** `turn_analyzer`, with the ONNX **auto-downloaded on first run** (`ensure_smart_turn_model`).
@@ -300,7 +329,8 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [x] **R2-3 — Acoustic interruption prediction** (`interrupt.InterruptPredictor`): a 3rd, purely-acoustic barge-in guard (sustained voiced energy + spectral flux + ZCR) composed with the gate so a real interruption wins before two words transcribe while backchannels are talked through. `interrupt_predict*` config + `--no-interrupt-predict`.
 - [x] **R2-6 — Robust interrupt plumbing**: interruption formalised as bus events (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`); captured barge-in audio fed straight into the streaming transcriber (`feed_clip`) — no from-scratch re-transcribe.
 - [ ] **G3 — full hardware-AEC path end-to-end**: route the `VoiceProcessingIO`-cancelled PCM into the Python capture path (today capture is `sounddevice`; software NLMS does the in-Python cancellation). **Partially done (R2-1).**
-- [ ] **G7 / R2-5 — network transport**: move audio over the wire (WebRTC/WebSocket) for whole-house satellites. **Still pending.**
+- [x] **G7 / R2-5 — network audio transport**: `AudioTransport` seam (`transport.py`) with `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a real `websockets` server (`ws_transport.serve_websocket`/`WsSession`, the `transport` extra) bridges remote clients into the pipeline via `net_loop.run_transport_session`; a `satellite.py` client streams mic up + plays TTS back; the **browser GUI carries real audio** (`getUserMedia` → 16 kHz PCM over a same-origin `/ws/audio` WebSocket, TTS PCM streamed back), implemented on the stdlib `http.server` with a hand-rolled RFC-6455 codec (`ws_frame.py`). `transport`/`transport_*` config + `--transport`/`--browser-audio`.
+- [x] **R2-7 — In-conversation tool calling + cloud backends**: `tools.ToolRegistry` (Anthropic + OpenAI schemas) + the full tool-use round-trip in `Brain.stream` for both providers (request → execute → feed result back → stream the answer); example tools `get_time`/`calculator`/`home_control` (→ agent/HA dispatch); legacy "agent, …" still works. Optional **local-first** cloud STT (`CloudTranscriber`) + cloud TTS (`CloudTTS`) behind the seams, key-gated with graceful fallback. `tools_enabled`/`stt_backend`/`tts_backend` config.
 - [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
 - [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 

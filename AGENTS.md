@@ -55,5 +55,14 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   context repair in `brain.commit_spoken`. Interruption is published as bus events
   (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`) and the captured
   barge-in audio is fed straight into `StreamingTranscriber.feed_clip`.
+- Network audio transport (R2-5) → `transport.py` (`AudioTransport` seam +
+  `LocalTransport` + PCM/handshake codecs), `ws_transport.py` (`WebSocketTransport`
+  - `serve_websocket`/`WsSession`, the `transport` extra), `net_loop.py`
+  (`run_transport_session` drives the pipeline over a transport), `satellite.py`
+  (the remote mic+speaker client), `ws_frame.py` (stdlib RFC-6455 framing for the
+  browser `/ws/audio` channel in `webui.py`).
+- Tool / function calling (R2-7) → `tools.py` (`ToolRegistry`, example tools); the
+  provider round-trip is in `brain.py` (`_stream_anthropic_tools`/`_stream_openai_tools`).
+  Optional cloud backends: `stt.CloudTranscriber` + `tts.CloudTTS` (local-first, key-gated).
 - Private/local notes → `CLAUDE.local.md` (gitignored); `CLAUDE.md` is a gitignored
   shim that imports this file.
