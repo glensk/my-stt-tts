@@ -51,6 +51,10 @@ Icon?
 # AI assistant private files (public conventions live in AGENTS.md)
 CLAUDE.md
 CLAUDE.local.md
+# transient: agent worktrees, local settings — never source
+.claude/
+# per-session churn, machine-local
+.claude-code-sessions
 
 # Voice enrollment profiles (private)
 enroll/

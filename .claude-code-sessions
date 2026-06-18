@@ -1,3 +1,0 @@
-# Claude Code session log (JSONL). Auto-maintained by auto-commit hook.
-# View: crr (claude-resume-repo.py) from repo root — interactive picker to resume sessions.
-{"session_id":"e7dfe88f-9001-4138-8cfc-1f8789653cc6","slug":"moonlit-booping-island","title":"","summary":"chore: bump 2 submodule pins","last_activity":"2026-06-18T21:53:02Z","files_modified":["README.md","docs/gui.html","src/my_stt_tts/__main__.py","src/my_stt_tts/events.py","src/my_stt_tts/webui.html","src/my_stt_tts/webui.py"],"turn_count":1}

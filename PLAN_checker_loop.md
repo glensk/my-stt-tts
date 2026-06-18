@@ -34,21 +34,25 @@ the orchestrator before re-checking.
 Reason: `my-stt-tts` is **half-duplex / non-interruptible** (mic gated shut during
 playback; barge-in, smart-turn, AEC all deferred to Phase 7). Gaps to close:
 
-- [ ] **G1 — True barge-in** (interruptible playback): keep mic live during TTS,
-  run VAD on it, abort the in-flight TTS subprocess + cancel the LLM stream on
-  confirmed user speech. (Playback must become a cancellable async task.)
-- [ ] **G2 — Smart-turn / prosodic endpointing**: a `TurnAnalyzer` (Smart Turn v3)
-  layered on VAD so end-of-turn is decided from intonation, not a fixed silence timer.
-- [ ] **G4 — False-interrupt suppression**: require a min word count / speech
-  duration before honoring an interruption (backchannels, coughs, TV).
-- [ ] **G5 — Post-interruption context repair**: store only the *spoken prefix* of
-  an interrupted reply in history (today `brain.py` appends the full reply).
-- [ ] **G6 — Streaming STT (partials)**: emit partial transcripts during speech
-  instead of transcribing the whole clip after the turn ends.
+- [x] **G1 — True barge-in** (interruptible playback): `tts.Playback` (killable
+  subprocess), `audio.monitor_during_playback()` (live mic + VAD during playback),
+  `__main__` aborts TTS + cancels the LLM stream on confirmed speech. `barge_in`
+  mode (`off`/`headphones`/`always`) + RMS floor for open-speaker bleed.
+- [x] **G2 — Smart-turn / prosodic endpointing** (`turn.py`): `TurnAnalyzer` protocol,
+  `SilenceTurnAnalyzer` fallback, `SmartTurnAnalyzer` (Smart Turn v3 ONNX) with
+  graceful fallback when the model/onnxruntime is absent.
+- [x] **G4 — False-interrupt suppression** (`interrupt.py` `InterruptGate`): opens
+  only after `min_speech_ms` and/or `min_words`; ignores backchannels/coughs.
+- [x] **G5 — Post-interruption context repair** (`brain.py`): `commit_spoken()`
+  truncates the assistant turn to the voiced prefix (drops it if nothing voiced).
+- [x] **G6 — Streaming STT (partials)** (`stt.py` `StreamingTranscriber`): emits
+  partials during speech via `bus.transcript(text, partial=True)`.
 - [ ] **G3 — AEC + noise suppression**: macOS `VoiceProcessingIO` / RNNoise so open
   speakers don't self-trigger (the unlock that makes G1 safe in a room). *(round 2)*
 - [ ] **G7 — Network audio transport**: WebRTC/WebSocket so a remote mic/speaker or
   browser client can carry audio, not just the local mic. *(round 2)*
 
-Current action: worktree-isolated implementer building the conversational core
-(G1, G2, G4, G5, G6). G3/G7 follow in a later round. Then a fresh round-2 checker.
+Merged at `e591b26` (4 commits, +1434 lines, new `interrupt.py`/`turn.py`/
+`tests/test_conversation.py`); **66 tests pass**, lint clean. Caveats: Smart Turn
+model not downloaded → silence fallback active; no AEC yet → barge-in best with
+headphones. **Next:** fresh round-2 checker (pipecat vs my-stt-tts) — does it flip?
