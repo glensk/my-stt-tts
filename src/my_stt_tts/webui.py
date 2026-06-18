@@ -17,7 +17,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .config import BARGE_IN_MODES, BRAIN_PRESETS, PROVIDERS, TURN_ANALYZERS, Config
+from .config import (
+    AEC_MODES,
+    BARGE_IN_MODES,
+    BRAIN_PRESETS,
+    PROVIDERS,
+    TURN_ANALYZERS,
+    Config,
+)
 from .events import bus
 from .tts import _VOICE_NOTES, VOICE_PRESETS
 
@@ -45,12 +52,16 @@ def settings_dict(cfg: Config) -> dict[str, Any]:
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
         "barge_in": cfg.barge_in,
+        "aec_mode": cfg.aec_mode,
         "turn_analyzer": cfg.turn_analyzer,
         "stt_streaming": cfg.stt_streaming,
+        "stt_window_s": cfg.stt_window_s,
         "interrupt_min_words": cfg.interrupt_min_words,
+        "interrupt_predict": cfg.interrupt_predict,
         "brain_presets": sorted(BRAIN_PRESETS),
         "providers": list(PROVIDERS),
         "barge_in_modes": list(BARGE_IN_MODES),
+        "aec_modes": list(AEC_MODES),
         "turn_analyzers": list(TURN_ANALYZERS),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
@@ -83,12 +94,18 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         cfg.system_prompt = str(data["system_prompt"])
     if "barge_in" in data:
         cfg.barge_in = str(data["barge_in"])
+    if "aec_mode" in data:
+        cfg.aec_mode = str(data["aec_mode"])
     if "turn_analyzer" in data:
         cfg.turn_analyzer = str(data["turn_analyzer"])
     if "stt_streaming" in data:
         cfg.stt_streaming = bool(data["stt_streaming"])
+    if "stt_window_s" in data:
+        cfg.stt_window_s = float(data["stt_window_s"])
     if "interrupt_min_words" in data:
         cfg.interrupt_min_words = int(data["interrupt_min_words"])
+    if "interrupt_predict" in data:
+        cfg.interrupt_predict = bool(data["interrupt_predict"])
 
 
 class _Handler(BaseHTTPRequestHandler):

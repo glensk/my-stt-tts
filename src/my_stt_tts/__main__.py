@@ -27,10 +27,18 @@ from typing import Any
 import numpy as np
 
 from . import audio, chimes
+from .aec import make_echo_canceller
 from .brain import Brain, LLMError
-from .config import BARGE_IN_MODES, BRAIN_PRESETS, TURN_ANALYZERS, Config, ConfigError
+from .config import (
+    AEC_MODES,
+    BARGE_IN_MODES,
+    BRAIN_PRESETS,
+    TURN_ANALYZERS,
+    Config,
+    ConfigError,
+)
 from .events import bus
-from .interrupt import InterruptGate
+from .interrupt import InterruptGate, make_interrupt_predictor
 from .metrics import TurnMetrics
 from .text import SentenceChunker, strip_non_spoken
 from .tts import VOICE_PRESETS, TTSRouter, list_voice_presets
@@ -58,9 +66,11 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  voice      en={blue}{cfg.tts_voices.get('en')}{reset}"
         f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
         f"  length-scale {cfg.tts_length_scale}",
-        f"  stt        {blue}{cfg.stt_model}{reset}  streaming {cfg.stt_streaming}",
-        f"  turn       barge-in {blue}{cfg.barge_in}{reset}  analyzer {cfg.turn_analyzer}"
-        f"  min-words {cfg.interrupt_min_words}",
+        f"  stt        {blue}{cfg.stt_model}{reset}  streaming {cfg.stt_streaming}"
+        f"  window {cfg.stt_window_s}s",
+        f"  turn       barge-in {blue}{cfg.barge_in}{reset}  aec {cfg.aec_mode}"
+        f"  analyzer {cfg.turn_analyzer}  min-words {cfg.interrupt_min_words}"
+        f"  predict {cfg.interrupt_predict}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
@@ -116,12 +126,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--turn-analyzer",
         choices=TURN_ANALYZERS,
-        help="End-of-turn detector: silence (timer) | smart (Smart Turn v3, falls back to silence).",
+        help="End-of-turn detector: smart (Smart Turn v3, default; auto-downloads, "
+        "falls back to silence) | silence (fixed timer).",
+    )
+    parser.add_argument(
+        "--aec",
+        dest="aec_mode",
+        choices=AEC_MODES,
+        help="Acoustic echo cancellation so barge-in works on open speakers: "
+        "off | nlms (software) | voiceprocessing (macOS HW) | auto.",
     )
     parser.add_argument(
         "--stt-streaming",
         action="store_true",
         help="Emit partial transcripts during the turn (incremental STT).",
+    )
+    parser.add_argument(
+        "--stt-window",
+        dest="stt_window_s",
+        type=float,
+        help="Seconds of trailing audio re-decoded per streaming partial (default 7).",
+    )
+    parser.add_argument(
+        "--no-interrupt-predict",
+        dest="interrupt_predict",
+        action="store_false",
+        default=None,
+        help="Disable the acoustic interruption predictor (3rd barge-in guard).",
     )
     parser.add_argument(
         "--list-voices", action="store_true", help="List the English voice presets and exit."
@@ -144,10 +175,16 @@ def _build_config(args: argparse.Namespace) -> Config:
         cfg.tts_voices["en"] = VOICE_PRESETS[args.voice]
     if args.barge_in:
         cfg.barge_in = args.barge_in
+    if args.aec_mode:
+        cfg.aec_mode = args.aec_mode
     if args.turn_analyzer:
         cfg.turn_analyzer = args.turn_analyzer
     if args.stt_streaming:
         cfg.stt_streaming = True
+    if args.stt_window_s is not None:
+        cfg.stt_window_s = args.stt_window_s
+    if args.interrupt_predict is not None:
+        cfg.interrupt_predict = args.interrupt_predict
     if args.debug:
         cfg.debug = True
     return cfg
@@ -167,6 +204,27 @@ class RespondResult:
 
     interrupted: bool = False
     captured: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+
+@dataclass
+class _BargeInCtx:
+    """Barge-in machinery shared across one reply's sentences (R2-1/3/4/6).
+
+    Bundles the VAD, the false-interrupt gate, the AEC front-end and the acoustic
+    interruption predictor so :func:`_voice_sentence` keeps a small signature and
+    the adaptive state (echo filter, predictor score) persists across sentences.
+    Half-duplex when ``vad`` / ``igate`` are None.
+    """
+
+    vad: object | None = None
+    igate: InterruptGate | None = None
+    aec: object | None = None
+    predictor: object | None = None
+
+    @property
+    def live(self) -> bool:
+        """True when the mic stays live during playback (barge-in is armed)."""
+        return self.vad is not None and self.igate is not None
 
 
 def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
@@ -201,14 +259,23 @@ def _respond(
     barge_in = cfg.barge_in != "off" and vad is not None
     voiced_chars = 0
     result = RespondResult()
+    frame_ms = 512 / cfg.sample_rate * 1000.0
     igate = (
         InterruptGate(
             min_speech_ms=cfg.interrupt_min_speech_ms,
             min_words=cfg.interrupt_min_words,
-            frame_ms=512 / cfg.sample_rate * 1000.0,
+            frame_ms=frame_ms,
         )
         if barge_in
         else None
+    )
+    # R2-1 AEC front-end + R2-3 acoustic interruption predictor, built once per
+    # reply and shared across its sentences so adaptation/scoring persists.
+    ctx = _BargeInCtx(
+        vad=vad if barge_in else None,
+        igate=igate,
+        aec=make_echo_canceller(cfg) if barge_in else None,
+        predictor=make_interrupt_predictor(cfg, frame_ms) if barge_in else None,
     )
     stream = brain.stream(text)
     try:
@@ -222,7 +289,7 @@ def _respond(
                     first = False
                 bus.response(delta, final=False)
                 for sentence in chunker.feed(delta):
-                    spoken_n, res = _voice_sentence(cfg, tts, gate, vad, igate, sentence)
+                    spoken_n, res = _voice_sentence(cfg, tts, gate, ctx, sentence)
                     voiced_chars += spoken_n
                     if res is not None and res.interrupted:
                         result = res
@@ -232,7 +299,7 @@ def _respond(
             else:
                 tail = chunker.flush()
                 if tail:
-                    spoken_n, res = _voice_sentence(cfg, tts, gate, vad, igate, tail)
+                    spoken_n, res = _voice_sentence(cfg, tts, gate, ctx, tail)
                     voiced_chars += spoken_n
                     if res is not None and res.interrupted:
                         result = res
@@ -267,28 +334,37 @@ def _voice_sentence(
     cfg: Config,
     tts: TTSRouter,
     gate: audio.MicGate,
-    vad: object | None,
-    igate: InterruptGate | None,
+    ctx: _BargeInCtx,
     sentence: str,
 ) -> tuple[int, RespondResult | None]:
     """Speak one sentence; return (chars actually voiced, barge-in result or None).
 
-    Half-duplex unless barge-in is active (``igate`` + ``vad`` present)."""
+    Half-duplex unless barge-in is armed (``ctx.live``). When armed, the mic stays
+    live with the AEC front-end + acoustic predictor (R2-1/R2-3) and interruption
+    is published as bus events (R2-6) so all stages flush consistently."""
     spoken = strip_non_spoken(sentence)
     if not spoken:
         return 0, None
     bus.state("speaking")
-    if igate is None or vad is None:
+    if not ctx.live:
         gate.gate()
         tts.speak(spoken)
         gate.release()
         return len(sentence), None
     playback = tts.start_speaking(spoken)
     res = audio.monitor_during_playback(
-        playback, cfg.sample_rate, vad, igate, energy_floor=cfg.barge_in_energy
+        playback,
+        cfg.sample_rate,
+        ctx.vad,
+        ctx.igate,
+        energy_floor=cfg.barge_in_energy,
+        aec=ctx.aec,
+        predictor=ctx.predictor,
     )
+    bus.bot_stopped_speaking()  # R2-6: playback ended (cancelled or finished)
     if res.interrupted:
         bus.state("interrupted")
+        bus.interrupt_start()  # R2-6: abort/flush downstream stages
         # Only the audio that played counts as voiced; approximate as the whole
         # sentence (it had started) — refined truncation is at sentence boundary.
         return len(sentence), RespondResult(interrupted=True, captured=res.captured)
@@ -305,6 +381,7 @@ def _maybe_streamer(cfg: Config, stt: object) -> Any:
         stt,  # type: ignore[arg-type]
         cfg.sample_rate,
         partial_interval_ms=cfg.stt_partial_interval_ms,
+        window_s=cfg.stt_window_s,
     )
 
 
@@ -332,6 +409,36 @@ def _transcribe(cfg: Config, stt: object, clip: np.ndarray) -> str:
     return str(stt.transcribe(clip, cfg.sample_rate).text).strip()  # type: ignore[attr-defined]
 
 
+def _transcribe_barge_in(cfg: Config, stt: object, clip: np.ndarray) -> str:
+    """Transcribe a captured barge-in clip as the next turn's text (R2-6).
+
+    The audio captured *while the bot was speaking* is handed straight to the
+    streaming transcriber via ``feed_clip`` instead of being re-transcribed from
+    scratch, so the next turn does not pay an extra round-trip. Emits
+    ``interrupt_stop`` once the hand-off is done so all stages know it is safe to
+    resume from a clean state. Falls back to a one-shot transcribe when streaming
+    STT is off."""
+    if clip.size == 0:
+        bus.interrupt_stop()
+        return ""
+    bus.state("stt")
+    if cfg.stt_streaming:
+        from .stt import StreamingTranscriber
+
+        streamer = StreamingTranscriber(
+            stt,  # type: ignore[arg-type]
+            cfg.sample_rate,
+            partial_interval_ms=cfg.stt_partial_interval_ms,
+            window_s=cfg.stt_window_s,
+        )
+        streamer.feed_clip(clip)
+        text = str(streamer.final().text).strip()
+    else:
+        text = _transcribe(cfg, stt, clip)
+    bus.interrupt_stop()  # R2-6: hand-off complete; downstream may resume
+    return text
+
+
 def run_turn(
     cfg: Config,
     brain: Brain,
@@ -353,8 +460,9 @@ def run_turn(
         result = _respond(cfg, brain, tts, gate, text, vad=active_vad)
         if not result.interrupted:
             return
-        # User barged in: their new turn's audio was captured; transcribe + loop.
-        text = _transcribe(cfg, stt, result.captured) if stt is not None else ""
+        # User barged in: their captured audio is handed straight to the streaming
+        # transcriber (no from-scratch re-transcribe) as the next turn (R2-6).
+        text = _transcribe_barge_in(cfg, stt, result.captured) if stt is not None else ""
 
 
 def run_wake_loop(
@@ -409,11 +517,14 @@ def run_wake_loop(
             if not text:
                 break
             result = _respond(cfg, brain, tts, gate, text, vad=barge_vad)
-            if result.interrupted:
-                # Re-capture / transcribe the barge-in audio as the next turn.
-                text = _transcribe(cfg, stt, result.captured)
-                if text:
-                    _respond(cfg, brain, tts, gate, text, vad=barge_vad)
+            while result.interrupted:
+                # Hand the captured barge-in audio straight to the transcriber as
+                # the next turn (no from-scratch re-transcribe, R2-6), and keep
+                # chaining if the new reply is itself interrupted.
+                text = _transcribe_barge_in(cfg, stt, result.captured)
+                if not text:
+                    break
+                result = _respond(cfg, brain, tts, gate, text, vad=barge_vad)
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
 

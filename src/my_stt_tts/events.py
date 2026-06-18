@@ -83,6 +83,25 @@ class EventBus:
         characters were actually voiced (G1)."""
         self.publish({"type": "barge_in", "spoken_chars": spoken_chars})
 
+    # --- interruption lifecycle (R2-6): formalised as bus events so the chunker,
+    # TTS queue and partial-STT state flush consistently, without per-sentence
+    # coupling. Every stage can subscribe and react.
+
+    def interrupt_start(self) -> None:
+        """The user has been confirmed as taking the floor; abort TTS + the LLM
+        stream. Stages should stop producing/queuing speech immediately (R2-6)."""
+        self.publish({"type": "interrupt", "phase": "start"})
+
+    def interrupt_stop(self) -> None:
+        """The interruption has been handled and the captured audio handed off; it
+        is safe for stages to resume from a clean state (R2-6)."""
+        self.publish({"type": "interrupt", "phase": "stop"})
+
+    def bot_stopped_speaking(self) -> None:
+        """Playback for the current reply has ended (cancelled or completed). The
+        chunker and TTS queue should flush any residual state (R2-6)."""
+        self.publish({"type": "bot_stopped_speaking"})
+
     def log(self, message: str, level: str = "info") -> None:
         self.publish({"type": "log", "level": level, "message": message})
 
