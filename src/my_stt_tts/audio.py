@@ -8,6 +8,7 @@ buffer and gate logic are pure and unit-tested. The streaming helpers
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -185,6 +186,8 @@ def monitor_during_playback(
     energy_floor: float = 0.0,
     poll_seconds: float = 0.05,
     frame_samples: int = 512,
+    aec: Any = None,
+    predictor: Any = None,
 ) -> BargeInResult:
     """Keep the mic LIVE while ``playback`` runs, abort it on confirmed speech.
 
@@ -194,6 +197,17 @@ def monitor_during_playback(
     an interruption, ``playback.cancel()`` is called and the captured speech (from
     the first voiced frame onward) is returned for the user's new turn. If
     playback finishes first, returns ``interrupted=False``.
+
+    ``aec`` (an :class:`~my_stt_tts.aec.EchoCanceller`, R2-1) is fed the playback
+    reference signal and run on each mic frame so the assistant's own voice is
+    removed before VAD — this is what makes barge-in work on open speakers. When
+    the canceller is active the ``energy_floor`` is relaxed (echo is already gone),
+    so genuine speech below the open-speaker-bleed floor is no longer suppressed.
+
+    ``predictor`` (an :class:`~my_stt_tts.interrupt.InterruptPredictor`, R2-3) scores
+    each cancelled frame for *intent to take the floor* and composes its verdict
+    with the gate, so a sustained real interruption can win even before two words
+    transcribe while backchannels still talk through.
 
     This replaces half-duplex gating: the mic stays open the whole time.
     """
@@ -206,6 +220,14 @@ def monitor_during_playback(
         frames_q.put(indata[:, 0].copy())
 
     gate.reset()
+    if aec is not None:
+        aec.reset()
+        _seed_aec_reference(aec, playback, sample_rate)
+    if predictor is not None:
+        predictor.reset()
+    # With echo cancelled by an active AEC, the bleed floor is no longer needed;
+    # relax it so real (possibly quiet) speech is not gated out as bleed.
+    effective_floor = 0.0 if (aec is not None and getattr(aec, "active", False)) else energy_floor
     captured: list[np.ndarray] = []
     with sd.InputStream(
         samplerate=sample_rate,
@@ -219,16 +241,38 @@ def monitor_during_playback(
                 frame = frames_q.get(timeout=poll_seconds)
             except queue.Empty:
                 continue
-            loud_enough = frame_energy(frame) >= energy_floor
-            is_speech = loud_enough and vad.is_speech(frame)
+            clean = aec.process(frame) if aec is not None else frame
+            loud_enough = frame_energy(clean) >= effective_floor
+            is_speech = loud_enough and vad.is_speech(clean)
             if is_speech or captured:
-                captured.append(frame)  # buffer from the first voiced frame on
-            if gate.update(is_speech):
+                captured.append(clean)  # buffer the echo-cancelled, voiced audio
+            predicted = predictor.update(clean, is_speech) if predictor is not None else False
+            if gate.update(is_speech) or predicted:
                 playback.cancel()
                 clip = np.concatenate(captured) if captured else np.zeros(0, dtype=np.float32)
                 return BargeInResult(interrupted=True, captured=clip)
     playback.wait()
     return BargeInResult(interrupted=False)
+
+
+def _seed_aec_reference(aec: Any, playback: Any, sample_rate: int) -> None:
+    """Prime the echo canceller with the playback's reference PCM, if any (R2-1).
+
+    Software AEC needs the played-back signal to subtract; ``Playback`` exposes it
+    as ``.reference`` (resampled to ``sample_rate`` by nearest-sample decimation if
+    the player ran at a different rate). Best-effort: never raises.
+    """
+    ref = getattr(playback, "reference", None)
+    if ref is None:
+        return
+    ref = np.asarray(ref, dtype=np.float32).ravel()
+    ref_sr = getattr(playback, "reference_sr", None) or sample_rate
+    if ref_sr != sample_rate and ref.size:
+        idx = (np.arange(int(ref.size * sample_rate / ref_sr)) * ref_sr / sample_rate).astype(int)
+        idx = idx[idx < ref.size]
+        ref = ref[idx]
+    with contextlib.suppress(Exception):
+        aec.push_reference(ref)
 
 
 def record_turn(

@@ -23,6 +23,20 @@ BARGE_IN_MODES = ("off", "headphones", "always")
 # End-of-turn analyzer choices (see turn.py).
 TURN_ANALYZERS = ("silence", "smart")
 
+# Acoustic echo cancellation modes (see aec.py). Removes the assistant's own TTS
+# from the mic so barge-in works on open speakers, not just headphones:
+#   off             — no AEC (legacy; barge-in reliable only with headphones)
+#   nlms            — pure-numpy adaptive filter referencing the played signal
+#   voiceprocessing — macOS hardware AEC (AVAudioEngine VoiceProcessingIO), NLMS fallback
+#   auto            — hardware AEC if available, else NLMS (recommended default)
+AEC_MODES = ("off", "nlms", "voiceprocessing", "auto")
+
+# Smart Turn v3 ONNX model: auto-downloaded on first run (like Piper voices) so
+# smart endpointing works out of the box. Pinned to the upstream pipecat release.
+SMART_TURN_MODEL_URL = (
+    "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.0.onnx"
+)
+
 # Friendly one-word brain presets -> (provider, model).
 # "-sub" uses your Claude subscription via the Claude Code CLI (no API key); the
 # bare aliases haiku/sonnet/opus resolve to the latest version automatically.
@@ -125,19 +139,42 @@ class Config:
     interrupt_min_speech_ms: float = 350.0
     interrupt_min_words: int = 2
 
-    # --- End-of-turn analysis (Phase 4/7) ---
-    # "silence": fixed silence timer (always available). "smart": Smart Turn v3
-    # prosodic model with graceful fallback to silence when the model is absent.
-    turn_analyzer: str = "silence"
-    smart_turn_model_path: str = "models/smart-turn-v3.1.onnx"
+    # --- Acoustic echo cancellation (R2-1) ---
+    # Remove the assistant's own TTS from the mic so an OPEN speaker doesn't
+    # self-trigger barge-in. "auto" uses macOS hardware AEC when available and the
+    # software NLMS filter otherwise (see AEC_MODES / aec.py). When AEC is active
+    # the barge-in energy floor is relaxed (echo is already gone).
+    aec_mode: str = "off"
+    aec_nlms_taps: int = 256  # FIR length of the software adaptive filter
+    aec_nlms_mu: float = 0.3  # NLMS step size in (0, 2]; higher = faster but less stable
+
+    # --- Acoustic interruption prediction (R2-3) ---
+    # A 3rd, purely-acoustic barge-in guard: score sustained voiced energy + pitch/
+    # spectral-flux to detect *intent to take the floor* before words transcribe.
+    # Composes with the duration + word guards. Set 0 to require accumulated score.
+    interrupt_predict: bool = True
+    interrupt_predict_threshold: float = 0.6  # score in [0,1] above which it fires
+    interrupt_predict_min_ms: float = 240.0  # sustained voiced time before it can fire
+
+    # --- End-of-turn analysis (Phase 4/7, R2-4) ---
+    # "smart": Smart Turn v3 prosodic model (auto-downloaded on first run, like
+    # Piper voices) — the DEFAULT so a natural pause is not cut off. Falls back to
+    # the fixed silence timer only when the model/runtime is genuinely unavailable.
+    # "silence": always-available fixed silence timer (explicit opt-out).
+    turn_analyzer: str = "smart"
+    smart_turn_model_path: str = "models/smart-turn-v3.0.onnx"
+    smart_turn_model_url: str = SMART_TURN_MODEL_URL
+    smart_turn_auto_download: bool = True
     smart_turn_threshold: float = 0.5
 
     # --- STT ---
     stt_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
-    # Incremental STT: emit partial transcripts by re-transcribing the growing
-    # audio buffer during the turn (lower perceived latency); final on end-of-turn.
+    # Incremental STT: emit partial transcripts by re-transcribing a BOUNDED sliding
+    # window of recent audio (R2-2) so partial latency / CPU don't grow with the
+    # utterance length; final on end-of-turn. ``stt_window_s`` caps the re-decode.
     stt_streaming: bool = False
     stt_partial_interval_ms: float = 600.0
+    stt_window_s: float = 7.0
 
     # --- TTS (per-language voice maps; Piper voice ids and macOS `say` voices) ---
     default_language: str = "en"
@@ -181,9 +218,13 @@ class Config:
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             barge_in=env.get("BARGE_IN", "off"),
-            turn_analyzer=env.get("TURN_ANALYZER", "silence"),
-            smart_turn_model_path=env.get("SMART_TURN_MODEL_PATH", "models/smart-turn-v3.1.onnx"),
+            aec_mode=env.get("AEC_MODE", "off"),
+            turn_analyzer=env.get("TURN_ANALYZER", "smart"),
+            smart_turn_model_path=env.get("SMART_TURN_MODEL_PATH", "models/smart-turn-v3.0.onnx"),
+            smart_turn_model_url=env.get("SMART_TURN_MODEL_URL", SMART_TURN_MODEL_URL),
+            smart_turn_auto_download=_env_bool("SMART_TURN_AUTO_DOWNLOAD", default=True),
             stt_streaming=_env_bool("STT_STREAMING", default=False),
+            interrupt_predict=_env_bool("INTERRUPT_PREDICT", default=True),
             debug=_env_bool("DEBUG", default=False),
         )
         if env.get("TTS_VOICE_EN"):
@@ -198,6 +239,16 @@ class Config:
             cfg.interrupt_min_speech_ms = float(env["INTERRUPT_MIN_SPEECH_MS"])
         if env.get("SMART_TURN_THRESHOLD"):
             cfg.smart_turn_threshold = float(env["SMART_TURN_THRESHOLD"])
+        if env.get("AEC_NLMS_TAPS"):
+            cfg.aec_nlms_taps = int(env["AEC_NLMS_TAPS"])
+        if env.get("AEC_NLMS_MU"):
+            cfg.aec_nlms_mu = float(env["AEC_NLMS_MU"])
+        if env.get("STT_WINDOW_S"):
+            cfg.stt_window_s = float(env["STT_WINDOW_S"])
+        if env.get("INTERRUPT_PREDICT_THRESHOLD"):
+            cfg.interrupt_predict_threshold = float(env["INTERRUPT_PREDICT_THRESHOLD"])
+        if env.get("INTERRUPT_PREDICT_MIN_MS"):
+            cfg.interrupt_predict_min_ms = float(env["INTERRUPT_PREDICT_MIN_MS"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -227,6 +278,23 @@ class Config:
             errors.append(f"requests_per_minute must be > 0; got {self.requests_per_minute}")
         if self.barge_in not in BARGE_IN_MODES:
             errors.append(f"barge_in must be one of {BARGE_IN_MODES}; got {self.barge_in!r}")
+        if self.aec_mode not in AEC_MODES:
+            errors.append(f"aec_mode must be one of {AEC_MODES}; got {self.aec_mode!r}")
+        if self.aec_nlms_taps <= 0:
+            errors.append(f"aec_nlms_taps must be > 0; got {self.aec_nlms_taps}")
+        if not 0.0 < self.aec_nlms_mu <= 2.0:
+            errors.append(f"aec_nlms_mu must be in (0, 2]; got {self.aec_nlms_mu}")
+        if self.stt_window_s <= 0:
+            errors.append(f"stt_window_s must be > 0; got {self.stt_window_s}")
+        if not 0.0 <= self.interrupt_predict_threshold <= 1.0:
+            errors.append(
+                "interrupt_predict_threshold must be in [0, 1]; "
+                f"got {self.interrupt_predict_threshold}"
+            )
+        if self.interrupt_predict_min_ms < 0:
+            errors.append(
+                f"interrupt_predict_min_ms must be >= 0; got {self.interrupt_predict_min_ms}"
+            )
         if self.turn_analyzer not in TURN_ANALYZERS:
             errors.append(
                 f"turn_analyzer must be one of {TURN_ANALYZERS}; got {self.turn_analyzer!r}"

@@ -24,7 +24,13 @@ speaker = ["speechbrain", "torchaudio"]
 vad = ["silero-vad", "webrtcvad-wheels"]
 wake = ["openwakeword", "onnxruntime"]
 lang = ["lingua-language-detector"]
-all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang]"]
+# Hardware AEC (R2-1): macOS VoiceProcessingIO via PyObjC. The software NLMS
+# canceller needs no extras (pure numpy), so this is only for the HW backend.
+aec = ["pyobjc-framework-AVFoundation; sys_platform == 'darwin'"]
+# Smart Turn v3 endpointing (R2-4): the ONNX runtime + the Whisper feature
+# extractor. The model file itself is auto-downloaded on first run.
+turn = ["onnxruntime", "transformers"]
+all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn]"]
 
 [project.scripts]
 my-stt-tts = "my_stt_tts.__main__:main"

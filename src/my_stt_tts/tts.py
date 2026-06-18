@@ -19,6 +19,8 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
+
 from .config import Config
 
 log = logging.getLogger("my_stt_tts.tts")
@@ -99,10 +101,22 @@ class Playback:
     A finished/never-started handle is a harmless no-op for both methods.
     """
 
-    def __init__(self, proc: subprocess.Popen | None = None) -> None:
+    def __init__(
+        self,
+        proc: subprocess.Popen | None = None,
+        *,
+        reference: np.ndarray | None = None,
+        sample_rate: int | None = None,
+    ) -> None:
         self._proc = proc
         self._cancelled = threading.Event()
         self._lock = threading.Lock()
+        # The synthesized PCM being played (the AEC reference signal, R2-1) and its
+        # sample rate. None when the player wasn't fed a known waveform (e.g. `say`).
+        self.reference = (
+            np.asarray(reference, dtype=np.float32).ravel() if reference is not None else None
+        )
+        self.reference_sr = sample_rate
 
     def cancel(self) -> None:
         """Abort playback now (kill the subprocess). Idempotent + thread-safe."""
@@ -155,6 +169,27 @@ def _popen(cmd: list[str], *, stdin: bytes | None = None) -> subprocess.Popen:
 
 def _afplay(path: str) -> None:
     subprocess.run(["afplay", path], check=False)  # noqa: S603, S607
+
+
+def _read_wav(path: str) -> tuple[np.ndarray | None, int | None]:
+    """Read a mono PCM16 WAV to float32 (-1..1) + sample rate, for the AEC reference.
+
+    Returns ``(None, None)`` if the file can't be read; never raises (the AEC
+    reference is best-effort and must not break playback).
+    """
+    import wave  # noqa: PLC0415 — only needed when reading back the reference
+
+    try:
+        with wave.open(path, "rb") as handle:
+            sr = handle.getframerate()
+            channels = handle.getnchannels()
+            raw = handle.readframes(handle.getnframes())
+    except (OSError, wave.Error):
+        return None, None
+    pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    if channels > 1:
+        pcm = pcm.reshape(-1, channels).mean(axis=1)
+    return pcm, sr
 
 
 def _ensure_piper_voice(data_dir: str, voice: str) -> bool:
@@ -241,10 +276,13 @@ class TTSRouter:
             Path(out).unlink(missing_ok=True)
             log.warning("Piper synthesis failed for %r; using `say`.", voice, exc_info=True)
             return self._play_say(text, voice="")
+        # Read the synthesized PCM back as the AEC reference signal (R2-1) so the
+        # echo canceller can subtract exactly what the speaker emits.
+        reference, ref_sr = _read_wav(out)
         # afplay is the cancellable player; unlink the temp WAV once it exits.
         proc = _popen(["afplay", out])
         threading.Thread(target=self._cleanup_after, args=(proc, out), daemon=True).start()
-        return Playback(proc)
+        return Playback(proc, reference=reference, sample_rate=ref_sr)
 
     def _play_say(self, text: str, *, voice: str) -> Playback:
         cmd = ["say"]
