@@ -184,7 +184,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 
 ## 5. Phased plan (checkboxes)
 
-### Phase 0 — Scaffold, spine & environment
+### Phase 0 — Scaffold, spine & environment ✅ done
 
 - [ ] Read `$mygit/README_SETUP_PYTHON_ENVIRONMENT.md`; `uv init --package`; `pyproject.toml` (PEP 621, `license = "Apache-2.0"`); commit `uv.lock`
 - [ ] `config.py`: central Config (string-dispatch backends) + fail-fast `validate()`; `.env.example`; `config.toml`
@@ -192,7 +192,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] `metrics.py` first: per-stage timing keyed by shared **`speech_id`** (we tune by numbers) — LiveKit pattern
 - [ ] `scripts/bench.py`: measure real STT/TTS/LLM latency on *this* M1
 
-### Phase 1 — Core loop (push-to-talk, English, batch)
+### Phase 1 — Core loop (push-to-talk, English, batch) ✅ done (code; live mic test pending)
 
 - [ ] `audio.py`: `sounddevice` capture, explicit device, **pre-roll ring buffer** (no clipped onset), push-to-talk hotkey, max-recording cap
 - [ ] `stt.py`: `parakeet-mlx` warm-loaded
@@ -201,7 +201,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] `chimes.py`: wake chime; `--debug` spoken cues (the original "yes/recorded/analyzing" narration, off by default)
 - [ ] End-to-end: press key → speak → hear Claude; log per-stage latency
 
-### Phase 2 — Responsiveness (streaming + safety)
+### Phase 2 — Responsiveness (streaming + safety) ✅ done (barge-in → Phase 7)
 
 - [ ] **Prosody-preserving fragment streaming**: Claude tokens → sentence/fragment chunker (first-fragment-fast, full prosody after) with **decimal/comma guard** (keep `3.14` / German `3,14`) — RealtimeTTS + GLaDOS patterns; BufferStream bridge (Linguflex)
 - [ ] Overlap stages on the spine; confirm pre-roll + streaming feel
@@ -209,21 +209,21 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Graceful failure: catch every stage; play **pre-synthesized** error clips even if TTS is what failed
 - [ ] Runaway guard: per-minute request cap + cooldown (self-trigger / cost protection)
 
-### Phase 3 — Multilingual (DE / FR / EN)
+### Phase 3 — Multilingual (DE / FR / EN) ✅ done
 
 - [ ] STT multilingual: Parakeet v3 language-ID (or Whisper auto-detect); expose detected language
 - [ ] `tts.py` **Router**: `lingua-py` detection on the answer → voice map (`de→thorsten-high`, `fr→tom-medium`, `en→Kokoro/lessac`), `say` premium + low-confidence fallback
 - [ ] Test Hochdeutsch + French end-to-end; verify pronunciation
 - [ ] (Optional) Kokoro-via-`mlx-audio` for higher-quality English
 
-### Phase 4 — Wake word & always-listening
+### Phase 4 — Wake word & always-listening ◑ wired — needs the trained "maziko" model
 
 - [ ] Train + integrate **openWakeWord** for **"maziko"** (custom model, ~1 h via the training notebook; no vendor lock)
 - [ ] Replace PTT with wake-word + **two-stage VAD** (WebRTC gate → Silero confirm) — RealtimeSTT pattern; tune `silero_sensitivity`, silence durations
 - [ ] **smart-turn** model-based endpointing (vendor pipecat smart-turn, CoreML variant for the Neural Engine) to augment the silence timeout
 - [ ] Wake-word debounce; conversation **follow-up window** (~8 s open mic, no re-wake); multi-turn **memory** (rolling `messages`, capped, idle reset)
 
-### Phase 5 — Speaker identification (bespoke)
+### Phase 5 — Speaker identification (bespoke) ◑ logic + calibration done — needs enrollment recordings
 
 - [ ] `scripts/enroll.py`: ~30 s/person across 5–10 clips per language → L2-normalized ECAPA **centroid** (gitignored)
 - [ ] `speaker_id.py`: extract embedding **in parallel** with STT; cosine `argmax` over centroids
@@ -231,7 +231,7 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Bias to `unknown` over misattribution; **never gate safety-critical actions on child ID**; re-enroll children quarterly
 - [ ] Pass identified speaker into the Brain prompt for personalization
 
-### Phase 6 — LLM flexibility & agent orchestration
+### Phase 6 — LLM flexibility & agent orchestration ✅ agent dispatch + presets done
 
 - [ ] Model routing: Haiku fast / Opus deep via trigger or per-speaker default
 - [ ] Prompt caching for the stable system prompt
@@ -239,18 +239,18 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
 - [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
-### Phase 7 — Barge-in & native audio (deferred)
+### Phase 7 — Barge-in & native audio (deferred) ⬜ deferred
 
 - [ ] **Barge-in**: keep mic live during playback, abort TTS on confirmed speech (mute-event empty-array cancel — GLaDOS); **false-interrupt suppression** (min-words/min-duration — pipecat `MinWordsUserTurnStartStrategy`); decide history truncation (spoken-prefix vs keep-full)
 - [ ] Swift `AVAudioEngine` + `VoiceProcessingIO` front-end (hardware AEC) feeding PCM to Python
 - [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
 - [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 
-### Phase 8 — Whole-house / Home Assistant (future)
+### Phase 8 — Whole-house / Home Assistant (future) ⬜ future
 
 - [ ] Move brain to a server, mics/speakers to satellites; integrate with `home-assistant-sandbox` Assist + Wyoming; revisit Sonos vs satellite-local playback latency
 
-### Phase 9 — External polish / OSS readiness (parallel track)
+### Phase 9 — External polish / OSS readiness (parallel track) ◑ most done — Homebrew tap & hero MP4 pending
 
 - [x] LICENSE (Apache-2.0), public AGENTS.md, gitignored CLAUDE.md shim, README with install methods + license note
 - [x] Repo description + topics + (todo) social-preview image
