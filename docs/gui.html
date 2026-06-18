@@ -1,0 +1,1038 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
+<title>my-stt-tts · mission control</title>
+<style>
+:root{
+  --bg:#04070b; --bg2:#070d14; --panel:#0a121c; --panel2:#0c1622;
+  --line:#16283a; --line2:#1f3a52;
+  --cyan:#22e7ff; --cyan-dim:#0c98ab; --mag:#ff36c6; --mag-dim:#a31f7e;
+  --amber:#ffb648; --green:#3dffa6; --red:#ff4d5e; --violet:#9d7bff;
+  --ink:#cfe9f2; --ink-dim:#6f93a5; --ink-faint:#3f5d6e;
+  --mono:"SF Mono","SFMono-Regular",ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,Consolas,"Roboto Mono",monospace;
+  --glow:0 0 18px;
+  --rad:10px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:var(--mono); color:var(--ink);
+  background:
+    radial-gradient(1200px 700px at 78% -8%, rgba(255,54,198,.10), transparent 60%),
+    radial-gradient(1100px 800px at 8% 110%, rgba(34,231,255,.10), transparent 60%),
+    var(--bg);
+  font-size:13px; line-height:1.45; letter-spacing:.2px;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+/* scanlines + grid overlay */
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:9999; opacity:.5;
+  background:repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.18) 2px 3px);
+  mix-blend-mode:overlay;
+}
+body::after{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:1; opacity:.35;
+  background-image:linear-gradient(rgba(34,231,255,.045) 1px, transparent 1px),
+                   linear-gradient(90deg, rgba(34,231,255,.045) 1px, transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(circle at 50% 32%, #000 0, transparent 85%);
+  mask-image:radial-gradient(circle at 50% 32%, #000 0, transparent 85%);
+}
+a{color:var(--cyan)}
+button,input,select,textarea{font-family:var(--mono); font-size:13px; color:var(--ink)}
+::selection{background:rgba(34,231,255,.3); color:#fff}
+:focus-visible{outline:2px solid var(--cyan); outline-offset:2px; border-radius:4px}
+
+.app{position:relative; z-index:2; max-width:1500px; margin:0 auto; padding:14px clamp(10px,2.4vw,26px) 40px}
+
+/* ---------- header ---------- */
+header.bar{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:12px 16px; margin-bottom:14px;
+  background:linear-gradient(180deg, rgba(12,22,34,.92), rgba(8,14,22,.92));
+  border:1px solid var(--line); border-radius:var(--rad);
+  box-shadow:0 0 0 1px rgba(34,231,255,.04) inset, 0 14px 40px rgba(0,0,0,.5);
+}
+.brand{display:flex; align-items:center; gap:11px; min-width:0}
+.logo{width:34px; height:34px; flex:0 0 auto; filter:drop-shadow(0 0 6px rgba(34,231,255,.55))}
+.brand h1{
+  font-size:16px; margin:0; font-weight:700; letter-spacing:1.5px;
+  text-transform:uppercase; white-space:nowrap;
+}
+.brand h1 b{color:var(--cyan); text-shadow:var(--glow) rgba(34,231,255,.5)}
+.brand h1 i{font-style:normal; color:var(--mag); text-shadow:var(--glow) rgba(255,54,198,.5)}
+.sub{font-size:10px; color:var(--ink-dim); letter-spacing:1px; text-transform:uppercase}
+.spacer{flex:1 1 auto}
+.badge{
+  display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+  font-size:10px; letter-spacing:1px; text-transform:uppercase; white-space:nowrap;
+  border:1px solid var(--line2); background:rgba(34,231,255,.06); color:var(--cyan);
+}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:var(--glow) var(--green)}
+/* demo badge — shown only in demo mode */
+.demo-badge{
+  display:none; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+  font-size:10px; letter-spacing:1.5px; text-transform:uppercase; white-space:nowrap;
+  border:1px solid var(--amber); background:rgba(255,182,72,.1); color:var(--amber);
+  box-shadow:0 0 16px -5px var(--amber);
+}
+.demo-badge.show{display:inline-flex}
+.demo-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:var(--glow) var(--amber);animation:blink 1.4s steps(2) infinite}
+.conn{display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px;
+  font-size:10.5px; letter-spacing:1px; text-transform:uppercase; border:1px solid var(--line2);
+  background:rgba(0,0,0,.25)}
+.conn .led{width:9px;height:9px;border-radius:50%;background:var(--ink-faint);transition:.25s}
+.conn[data-c="open"] .led{background:var(--green); box-shadow:var(--glow) var(--green)}
+.conn[data-c="open"]{color:var(--green); border-color:rgba(61,255,166,.35)}
+.conn[data-c="connecting"] .led{background:var(--amber); box-shadow:var(--glow) var(--amber); animation:blink 1s steps(2) infinite}
+.conn[data-c="connecting"]{color:var(--amber); border-color:rgba(255,182,72,.35)}
+.conn[data-c="closed"] .led{background:var(--red); box-shadow:var(--glow) var(--red)}
+.conn[data-c="closed"]{color:var(--red); border-color:rgba(255,77,94,.35)}
+.conn[data-c="demo"] .led{background:var(--amber); box-shadow:var(--glow) var(--amber); animation:blink 1.4s steps(2) infinite}
+.conn[data-c="demo"]{color:var(--amber); border-color:rgba(255,182,72,.35)}
+@keyframes blink{50%{opacity:.25}}
+
+/* ---------- layout ---------- */
+.grid{display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr); gap:14px}
+@media(max-width:1080px){.grid{grid-template-columns:1fr}}
+.col{display:flex; flex-direction:column; gap:14px; min-width:0}
+
+.card{
+  background:linear-gradient(180deg, var(--panel), var(--bg2));
+  border:1px solid var(--line); border-radius:var(--rad);
+  box-shadow:0 10px 34px rgba(0,0,0,.45), 0 0 0 1px rgba(34,231,255,.03) inset;
+  position:relative; overflow:hidden;
+}
+.card>.head{
+  display:flex; align-items:center; gap:9px; padding:9px 14px;
+  border-bottom:1px solid var(--line); background:rgba(0,0,0,.22);
+  font-size:10.5px; letter-spacing:2px; text-transform:uppercase; color:var(--ink-dim);
+}
+.card>.head .tag{margin-left:auto; color:var(--ink-faint); letter-spacing:1px}
+.card>.head svg{width:14px;height:14px;opacity:.85}
+.card>.body{padding:14px}
+
+/* ---------- scope / centerpiece ---------- */
+.scope-card .body{padding:0}
+.scope-wrap{position:relative}
+.scope{display:block; width:100%; height:auto; background:
+  radial-gradient(120% 120% at 50% 40%, rgba(34,231,255,.05), transparent 70%), #03060a;}
+.scope-overlay{position:absolute; inset:0; display:flex; flex-direction:column;
+  justify-content:space-between; padding:14px 16px; pointer-events:none}
+.scope-top{display:flex; align-items:flex-start; justify-content:space-between; gap:10px}
+.state-chip{
+  display:inline-flex; align-items:center; gap:9px; padding:7px 14px; border-radius:8px;
+  background:rgba(3,8,13,.7); border:1px solid currentColor; color:var(--cyan);
+  font-size:13px; letter-spacing:2.5px; text-transform:uppercase; font-weight:700;
+  box-shadow:0 0 22px -6px currentColor; backdrop-filter:blur(2px); transition:color .3s, font-size .2s;
+}
+.state-chip .pulse{width:11px;height:11px;border-radius:50%;background:currentColor;
+  box-shadow:0 0 12px currentColor; animation:pl 1.6s ease-in-out infinite}
+@keyframes pl{0%,100%{transform:scale(.7);opacity:.55}50%{transform:scale(1.15);opacity:1}}
+/* RECORDING: extra-large, unmistakable */
+.state-chip.rec{font-size:17px; padding:10px 20px; letter-spacing:3.5px;
+  animation:recpulse 1s ease-in-out infinite}
+@keyframes recpulse{0%,100%{box-shadow:0 0 28px -3px currentColor}50%{box-shadow:0 0 8px -4px currentColor}}
+.hot-flag{
+  font-size:10px; letter-spacing:2px; text-transform:uppercase; padding:5px 10px; border-radius:6px;
+  border:1px solid var(--line2); color:var(--ink-dim); background:rgba(3,8,13,.6); white-space:nowrap;
+}
+.hot-flag.hot{color:#fff; background:var(--red); border-color:var(--red); font-size:12px; font-weight:700;
+  box-shadow:0 0 24px -3px var(--red); animation:hotpulse 1s ease-in-out infinite}
+@keyframes hotpulse{50%{box-shadow:0 0 8px -2px var(--red)}}
+.scope-bottom{display:flex; align-items:flex-end; justify-content:space-between; gap:10px; flex-wrap:wrap}
+.detail{font-size:11px; color:var(--ink-dim); letter-spacing:.8px; max-width:70%;
+  text-shadow:0 0 8px rgba(0,0,0,.9)}
+.detail b{color:var(--ink)}
+.readout{font-size:10px; color:var(--ink-faint); letter-spacing:1.5px; text-align:right}
+.readout b{color:var(--cyan)}
+
+/* state timeline */
+.timeline{display:flex; gap:0; padding:10px 12px; border-top:1px solid var(--line);
+  background:rgba(0,0,0,.25); overflow-x:auto}
+.tl-step{flex:1 1 auto; min-width:54px; text-align:center; position:relative; padding-top:14px}
+.tl-step::before{content:""; position:absolute; top:5px; left:50%; transform:translateX(-50%);
+  width:8px;height:8px;border-radius:50%; background:var(--line2); transition:.25s}
+.tl-step::after{content:""; position:absolute; top:8px; left:50%; width:100%; height:2px;
+  background:var(--line); z-index:0}
+.tl-step:last-child::after{display:none}
+.tl-step span{font-size:8.5px; letter-spacing:.5px; text-transform:uppercase; color:var(--ink-faint); transition:.25s; position:relative}
+.tl-step.on::before{background:var(--cyan); box-shadow:var(--glow) var(--cyan)}
+.tl-step.on span{color:var(--cyan)}
+.tl-step.done::before{background:var(--cyan-dim)}
+
+/* ---------- controls ---------- */
+.controls{display:flex; flex-direction:column; gap:12px}
+.send-row{display:flex; gap:9px}
+.txt{flex:1; min-width:0; padding:11px 13px; border-radius:8px; border:1px solid var(--line2);
+  background:#050a10; color:var(--ink); transition:.2s}
+.txt:focus{border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,231,255,.12)}
+.txt::placeholder{color:var(--ink-faint)}
+.btns{display:flex; flex-wrap:wrap; gap:8px}
+.btn{
+  display:inline-flex; align-items:center; gap:7px; padding:9px 13px; border-radius:8px;
+  border:1px solid var(--line2); background:linear-gradient(180deg,#0d1925,#0a131d); color:var(--ink);
+  cursor:pointer; letter-spacing:.6px; text-transform:uppercase; font-size:11px; transition:.16s;
+  user-select:none; white-space:nowrap;
+}
+.btn svg{width:14px;height:14px}
+.btn:hover{border-color:var(--cyan); color:#fff; box-shadow:0 0 16px -4px var(--cyan)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:linear-gradient(180deg,#0e3540,#0a2730); border-color:var(--cyan-dim); color:var(--cyan)}
+.btn.primary:hover{background:linear-gradient(180deg,#0f4350,#0b303c); color:#fff}
+.btn.mag{border-color:var(--mag-dim); color:var(--mag)}
+.btn.mag:hover{border-color:var(--mag); box-shadow:0 0 16px -4px var(--mag); color:#fff}
+.btn.danger{border-color:rgba(255,77,94,.4); color:var(--red)}
+.btn.danger:hover{border-color:var(--red); box-shadow:0 0 16px -4px var(--red); color:#fff}
+.btn.on{background:linear-gradient(180deg,#103e2a,#0b2c1e); border-color:var(--green); color:var(--green);
+  box-shadow:0 0 16px -5px var(--green)}
+.btn.held{background:linear-gradient(180deg,#3a0f2c,#2a0b22); border-color:var(--mag); color:#fff;
+  box-shadow:0 0 20px -3px var(--mag)}
+.btn:disabled{opacity:.4; cursor:not-allowed; box-shadow:none}
+kbd{font-size:9px; padding:1px 5px; border:1px solid var(--line2); border-radius:4px;
+  color:var(--ink-faint); background:#060c12}
+
+/* ---------- transcript ---------- */
+.transcript-card{flex:1; min-height:280px; display:flex; flex-direction:column}
+.transcript-card .body{flex:1; display:flex; flex-direction:column; padding:0; min-height:0}
+.thread{flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:11px; min-height:200px}
+.thread:empty::after{content:"// awaiting first transmission"; color:var(--ink-faint);
+  font-size:11px; letter-spacing:1px; margin:auto}
+.msg{max-width:84%; padding:9px 13px; border-radius:12px; position:relative; word-wrap:break-word;
+  white-space:pre-wrap; animation:rise .25s ease}
+@keyframes rise{from{opacity:0; transform:translateY(6px)}}
+.msg .who{font-size:9px; letter-spacing:1.5px; text-transform:uppercase; opacity:.65; margin-bottom:3px}
+.msg.user{align-self:flex-end; background:linear-gradient(180deg,#142a36,#0f2029);
+  border:1px solid var(--cyan-dim); border-bottom-right-radius:4px}
+.msg.user .who{color:var(--cyan)}
+.msg.assistant{align-self:flex-start; background:linear-gradient(180deg,#1e1230,#160c23);
+  border:1px solid var(--mag-dim); border-bottom-left-radius:4px}
+.msg.assistant .who{color:var(--mag)}
+.msg.streaming .content::after{content:"▋"; color:var(--mag); animation:blink .9s steps(2) infinite}
+
+/* ---------- settings ---------- */
+.field{margin-bottom:13px}
+.field:last-child{margin-bottom:0}
+.field label{display:flex; align-items:center; gap:6px; font-size:10px; letter-spacing:1.5px;
+  text-transform:uppercase; color:var(--ink-dim); margin-bottom:5px}
+.field label .v{margin-left:auto; color:var(--cyan); letter-spacing:1px}
+.ctrl{width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
+  background:#050a10; color:var(--ink); transition:.18s}
+.ctrl:focus{border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,231,255,.12)}
+select.ctrl{appearance:none; -webkit-appearance:none; cursor:pointer;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5 6 8l3-3.5' fill='none' stroke='%2322e7ff' stroke-width='1.4'/></svg>");
+  background-repeat:no-repeat; background-position:right 11px center; padding-right:30px}
+select.ctrl option{background:#0a121c; color:var(--ink)}
+textarea.ctrl{resize:vertical; min-height:88px; line-height:1.5; font-size:12px}
+.two{display:grid; grid-template-columns:1fr 1fr; gap:11px}
+@media(max-width:420px){.two{grid-template-columns:1fr}}
+input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:5px; border-radius:3px;
+  background:linear-gradient(90deg,var(--cyan),var(--mag)); outline:none; cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:17px;height:17px;border-radius:50%;
+  background:#04070b; border:2px solid var(--cyan); box-shadow:0 0 10px var(--cyan); cursor:pointer}
+input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; background:#04070b;
+  border:2px solid var(--cyan); box-shadow:0 0 10px var(--cyan); cursor:pointer}
+.saved-flash{font-size:9px; color:var(--green); letter-spacing:1px; opacity:0; transition:.2s}
+.saved-flash.show{opacity:1}
+
+/* ---------- event log ---------- */
+.log-card .body{padding:0}
+.log{height:200px; overflow-y:auto; padding:10px 12px; font-size:11px; line-height:1.6;
+  background:#03060a}
+.log .ln{display:flex; gap:9px}
+.log .ln .t{color:var(--ink-faint); flex:0 0 auto}
+.log .ln .m{white-space:pre-wrap; word-break:break-word; color:var(--ink-dim)}
+.log .ln.info .m{color:var(--ink-dim)}
+.log .ln.error .m{color:var(--red)}
+.log .ln.sys .m{color:var(--cyan)}
+.log .ln.evt .m{color:var(--violet)}
+.log:empty::after{content:"// log idle"; color:var(--ink-faint)}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-track{background:#03060a}
+*::-webkit-scrollbar-thumb{background:#193148; border-radius:9px; border:2px solid #03060a}
+*::-webkit-scrollbar-thumb:hover{background:#234a68}
+
+.foot{margin-top:16px; text-align:center; font-size:9.5px; letter-spacing:2px;
+  text-transform:uppercase; color:var(--ink-faint)}
+
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition:none !important}
+}
+</style>
+
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="36" height="36" rx="8" stroke="#22e7ff" stroke-width="1.6" opacity=".5"/>
+        <path d="M5 20 h4 l2-9 3 18 3-24 3 30 3-22 2 7 h6" stroke="#22e7ff" stroke-width="1.8"
+              fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="33" cy="20" r="2" fill="#ff36c6"/>
+      </svg>
+      <div>
+        <h1><b>my</b>-stt-<i>tts</i></h1>
+        <div class="sub">voice mission control</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge"><span class="dot"></span>local · on-device</span>
+    <span class="demo-badge" id="demoBadge" role="status" aria-live="polite"><span class="dot"></span>demo</span>
+    <span class="conn" id="conn" data-c="connecting" role="status" aria-live="polite">
+      <span class="led"></span><span id="connLabel">connecting</span>
+    </span>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT COLUMN -->
+    <div class="col">
+      <!-- SCOPE / CENTERPIECE -->
+      <section class="card scope-card" aria-label="Live state visualizer">
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M2 12h4l2-6 3 12 3-16 3 18 2-8h4" stroke="#22e7ff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          oscilloscope <span class="tag" id="scopeTag">CH1 · 48kHz</span>
+        </div>
+        <div class="body">
+          <div class="scope-wrap">
+            <canvas class="scope" id="scope" width="900" height="320" aria-hidden="true"></canvas>
+            <div class="scope-overlay">
+              <div class="scope-top">
+                <span class="state-chip" id="stateChip" role="status" aria-live="assertive" aria-atomic="true">
+                  <span class="pulse" aria-hidden="true"></span><span id="stateName">IDLE</span>
+                </span>
+                <span class="hot-flag" id="hotFlag">MIC ● COLD</span>
+              </div>
+              <div class="scope-bottom">
+                <div class="detail" id="detail" role="status" aria-live="polite">
+                  <b>system ready.</b> say the wake word or hit push-to-talk.
+                </div>
+                <div class="readout" aria-hidden="true">
+                  WAKE&nbsp;<b id="roWake">—</b><br>
+                  VOICE&nbsp;<b id="roVoice">—</b><br>
+                  BRAIN&nbsp;<b id="roBrain">—</b>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="timeline" id="timeline" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <!-- CONTROLS -->
+      <section class="card" aria-label="Controls">
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="2" stroke="#22e7ff" stroke-width="1.5"/><path d="M7 10h2M7 14h6M13 9h4" stroke="#22e7ff" stroke-width="1.5"/></svg>
+          controls <span class="tag">CLI mirror</span>
+        </div>
+        <div class="body controls">
+          <form class="send-row" id="sendForm" autocomplete="off">
+            <input class="txt" id="textInput" autocomplete="off" placeholder="type a turn and press enter…"
+                   aria-label="Message to send">
+            <button class="btn primary" type="submit" id="sendBtn">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12 20 4l-4 16-4-7-8-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+              Send
+            </button>
+          </form>
+          <div class="btns">
+            <button class="btn" id="wakeBtn" type="button" aria-pressed="false" title="Start/stop wake-word listening">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 5.5a9 9 0 0 0 0 13M18.5 5.5a9 9 0 0 1 0 13M8 8a5 5 0 0 0 0 8M16 8a5 5 0 0 1 0 8" stroke="currentColor" stroke-width="1.4"/></svg>
+              <span id="wakeLabel">Start Wake</span>
+            </button>
+            <button class="btn mag" id="pttBtn" type="button" aria-pressed="false" title="Hold to talk (or hold Space)">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" stroke="currentColor" stroke-width="1.5"/></svg>
+              Push-to-Talk <kbd>SPACE</kbd>
+            </button>
+            <button class="btn danger" id="resetBtn" type="button" title="Clear conversation">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.4M20 5v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Reset
+            </button>
+            <button class="btn" id="listVoicesBtn" type="button" title="Refresh voice list">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h10M4 12h16M4 17h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              List Voices
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TRANSCRIPT -->
+      <section class="card transcript-card" aria-label="Conversation transcript">
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M4 5h16v11H9l-5 4V5Z" stroke="#22e7ff" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          transcript <span class="tag" id="turnCount">0 turns</span>
+        </div>
+        <div class="body">
+          <div class="thread" id="thread" role="log" aria-live="polite" aria-label="Conversation messages"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="col">
+      <!-- SETTINGS -->
+      <section class="card" aria-label="Settings">
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#22e7ff" stroke-width="1.6"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" stroke="#22e7ff" stroke-width="1.4"/></svg>
+          configuration <span class="tag saved-flash" id="savedFlash">✓ applied</span>
+        </div>
+        <div class="body">
+          <div class="field">
+            <label for="brain">Brain preset</label>
+            <select class="ctrl" id="brain"></select>
+          </div>
+          <div class="two">
+            <div class="field">
+              <label for="provider">Provider</label>
+              <select class="ctrl" id="provider" data-key="provider"></select>
+            </div>
+            <div class="field">
+              <label for="model">Model</label>
+              <input class="ctrl" id="model" data-key="model" autocomplete="off">
+            </div>
+          </div>
+          <div class="field">
+            <label for="modelDeep">Model (deep)</label>
+            <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="voice">Voice <span class="v" id="voiceNote"></span></label>
+            <select class="ctrl" id="voice" data-key="voice_en"></select>
+          </div>
+          <div class="field">
+            <label for="length">Length scale <span class="v" id="lengthVal">1.00</span></label>
+            <input type="range" id="length" data-key="length_scale" min="0.8" max="1.4" step="0.01"
+                   aria-label="Speech length scale">
+          </div>
+          <div class="two">
+            <div class="field">
+              <label for="wake">Wake phrase</label>
+              <input class="ctrl" id="wake" data-key="wake_phrase" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="agentModel">Agent model</label>
+              <input class="ctrl" id="agentModel" data-key="agent_model" autocomplete="off">
+            </div>
+          </div>
+          <div class="field">
+            <label for="workspace">Agent workspace</label>
+            <input class="ctrl" id="workspace" data-key="agent_workspace" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="sysPrompt">System prompt</label>
+            <textarea class="ctrl" id="sysPrompt" data-key="system_prompt" spellcheck="false"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- EVENT LOG -->
+      <section class="card log-card" aria-label="Event log">
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 4h14v16H5zM8 9h8M8 13h8M8 17h5" stroke="#22e7ff" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          event log
+          <button class="tag" id="clearLog" type="button" style="background:none;border:none;cursor:pointer;color:var(--ink-faint)">clear ✕</button>
+        </div>
+        <div class="body">
+          <div class="log" id="log" role="log" aria-live="off"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="foot">my-stt-tts · synth-terminal build · all signals local</div>
+</div>
+
+<script>
+"use strict";
+(function(){
+const $ = s => document.querySelector(s);
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+/* ---------- state model ---------- */
+const STATES = {
+  idle:        {label:"IDLE",        color:"#22e7ff", hot:false, mode:"flat",   step:0},
+  listening:   {label:"LISTENING",   color:"#3dffa6", hot:false, mode:"breathe",step:1},
+  recording:   {label:"RECORDING",   color:"#ff4d5e", hot:true,  mode:"jitter", step:2},
+  stt:         {label:"TRANSCRIBE",  color:"#ffb648", hot:false, mode:"settle", step:3},
+  llm_request: {label:"LLM REQUEST", color:"#9d7bff", hot:false, mode:"scan",   step:4},
+  llm_wait:    {label:"THINKING",    color:"#9d7bff", hot:false, mode:"scan",   step:4},
+  llm_response:{label:"GENERATING",  color:"#ff36c6", hot:false, mode:"data",   step:5},
+  tts:         {label:"SYNTH",       color:"#ff36c6", hot:false, mode:"wave",   step:6},
+  speaking:    {label:"SPEAKING",    color:"#22e7ff", hot:false, mode:"wave",   step:6},
+};
+const TIMELINE = [
+  ["idle","IDLE"],["listening","WAKE"],["recording","REC"],["stt","STT"],
+  ["llm_wait","LLM"],["llm_response","GEN"],["speaking","TTS"]
+];
+const DEFAULT_DETAIL = {
+  idle:"<b>system ready.</b> say the wake word or hit push-to-talk.",
+  listening:"<b>listening</b> for the wake word…",
+  recording:"<b>recording.</b> mic is hot — capturing audio.",
+  stt:"<b>transcribing</b> captured audio…",
+  llm_request:"<b>dispatching</b> request to brain…",
+  llm_wait:"<b>thinking…</b> awaiting model response.",
+  llm_response:"<b>generating</b> reply tokens…",
+  tts:"<b>synthesizing</b> speech…",
+  speaking:"<b>speaking.</b> playing response audio."
+};
+let current = "idle";
+
+/* ---------- timeline build ---------- */
+(function buildTimeline(){
+  const tl = $("#timeline");
+  TIMELINE.forEach(([key,lab])=>{
+    const d = document.createElement("div");
+    d.className = "tl-step"; d.dataset.step = STATES[key].step;
+    d.innerHTML = `<span>${lab}</span>`;
+    tl.appendChild(d);
+  });
+})();
+
+function setState(state, detail){
+  if(!STATES[state]) state = "idle";
+  current = state;
+  const s = STATES[state];
+  $("#stateName").textContent = s.label;
+  const chip = $("#stateChip");
+  chip.style.color = s.color;
+  chip.classList.toggle("rec", state==="recording");
+  $("#scopeTag").textContent = (state==="recording") ? "CH1 · LIVE INPUT" : "CH1 · 48kHz";
+  const hf = $("#hotFlag");
+  if(s.hot){ hf.textContent = "MIC ● HOT"; hf.classList.add("hot"); }
+  else { hf.textContent = "MIC ● COLD"; hf.classList.remove("hot"); }
+  // server-provided detail wins; else a sensible per-state default
+  if(detail!=null && String(detail).trim()){
+    $("#detail").innerHTML = `<b>${esc(s.label)}</b> · ${esc(detail)}`;
+  }else{
+    $("#detail").innerHTML = DEFAULT_DETAIL[state] || `<b>${esc(s.label)}</b>`;
+  }
+  document.querySelectorAll(".tl-step").forEach(el=>{
+    const st = +el.dataset.step;
+    el.classList.toggle("on", st===s.step);
+    el.classList.toggle("done", st < s.step);
+  });
+  scopeMode = s.mode; scopeColor = s.color;
+}
+
+/* ============================================================
+   OSCILLOSCOPE
+   ============================================================ */
+const cv = $("#scope"), ctx = cv.getContext("2d");
+let scopeMode = "flat", scopeColor = "#22e7ff";
+const scopeColorMag = "#ff36c6";
+let W=900, H=320, t=0;
+const seed = new Array(256).fill(0).map(()=>Math.random()*2-1);
+
+function resize(){
+  const r = cv.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.max(320, r.width); H = W * 0.36;
+  cv.style.height = H + "px";
+  cv.width = W*dpr; cv.height = H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize", resize);
+
+function hexA(hex, a){
+  const n = parseInt(hex.slice(1),16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+
+function drawGrid(){
+  ctx.clearRect(0,0,W,H);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(34,231,255,.07)";
+  for(let x=0;x<=W;x+=W/12){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for(let y=0;y<=H;y+=H/6){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  ctx.strokeStyle = "rgba(34,231,255,.18)";
+  ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+}
+
+function wave(x, mode, p){
+  const k = x*Math.PI*2;
+  switch(mode){
+    case "flat":    return Math.sin(k*1 + p*0.6)*0.012 + (Math.random()-.5)*0.01;
+    case "breathe": return Math.sin(k*2 + p)* (0.10 + 0.06*Math.sin(p*0.7));
+    case "jitter": {
+      const idx = (Math.floor(x*255)+Math.floor(p*40))&255;
+      return seed[idx]*0.62*(0.6+0.4*Math.sin(p*9));
+    }
+    case "settle":  return Math.sin(k*6 - p*3)*0.18*Math.exp(-x*1.2);
+    case "scan": {
+      const head = (p*0.8)%1;
+      const d = Math.abs(((x - head)+1)%1);
+      const env = Math.exp(-Math.pow(d*6,2)) + Math.exp(-Math.pow((1-d)*6,2));
+      return Math.sin(k*10 - p*6)*0.45*env;
+    }
+    case "data": {
+      const idx = (Math.floor(x*40)+Math.floor(p*8))%40;
+      const step = (seed[idx]>0?1:-1)*0.3;
+      return step + Math.sin(k*20 - p*5)*0.06;
+    }
+    case "wave": {
+      return Math.sin(k*3 - p*2.4)*0.30
+           + Math.sin(k*7 - p*3.1)*0.14
+           + Math.sin(k*1.5 - p*1.2)*0.18;
+    }
+    default: return 0;
+  }
+}
+
+function trace(color, mode, p, amp, lw, glow){
+  ctx.lineWidth = lw;
+  ctx.strokeStyle = color;
+  ctx.shadowColor = color; ctx.shadowBlur = glow;
+  ctx.beginPath();
+  const N = 220;
+  for(let i=0;i<=N;i++){
+    const x = i/N;
+    const y = H/2 + wave(x, mode, p) * (H*0.42) * amp;
+    if(i===0) ctx.moveTo(x*W, y); else ctx.lineTo(x*W, y);
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+let lastFrame = 0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  if(reduceMotion){
+    if(ts - lastFrame < 400) return;   // throttle to a near-static trace
+  }
+  lastFrame = ts;
+  t += reduceMotion ? 0 : 0.045;
+  drawGrid();
+  const m = scopeMode;
+  if(m!=="flat"){
+    trace(hexA(scopeColorMag,0.28), m, t-0.25, 0.85, 1.4, 8);
+  }
+  trace(scopeColor, m, t, 1, 2.2, 16);
+  trace(hexA(scopeColor,0.12), m, t, 1, 6, 0);
+  if(m==="scan"){
+    const head = ((t*0.8)%1);
+    const y = H/2 + wave(head, m, t)*(H*0.42);
+    ctx.fillStyle = scopeColor; ctx.shadowColor=scopeColor; ctx.shadowBlur=20;
+    ctx.beginPath(); ctx.arc(head*W, y, 4, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
+  }
+}
+resize();
+requestAnimationFrame(frame);
+
+/* ============================================================
+   TRANSCRIPT  (assistant text APPENDS until final — matches contract)
+   ============================================================ */
+const thread = $("#thread");
+let turns = 0, stream = null;   // stream = {el, content, text}
+function bump(){ $("#turnCount").textContent = turns + (turns===1?" turn":" turns"); }
+
+function addUser(text){
+  stream = null;                       // a new user turn closes any open assistant bubble
+  const el = document.createElement("div");
+  el.className = "msg user";
+  el.innerHTML = `<div class="who">you</div>`;
+  el.appendChild(document.createTextNode(text==null?"":String(text)));
+  thread.appendChild(el); turns++; bump(); scrollThread();
+}
+function ensureStream(){
+  if(stream) return stream;
+  const el = document.createElement("div");
+  el.className = "msg assistant streaming";
+  el.innerHTML = `<div class="who">assistant</div>`;
+  const content = document.createElement("span");
+  content.className = "content";
+  el.appendChild(content);
+  thread.appendChild(el);
+  stream = {el, content, text:""};
+  scrollThread();
+  return stream;
+}
+// Each `response` event carries the NEXT chunk; accumulate until final.
+function addAssistant(text, final){
+  const s = ensureStream();
+  s.text += (text==null?"":String(text));
+  s.content.textContent = s.text;
+  if(final){ s.el.classList.remove("streaming"); stream = null; }
+  scrollThread();
+}
+function scrollThread(){ thread.scrollTop = thread.scrollHeight; }
+
+/* ============================================================
+   EVENT LOG
+   ============================================================ */
+const logEl = $("#log");
+function log(message, level){
+  const ln = document.createElement("div");
+  ln.className = "ln " + (level||"info");
+  const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
+  ln.innerHTML = `<span class="t">${ts}</span>`;
+  const m = document.createElement("span"); m.className="m"; m.textContent = message;
+  ln.appendChild(m);
+  logEl.appendChild(ln);
+  if(logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+$("#clearLog").addEventListener("click", ()=>{ logEl.innerHTML=""; });
+
+/* ============================================================
+   BACKEND HELPERS  (same-origin; demo mode intercepts when offline)
+   ============================================================ */
+let DEMO = false;
+
+async function api(path, opts){
+  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, opts||{}));
+  if(!res.ok) throw new Error(path+" → "+res.status);
+  const ct = res.headers.get("content-type")||"";
+  return ct.includes("json") ? res.json() : res.text();
+}
+async function postAction(action){
+  log("» action: "+action, "sys");
+  if(DEMO){ demoAction(action); return; }
+  try{ await api("/api/action",{method:"POST",body:JSON.stringify({action})}); }
+  catch(e){ log("action failed: "+e.message,"error"); }
+}
+async function sendTurn(text){
+  addUser(text);
+  log("» turn: "+text, "sys");
+  if(DEMO){ demoTurn(text); return; }
+  try{ await api("/api/turn",{method:"POST",body:JSON.stringify({text})}); }
+  catch(e){ log("turn failed: "+e.message,"error"); addAssistant("[error: "+e.message+"]", true); }
+}
+
+/* ============================================================
+   SETTINGS  (field names match the GET/POST contract exactly)
+   ============================================================ */
+let settings = {};
+function flashSaved(){
+  const f = $("#savedFlash"); f.classList.add("show");
+  clearTimeout(flashSaved._t); flashSaved._t = setTimeout(()=>f.classList.remove("show"), 1100);
+}
+function fillSelect(sel, items, valueOf, labelOf, currentVal){
+  sel.innerHTML = "";
+  (items||[]).forEach(it=>{
+    const o = document.createElement("option");
+    o.value = valueOf(it); o.textContent = labelOf(it);
+    if(String(o.value) === String(currentVal)) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+function populate(s){
+  settings = s || {};
+  const presets = settings.brain_presets || [];
+  // Brain preset is its OWN control → POST {brain_preset: ...} (NOT model).
+  fillSelect($("#brain"), presets, x=>x, x=>x, settings.brain_preset || presets[0] || "");
+  fillSelect($("#provider"), settings.providers||[], x=>x, x=>x, settings.provider);
+  fillSelect($("#voice"), settings.voices||[], v=>v.id, v=> v.note ? `${v.name} — ${v.note}` : v.name, settings.voice_en);
+  $("#model").value      = settings.model ?? "";
+  $("#modelDeep").value  = settings.model_deep ?? "";
+  $("#wake").value       = settings.wake_phrase ?? "";
+  $("#agentModel").value = settings.agent_model ?? "";
+  $("#workspace").value  = settings.agent_workspace ?? "";
+  $("#sysPrompt").value  = settings.system_prompt ?? "";
+  let ls = parseFloat(settings.length_scale);
+  if(isNaN(ls)) ls = 1.0;
+  $("#length").value = ls;
+  $("#lengthVal").textContent = ls.toFixed(2);
+  updateVoiceNote();
+  // readout
+  $("#roWake").textContent  = settings.wake_phrase || "—";
+  const v = (settings.voices||[]).find(x=>x.id===settings.voice_en);
+  $("#roVoice").textContent = (v && v.name) || settings.voice_en || "—";
+  $("#roBrain").textContent = settings.model || settings.provider || "—";
+}
+function updateVoiceNote(){
+  const sel = $("#voice");
+  const v = (settings.voices||[]).find(x=>x.id===sel.value);
+  $("#voiceNote").textContent = v && v.note ? v.note : "";
+}
+
+async function applyPatch(patch){
+  const k = Object.keys(patch)[0];
+  const val = patch[k];
+  log(`« set ${k} = ${typeof val==="string" && val.length>40 ? val.slice(0,40)+"…" : val}`, "sys");
+  if(DEMO){ Object.assign(settings, patch); flashSaved(); return; }
+  try{
+    const updated = await api("/api/settings",{method:"POST",body:JSON.stringify(patch)});
+    if(updated && typeof updated==="object") populate(updated);
+    else Object.assign(settings, patch);
+    flashSaved();
+  }catch(e){ log("save failed: "+e.message, "error"); }
+}
+
+// Brain preset → POST {brain_preset: <value>}
+$("#brain").addEventListener("change", e=> applyPatch({brain_preset: e.target.value}));
+
+// Each [data-key] control maps 1:1 to a contract field name.
+document.querySelectorAll("[data-key]").forEach(el=>{
+  const key = el.dataset.key;
+  if(el.type === "range"){
+    el.addEventListener("input", ()=>{ $("#lengthVal").textContent = parseFloat(el.value).toFixed(2); });
+    el.addEventListener("change", ()=> applyPatch({[key]: parseFloat(el.value)}));
+  } else if(el.tagName==="SELECT"){
+    el.addEventListener("change", ()=>{ if(el.id==="voice") updateVoiceNote(); applyPatch({[key]: el.value}); });
+  } else if(el.tagName==="TEXTAREA"){
+    el.addEventListener("change", ()=> applyPatch({[key]: el.value}));
+  } else { // text inputs — commit on blur/change; Enter blurs to commit
+    el.addEventListener("change", ()=> applyPatch({[key]: el.value}));
+    el.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); el.blur(); } });
+  }
+});
+
+/* ============================================================
+   CONTROLS WIRING
+   ============================================================ */
+$("#sendForm").addEventListener("submit", e=>{
+  e.preventDefault();
+  const v = $("#textInput").value.trim();
+  if(!v) return;
+  sendTurn(v); $("#textInput").value="";
+});
+
+let wakeOn = false;
+$("#wakeBtn").addEventListener("click", ()=>{
+  wakeOn = !wakeOn;
+  const b = $("#wakeBtn");
+  b.classList.toggle("on", wakeOn);
+  b.setAttribute("aria-pressed", String(wakeOn));
+  $("#wakeLabel").textContent = wakeOn ? "Stop Wake" : "Start Wake";
+  postAction(wakeOn ? "wake_start" : "wake_stop");
+});
+
+const pttBtn = $("#pttBtn");
+let pttHeld = false;
+function pttDown(){
+  if(pttHeld) return;
+  pttHeld = true;
+  pttBtn.classList.add("held");
+  pttBtn.setAttribute("aria-pressed","true");
+  postAction("ptt");
+}
+function pttUp(){
+  if(!pttHeld) return;
+  pttHeld = false;
+  pttBtn.classList.remove("held");
+  pttBtn.setAttribute("aria-pressed","false");
+}
+pttBtn.addEventListener("pointerdown", e=>{ e.preventDefault(); pttDown(); });
+["pointerup","pointerleave","pointercancel"].forEach(ev=> pttBtn.addEventListener(ev, pttUp));
+
+$("#resetBtn").addEventListener("click", ()=>{
+  postAction("reset");
+  stream=null; thread.innerHTML=""; turns=0; bump();
+  setState("idle","conversation buffer cleared.");
+});
+$("#listVoicesBtn").addEventListener("click", ()=> postAction("list_voices"));
+
+// keyboard: SPACE = push-to-talk (when not typing in a field)
+addEventListener("keydown", e=>{
+  if(e.code==="Space" && !e.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)){
+    e.preventDefault(); pttDown();
+  }
+});
+addEventListener("keyup", e=>{ if(e.code==="Space"){ pttUp(); } });
+
+/* ============================================================
+   SSE — /events  with auto-reconnect
+   ============================================================ */
+const conn = $("#conn"), connLabel = $("#connLabel");
+function setConn(state, label){
+  conn.dataset.c = state;
+  connLabel.textContent = label || (state==="open" ? "online" : state);
+}
+let es = null, retry = 0, retryTimer = null, sawOpen = false, probeTimer = null;
+
+function connect(){
+  setConn("connecting");
+  try{ es = new EventSource("/events"); }
+  catch(e){ scheduleReconnect(); return; }
+
+  es.onopen = ()=>{
+    sawOpen = true;
+    clearTimeout(probeTimer);
+    setConn("open");
+    retry=0;
+    log("event stream connected","sys");
+  };
+  es.onmessage = ev => handleEvent(ev.data);
+  es.onerror = ()=>{
+    if(DEMO) return;            // demo loop owns the UI now
+    setConn("closed");
+    if(es){ es.close(); es=null; }
+    scheduleReconnect();
+  };
+}
+function scheduleReconnect(){
+  if(DEMO) return;
+  clearTimeout(retryTimer);
+  const delay = Math.min(1000 * Math.pow(1.6, retry++), 12000);
+  log(`stream lost — reconnecting in ${(delay/1000).toFixed(1)}s`, "error");
+  retryTimer = setTimeout(connect, delay);
+}
+
+function handleEvent(raw){
+  let d;
+  try{ d = JSON.parse(raw); }
+  catch(e){ log("malformed event: "+raw, "error"); return; }
+  switch(d.type){
+    case "state":
+      setState(d.state, d.detail);
+      log(`state → ${d.state}${d.detail? " ("+d.detail+")":""}`, "evt");
+      break;
+    case "wake":
+      if(d.fired){ log("⚡ wake fired","evt"); }
+      break;
+    case "transcript":
+      addUser(d.text); log("transcript: "+(d.text==null?"":d.text), "evt");
+      break;
+    case "response": {
+      addAssistant(d.text, !!d.final);
+      const txt = d.text==null ? "" : String(d.text);
+      log(`response${d.final?" (final)":" (stream)"}: ${txt.slice(0,60)}${txt.length>60?"…":""}`,"evt");
+      break;
+    }
+    case "log":
+      log(d.message, d.level==="error" ? "error" : "info"); break;
+    default:
+      log("event: "+raw, "evt");
+  }
+}
+
+/* ============================================================
+   DEMO MODE  (static GitHub Pages showcase — no backend)
+   Engages if /api/settings fails OR SSE never opens within ~2s.
+   ============================================================ */
+const DEMO_SETTINGS = {
+  provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
+  voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko",
+  agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
+  system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
+  brain_preset:"haiku-sub",
+  brain_presets:["haiku-sub","sonnet-balanced","opus-deep","local-fast"],
+  providers:["local","openai","anthropic","gemini"],
+  voices:[
+    {name:"Amy",  id:"en_US-amy-medium",   note:"warm · US"},
+    {name:"Ryan", id:"en_US-ryan-high",    note:"crisp · US"},
+    {name:"Alba", id:"en_GB-alba-medium",  note:"bright · UK"},
+    {name:"Kai",  id:"en_GB-northern-low", note:"deep · UK"}
+  ]
+};
+
+// One full scripted turn, cycling every state, then idle, then loops.
+const DEMO_SCRIPT = [
+  {state:"listening",   detail:"listening for the wake word…",  hold:1700},
+  {wake:true},
+  {state:"recording",   detail:"mic is hot — capturing audio.", hold:1900},
+  {state:"stt",         detail:"transcribing captured audio…",  hold:1100},
+  {transcript:"What's the weather looking like this afternoon?"},
+  {state:"llm_request", detail:"dispatching request to brain…", hold:700},
+  {state:"llm_wait",    detail:"awaiting first token…",         hold:1100},
+  {state:"llm_response",detail:"generating reply tokens…",
+     streamWords:["Clear ","skies ","this ","afternoon ","— ","around ","19 ","degrees ","with ","a ","light ","breeze ","from ","the ","west."],
+     wordGap:130},
+  {state:"tts",         detail:"synthesizing speech…",          hold:900},
+  {state:"speaking",    detail:"playing response audio.",       hold:2600},
+  {state:"idle",        detail:"",                              hold:2400}
+];
+
+let demoTimer = null, demoStreamTimer = null, demoStep = 0;
+
+function enterDemo(){
+  if(DEMO) return;
+  DEMO = true;
+  if(es){ try{ es.close(); }catch(_){} es=null; }
+  clearTimeout(retryTimer);
+  $("#demoBadge").classList.add("show");
+  setConn("demo","demo mode");
+  log("no backend detected — entering DEMO MODE (scripted showcase)","sys");
+  if(!settings.brain_presets) populate(DEMO_SETTINGS);
+  demoStep = 0;
+  runDemoStep();
+}
+
+function runDemoStep(){
+  if(!DEMO) return;
+  if(demoStep >= DEMO_SCRIPT.length){
+    demoStep = 0;
+    demoTimer = setTimeout(runDemoStep, 1200);   // brief idle pause, then loop
+    return;
+  }
+  const ev = DEMO_SCRIPT[demoStep++];
+
+  if(ev.wake){ log("⚡ wake fired (demo)","evt"); demoTimer = setTimeout(runDemoStep, 250); return; }
+  if(ev.transcript){ addUser(ev.transcript); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
+
+  if(ev.state){ setState(ev.state, ev.detail); log("state → "+ev.state+" (demo)","evt"); }
+
+  if(ev.streamWords){
+    let i = 0;
+    const tick = ()=>{
+      if(!DEMO) return;
+      if(i < ev.streamWords.length){
+        addAssistant(ev.streamWords[i], false);
+        i++;
+        demoStreamTimer = setTimeout(tick, ev.wordGap || 120);
+      }else{
+        addAssistant("", true);                  // finalize the assistant bubble
+        demoTimer = setTimeout(runDemoStep, 500);
+      }
+    };
+    tick();
+    return;
+  }
+
+  demoTimer = setTimeout(runDemoStep, ev.hold || 1000);
+}
+
+// In demo mode a typed turn cuts in with a canned reply, then resumes the loop.
+function demoTurn(text){
+  clearTimeout(demoTimer); clearTimeout(demoStreamTimer);
+  const reply = ["You ","said: ","“",text,"”. ","In ","demo ","mode ","I ","just ","echo ","you ","— ","connect ","the ","backend ","for ","real ","answers."];
+  setState("stt","transcribing your text…");
+  setTimeout(()=>{
+    setState("llm_response","generating reply tokens…");
+    let i=0;
+    const tick=()=>{
+      if(i<reply.length){ addAssistant(reply[i++], false); demoStreamTimer=setTimeout(tick,90); }
+      else{
+        addAssistant("",true);
+        setState("speaking","playing response audio.");
+        setTimeout(()=>{ setState("idle",""); demoStep=0; demoTimer=setTimeout(runDemoStep,1500); }, 1600);
+      }
+    };
+    tick();
+  }, 600);
+}
+function demoAction(action){
+  if(action==="reset"){
+    stream=null; thread.innerHTML=""; turns=0; bump();
+    setState("idle","buffer cleared (demo).");
+    clearTimeout(demoStreamTimer); demoStep=0; clearTimeout(demoTimer); demoTimer=setTimeout(runDemoStep,1200);
+  }else if(action==="list_voices"){
+    log("voices: "+(settings.voices||[]).map(v=>v.name).join(", "),"evt");
+  }
+  // wake_start / wake_stop / ptt are already visualized by the running loop
+}
+
+/* ---------- boot ---------- */
+setState("idle");
+log("my-stt-tts console initialized","sys");
+
+(async function boot(){
+  let settingsOk = false;
+  try{
+    populate(await api("/api/settings"));
+    log("settings loaded","sys");
+    settingsOk = true;
+  }catch(e){
+    log("could not load settings: "+e.message,"error");
+  }
+  connect();
+  // If the stream never opens, assume a static/no-backend page → demo mode.
+  const wait = settingsOk ? 2000 : 1200;   // shorter wait if settings already failed
+  probeTimer = setTimeout(()=>{ if(!sawOpen && !DEMO) enterDemo(); }, wait);
+})();
+})();
+</script>
+</content>

@@ -16,6 +16,7 @@ support. On-device STT/TTS; only transcribed text ever leaves the machine.
 > Claude CLI); speaker ID; and "agent, …" dispatch. Design + roadmap: **[`PLAN.md`](PLAN.md)**.
 
 **🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
+**🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)** — the live `--browser` GUI (in demo mode).
 
 ## Why this exists
 

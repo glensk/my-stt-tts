@@ -1,16 +1,16 @@
-"""CLI entrypoint: wake-word / push-to-talk / typed voice loop (Phases 1-6).
+"""CLI entrypoint: wake-word / push-to-talk / typed / browser voice loop.
 
 Modes:
   (default)     push-to-talk: press Enter to start/stop recording each turn
   --wake        always-listening: say the wake phrase ("maziko"), then speak
-  --type        interactive typed input (no mic/STT) — for testing/dev
+  --type        interactive typed input (no mic/STT)
   --text "..."  run one typed turn, then exit
+  --browser     serve a live web GUI (state, transcript, settings, controls)
 
 Brain presets (``--brain``) switch provider+model in one word, e.g. ``haiku-sub``
 (subscription via the Claude CLI, no API key) or ``opus-api``. Say "agent, <task>"
 to delegate to a full MCP-capable Claude agent (set AGENT_WORKSPACE to enable).
-``--voice`` picks an English Piper voice; ``--list-voices`` shows the menu;
-``--settings`` (and ``-h``) print the resolved configuration.
+``--voice`` picks a Piper voice; ``--list-voices``/``--settings``/``-h`` print info.
 """
 
 from __future__ import annotations
@@ -19,10 +19,12 @@ import argparse
 import logging
 import os
 import sys
+import threading
 
 from . import audio, chimes
 from .brain import Brain, LLMError
 from .config import BRAIN_PRESETS, Config, ConfigError
+from .events import bus
 from .metrics import TurnMetrics
 from .text import SentenceChunker, strip_non_spoken
 from .tts import VOICE_PRESETS, TTSRouter, list_voice_presets
@@ -82,6 +84,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--text", help="Run one typed turn with this text, then exit.")
     parser.add_argument("--once", action="store_true", help="Run a single mic turn, then exit.")
+    parser.add_argument("--browser", action="store_true", help="Serve the live web GUI.")
+    parser.add_argument("--port", type=int, default=8765, help="Web GUI port (default 8765).")
     parser.add_argument("--debug", action="store_true", help="Speak stage cues + verbose logs.")
     parser.add_argument(
         "--brain",
@@ -133,20 +137,35 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
 
 
 def _respond(cfg: Config, brain: Brain, tts: TTSRouter, gate: audio.MicGate, text: str) -> None:
-    """Stream the LLM for ``text`` and speak it sentence-by-sentence."""
+    """Stream the LLM for ``text``, speak it, and publish live state to the bus."""
     metrics = TurnMetrics()
     metrics.note(transcript=text)
+    bus.transcript(text)
     chunker = SentenceChunker()
     try:
         with metrics.stage("llm_tts"):
+            bus.state("llm_request", f"{cfg.llm_provider} / {cfg.llm_model}")
+            bus.state("llm_wait")
+            first = True
             for delta in brain.stream(text):
+                if first:
+                    bus.state("llm_response")
+                    first = False
+                bus.response(delta, final=False)
                 for sentence in chunker.feed(delta):
+                    bus.state("speaking")
                     _speak(tts, gate, sentence)
-            _speak(tts, gate, chunker.flush())
+            tail = chunker.flush()
+            if tail:
+                bus.state("speaking")
+                _speak(tts, gate, tail)
+        bus.response("", final=True)
     except LLMError as exc:
         log.error("LLM error: %s", exc)
+        bus.log(str(exc), "error")
         _play(chimes.chime_error())
         tts.speak("Sorry, I had a problem.")
+    bus.state("idle")
     metrics.log()
 
 
@@ -154,12 +173,15 @@ def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> str:
     gate.gate()
     _play(chimes.chime_listening())
     gate.release()
+    bus.state("recording")
     clip = audio.record_push_to_talk(cfg.sample_rate, cfg.max_record_seconds)
     gate.gate()
     _play(chimes.chime_done())
     gate.release()
     if clip.size == 0:
+        bus.state("idle")
         return ""
+    bus.state("stt")
     return str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
 
 
@@ -190,32 +212,87 @@ def run_wake_loop(
 
     wake = WakeWord.from_config(cfg)
     if not wake.available():
-        print(
+        msg = (
             f'Wake model not found at {cfg.wake_model_path}. Train "{cfg.wake_phrase}" first '
-            "— see wakewords/WAKEWORD.md.",
-            file=sys.stderr,
+            "— see wakewords/WAKEWORD.md."
         )
+        print(msg, file=sys.stderr)
+        bus.log(msg, "error")
         return 2
     vad = SileroVad(cfg.sample_rate)
     frame_seconds = 512 / cfg.sample_rate
     print(f'Listening for "{cfg.wake_phrase}". Ctrl-C to quit.')
     while True:
+        bus.state("listening", cfg.wake_phrase)
         audio.listen_for_wake(wake, cfg.sample_rate)
+        bus.wake()
         gate.gate()
         _play(chimes.chime_listening())
         gate.release()
         follow_up = False
         while True:
+            bus.state("recording")
             endpointer = SilenceEndpointer(cfg.vad_silence_seconds, frame_seconds=frame_seconds)
             max_s = cfg.follow_up_seconds if follow_up else cfg.max_record_seconds
             clip = audio.record_with_vad(cfg.sample_rate, vad, endpointer, max_seconds=max_s)
             if clip.size == 0:
                 break  # silence -> back to listening for the wake word
+            bus.state("stt")
             text = str(stt.transcribe(clip, cfg.sample_rate).text).strip()  # type: ignore[attr-defined]
             if not text:
                 break
             _respond(cfg, brain, tts, gate, text)
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
+
+
+def _run_browser(
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    gate: audio.MicGate,
+    stt: object | None,
+    *,
+    wake: bool,
+    port: int = 8765,
+) -> int:
+    """Serve the web GUI; turns are driven from the page (and optional wake loop)."""
+    import webbrowser
+
+    from .webui import WebUI
+
+    def on_turn(text: str) -> None:
+        _respond(cfg, brain, tts, gate, text)
+
+    def on_action(name: str, _data: dict) -> None:
+        if name == "reset":
+            brain.reset()
+            bus.log("conversation reset")
+        elif name == "list_voices":
+            bus.log("voices: " + ", ".join(VOICE_PRESETS))
+        elif name in {"wake_start", "wake_stop", "ptt"}:
+            bus.log(
+                f"'{name}' runs from the terminal in this build (use --wake / push-to-talk)",
+                "error",
+            )
+        else:
+            bus.log(f"unknown action '{name}'", "error")
+
+    ui = WebUI(cfg, on_turn, on_action, port=port)
+    bus.state("idle")
+    if wake and stt is not None:
+        threading.Thread(
+            target=run_wake_loop, args=(cfg, brain, tts, gate, stt), daemon=True
+        ).start()
+    print(f"my-stt-tts web UI → {ui.url()}  (Ctrl-C to quit)")
+    try:
+        webbrowser.open(ui.url())
+    except Exception:  # headless / no browser is fine
+        pass
+    try:
+        ui.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbye")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,15 +316,19 @@ def main(argv: list[str] | None = None) -> int:
     brain = Brain(cfg)
     tts = TTSRouter(cfg)
     gate = audio.MicGate(cfg.mic_gate_tail_seconds)
-    typed_mode = args.type_mode or args.text is not None
+
+    needs_stt = not args.type_mode and args.text is None and (not args.browser or args.wake)
     stt: object | None = None
-    if not typed_mode:
+    if needs_stt:
         from .stt import ParakeetSTT  # heavy (MLX); only needed for mic modes
 
         stt = ParakeetSTT(cfg.stt_model)
 
-    print(settings_text(cfg))
+    if not args.browser:
+        print(settings_text(cfg))
     try:
+        if args.browser:
+            return _run_browser(cfg, brain, tts, gate, stt, wake=args.wake, port=args.port)
         if args.text is not None:
             run_turn(cfg, brain, tts, gate, typed_text=args.text)
         elif args.type_mode:
