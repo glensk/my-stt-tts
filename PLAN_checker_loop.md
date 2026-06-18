@@ -63,22 +63,28 @@ Now matched on barge-in, min-words gating, and the Smart Turn model; **ahead** o
 post-interruption context repair (`commit_spoken` — pipecat has open bugs #2791/#4111).
 Remaining gaps:
 
-- [ ] **R2-1 — Acoustic echo cancellation (AEC)** *(highest value)*: software AEC
+- [x] **R2-1 — Acoustic echo cancellation (AEC)** *(highest value)*: software AEC
   (macOS `VoiceProcessingIO`, or WebRTC APM / speexdsp echo canceller referencing the
   played signal) so barge-in works on open speakers, not just headphones.
-- [ ] **R2-2 — True streaming STT**: replace whole-buffer re-transcription with a
+- [x] **R2-2 — True streaming STT**: replace whole-buffer re-transcription with a
   bounded sliding-window re-decode (last N s) or a streaming engine, so partial latency
   and CPU don't grow with utterance length.
-- [ ] **R2-3 — Acoustic interruption prediction**: a 3rd `InterruptGate` guard scoring
+- [x] **R2-3 — Acoustic interruption prediction**: a 3rd `InterruptGate` guard scoring
   barge-in audio for intent-to-take-floor (talk through "mhm", yield to a real interrupt).
-- [ ] **R2-4 — Smart-turn by default**: auto-download the Smart Turn ONNX on first run
+- [x] **R2-4 — Smart-turn by default**: auto-download the Smart Turn ONNX on first run
   (like Piper voices) and make it the default `turn_analyzer`; silence = explicit fallback.
 - [ ] **R2-5 — Network transport (G7)**: a WebSocket (and/or WebRTC) audio transport so
   remote satellites / the browser carry mic+TTS audio, not just the local mic.
-- [ ] **R2-6 — Robust interrupt plumbing**: feed the captured barge-in audio straight
+- [x] **R2-6 — Robust interrupt plumbing**: feed the captured barge-in audio straight
   into the streaming transcriber (no from-scratch re-transcribe); interrupt as bus events.
 - [ ] **R2-7 — Backend breadth + in-conversation tool calling**: optional cloud STT/TTS
   behind the existing seams (esp. better German TTS); real function calling in `Brain.stream`.
 
-Current action: Wave A implementer (R2-1,2,3,4,6 — coupled audio/STT/interrupt core),
-then Wave B (R2-5 transport, R2-7 tools/backends), then a fresh round-3 checker.
+Merged R2-1/2/3/4/6 at `878bbc7` (7 commits, +1712 lines, new `aec.py`; **101 tests
+pass**, lint clean). AEC: macOS hardware `VoiceProcessingIO` (PyObjC, available) + numpy
+NLMS fallback (~19 dB ERLE); the HW-cancelled PCM isn't yet routed end-to-end through the
+`sounddevice` capture path (residual G3). Smart-turn download guard tested with mocked
+network only.
+
+Current action: Wave B implementer (R2-5 WebSocket/WebRTC transport, R2-7 in-conversation
+tool calling + optional cloud STT/TTS), then a fresh round-3 checker.
