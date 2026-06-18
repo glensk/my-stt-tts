@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .config import BRAIN_PRESETS, PROVIDERS, Config
+from .config import BARGE_IN_MODES, BRAIN_PRESETS, PROVIDERS, TURN_ANALYZERS, Config
 from .events import bus
 from .tts import _VOICE_NOTES, VOICE_PRESETS
 
@@ -44,8 +44,14 @@ def settings_dict(cfg: Config) -> dict[str, Any]:
         "agent_workspace": cfg.agent_workspace or "",
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
+        "barge_in": cfg.barge_in,
+        "turn_analyzer": cfg.turn_analyzer,
+        "stt_streaming": cfg.stt_streaming,
+        "interrupt_min_words": cfg.interrupt_min_words,
         "brain_presets": sorted(BRAIN_PRESETS),
         "providers": list(PROVIDERS),
+        "barge_in_modes": list(BARGE_IN_MODES),
+        "turn_analyzers": list(TURN_ANALYZERS),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
             for name in VOICE_PRESETS
@@ -75,6 +81,14 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         cfg.agent_model = str(data["agent_model"])
     if "system_prompt" in data:
         cfg.system_prompt = str(data["system_prompt"])
+    if "barge_in" in data:
+        cfg.barge_in = str(data["barge_in"])
+    if "turn_analyzer" in data:
+        cfg.turn_analyzer = str(data["turn_analyzer"])
+    if "stt_streaming" in data:
+        cfg.stt_streaming = bool(data["stt_streaming"])
+    if "interrupt_min_words" in data:
+        cfg.interrupt_min_words = int(data["interrupt_min_words"])
 
 
 class _Handler(BaseHTTPRequestHandler):

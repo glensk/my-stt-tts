@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 import tempfile
 import wave
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -29,6 +30,104 @@ class STTResult:
 
     text: str
     language: str | None = None
+
+
+class Transcriber(Protocol):
+    """Minimal STT engine surface used by the streaming path."""
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> STTResult:
+        """Transcribe a float32 mono clip."""
+        ...
+
+
+class StreamingTranscriber:
+    """Incremental transcription: re-transcribe the growing audio buffer (G6).
+
+    parakeet-mlx has no token-streaming API, so we approximate streaming by
+    re-running the engine on the **accumulated** audio every
+    ``partial_interval_ms`` of new audio and emitting the result as a *partial*
+    transcript. The caller publishes partials to the event bus during the turn
+    and gets a final on end-of-turn — cutting perceived latency versus waiting
+    for the whole clip. Re-transcription is cheap on MLX for short turns and is
+    skipped when an interval hasn't elapsed.
+
+    Engine-agnostic: any object with ``transcribe(audio, sample_rate)`` works,
+    so tests can inject a fake without a mic or GPU.
+    """
+
+    def __init__(
+        self,
+        engine: Transcriber,
+        sample_rate: int = 16000,
+        *,
+        partial_interval_ms: float = 600.0,
+    ) -> None:
+        self.engine = engine
+        self.sample_rate = sample_rate
+        self.partial_interval_ms = partial_interval_ms
+        self._chunks: list[np.ndarray] = []
+        self._samples_since_partial = 0
+        self._last_partial = ""
+
+    @property
+    def _interval_samples(self) -> int:
+        return max(1, int(self.sample_rate * self.partial_interval_ms / 1000.0))
+
+    def reset(self) -> None:
+        """Clear buffered audio for a new turn."""
+        self._chunks = []
+        self._samples_since_partial = 0
+        self._last_partial = ""
+
+    def feed(self, frame: np.ndarray) -> str | None:
+        """Add a mic frame; return a NEW partial transcript when one is due, else None.
+
+        A partial is produced once at least ``partial_interval_ms`` of audio has
+        accumulated since the previous one, and only if the text actually changed.
+        """
+        arr = np.asarray(frame, dtype=np.float32).ravel()
+        if arr.size:
+            self._chunks.append(arr)
+            self._samples_since_partial += arr.size
+        if self._samples_since_partial < self._interval_samples:
+            return None
+        self._samples_since_partial = 0
+        text = self._transcribe_all().text.strip()
+        if text and text != self._last_partial:
+            self._last_partial = text
+            return text
+        return None
+
+    def final(self) -> STTResult:
+        """Transcribe the full accumulated buffer (end-of-turn)."""
+        return self._transcribe_all()
+
+    def _transcribe_all(self) -> STTResult:
+        if not self._chunks:
+            return STTResult(text="")
+        audio = np.concatenate(self._chunks)
+        return self.engine.transcribe(audio, self.sample_rate)
+
+
+def stream_transcribe(
+    engine: Transcriber,
+    frames: Iterator[np.ndarray],
+    sample_rate: int = 16000,
+    *,
+    partial_interval_ms: float = 600.0,
+    on_partial: Callable[[str], None] | None = None,
+) -> STTResult:
+    """Drive a :class:`StreamingTranscriber` over ``frames``; return the final.
+
+    ``on_partial`` (if given) is called with each new partial transcript as it
+    becomes available — wire it to ``bus.transcript(text, partial=True)``.
+    """
+    streamer = StreamingTranscriber(engine, sample_rate, partial_interval_ms=partial_interval_ms)
+    for frame in frames:
+        partial = streamer.feed(frame)
+        if partial is not None and on_partial is not None:
+            on_partial(partial)
+    return streamer.final()
 
 
 def _write_wav(path: str, audio: np.ndarray, sample_rate: int) -> None:

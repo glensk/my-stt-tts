@@ -12,6 +12,7 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -157,6 +158,134 @@ def record_with_vad(
 
     if not spoke:
         return np.zeros(0, dtype=np.float32)  # nothing was said -> end the turn
+    captured = np.concatenate(collected)
+    if preroll is not None:
+        captured = np.concatenate([preroll.get(), captured])
+    return captured
+
+
+@dataclass
+class BargeInResult:
+    """Outcome of monitoring the mic during playback (G1).
+
+    ``interrupted`` is True if the user barged in; ``captured`` holds the audio
+    recorded from the moment speech was detected (so the new turn is not clipped).
+    """
+
+    interrupted: bool
+    captured: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+
+def monitor_during_playback(
+    playback: Any,
+    sample_rate: int,
+    vad: Any,
+    gate: Any,
+    *,
+    energy_floor: float = 0.0,
+    poll_seconds: float = 0.05,
+    frame_samples: int = 512,
+) -> BargeInResult:
+    """Keep the mic LIVE while ``playback`` runs, abort it on confirmed speech.
+
+    Runs VAD on the live input and feeds the false-interrupt :class:`gate`
+    (:class:`~my_stt_tts.interrupt.InterruptGate`). A frame below ``energy_floor``
+    is treated as silence to reject open-speaker bleed. When the gate authorises
+    an interruption, ``playback.cancel()`` is called and the captured speech (from
+    the first voiced frame onward) is returned for the user's new turn. If
+    playback finishes first, returns ``interrupted=False``.
+
+    This replaces half-duplex gating: the mic stays open the whole time.
+    """
+    from .interrupt import frame_energy
+
+    sd = _sd()
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    gate.reset()
+    captured: list[np.ndarray] = []
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=frame_samples,
+        callback=_callback,
+    ):
+        while not playback.done:
+            try:
+                frame = frames_q.get(timeout=poll_seconds)
+            except queue.Empty:
+                continue
+            loud_enough = frame_energy(frame) >= energy_floor
+            is_speech = loud_enough and vad.is_speech(frame)
+            if is_speech or captured:
+                captured.append(frame)  # buffer from the first voiced frame on
+            if gate.update(is_speech):
+                playback.cancel()
+                clip = np.concatenate(captured) if captured else np.zeros(0, dtype=np.float32)
+                return BargeInResult(interrupted=True, captured=clip)
+    playback.wait()
+    return BargeInResult(interrupted=False)
+
+
+def record_turn(
+    sample_rate: int,
+    vad: Any,
+    analyzer: Any,
+    *,
+    max_seconds: float,
+    streamer: Any = None,
+    on_partial: Any = None,
+    preroll: PreRollBuffer | None = None,
+    frame_samples: int = 512,
+) -> np.ndarray:
+    """Like :func:`record_with_vad` but driven by a :class:`TurnAnalyzer` (G2) and
+    able to emit partial transcripts during the turn (G6).
+
+    ``analyzer.update(frame, is_speech)`` decides end-of-turn (prosody-aware when
+    a Smart Turn analyzer is configured). If ``streamer`` (a
+    :class:`~my_stt_tts.stt.StreamingTranscriber`) is given, each frame is fed to
+    it and any new partial is passed to ``on_partial``.
+    """
+    sd = _sd()
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    collected: list[np.ndarray] = []
+    spoke = False
+    analyzer.reset()
+    if streamer is not None:
+        streamer.reset()
+    start = time.monotonic()
+    with sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=frame_samples,
+        callback=_callback,
+    ):
+        while time.monotonic() - start < max_seconds:
+            try:
+                frame = frames_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            collected.append(frame)
+            is_speech = vad.is_speech(frame)
+            spoke = spoke or is_speech
+            if streamer is not None:
+                partial = streamer.feed(frame)
+                if partial is not None and on_partial is not None:
+                    on_partial(partial)
+            if analyzer.update(frame, is_speech):
+                break
+
+    if not spoke:
+        return np.zeros(0, dtype=np.float32)
     captured = np.concatenate(collected)
     if preroll is not None:
         captured = np.concatenate([preroll.get(), captured])

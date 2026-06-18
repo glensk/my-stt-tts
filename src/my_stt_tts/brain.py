@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 from .agent import AgentError, dispatch_to_agent
@@ -52,6 +52,9 @@ class Brain:
         self._rate = RateLimiter(cfg.requests_per_minute)
         self._session_id: str | None = None  # claude-cli chat session
         self._agent_session_id: str | None = None  # delegated-agent session
+        # Index of the assistant turn just appended by stream(); commit_spoken()
+        # uses it to repair history after a barge-in (G5).
+        self._pending_assistant_index: int | None = None
 
     def reset(self) -> None:
         """Forget the conversation (e.g. after an idle timeout)."""
@@ -82,8 +85,15 @@ class Brain:
             )
         return self._client
 
-    def stream(self, user_text: str, *, deep: bool | None = None) -> Iterator[str]:
-        """Yield reply text deltas; append the full reply to history at the end."""
+    def stream(self, user_text: str, *, deep: bool | None = None) -> Generator[str, None, None]:
+        """Yield reply text deltas, recording the reply into history.
+
+        History is appended in the ``finally`` block so a generation aborted by a
+        barge-in still stores what was produced. **The caller is responsible for
+        repairing the assistant turn to only what was actually *voiced*** — call
+        :meth:`commit_spoken` after consuming the stream so the model's memory
+        matches reality (G5). Without that call, the full generated reply stands.
+        """
         if not self._rate.acquire():
             raise LLMError("request rate exceeded — slow down")
         use_deep = should_use_deep(self.cfg, user_text) if deep is None else deep
@@ -91,6 +101,7 @@ class Brain:
         self.history.append({"role": "user", "content": user_text})
         self._trim()
         reply: list[str] = []
+        self._pending_assistant_index = None
         try:
             agent_task = self._agent_task(user_text)
             if agent_task is not None:
@@ -111,6 +122,26 @@ class Brain:
         finally:
             if reply:
                 self.history.append({"role": "assistant", "content": "".join(reply)})
+                self._pending_assistant_index = len(self.history) - 1
+
+    def commit_spoken(self, spoken_text: str) -> None:
+        """Repair the just-streamed assistant turn to only what was voiced (G5).
+
+        On a barge-in, only part of the generated reply was actually spoken aloud
+        before TTS was aborted. Replacing the stored assistant content with that
+        spoken prefix keeps the LLM's memory honest. If nothing was voiced, the
+        assistant turn is dropped entirely. A no-op when there is no pending turn
+        (e.g. the reply completed normally and you keep the full text).
+        """
+        index = self._pending_assistant_index
+        if index is None or not 0 <= index < len(self.history):
+            return
+        spoken = spoken_text.strip()
+        if spoken:
+            self.history[index]["content"] = spoken
+        else:
+            del self.history[index]
+        self._pending_assistant_index = None
 
     # --- Agent dispatch ("agent, <task>" -> full MCP-capable Claude) ---
 
