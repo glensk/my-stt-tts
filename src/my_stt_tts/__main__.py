@@ -9,13 +9,15 @@ Modes:
 Brain presets (``--brain``) switch provider+model in one word, e.g. ``haiku-sub``
 (subscription via the Claude CLI, no API key) or ``opus-api``. Say "agent, <task>"
 to delegate to a full MCP-capable Claude agent (set AGENT_WORKSPACE to enable).
-``--voice`` picks an English Piper voice; ``--list-voices`` shows the menu.
+``--voice`` picks an English Piper voice; ``--list-voices`` shows the menu;
+``--settings`` (and ``-h``) print the resolved configuration.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from . import audio, chimes
@@ -27,12 +29,49 @@ from .tts import VOICE_PRESETS, TTSRouter, list_voice_presets
 
 log = logging.getLogger("my_stt_tts")
 _CHIME_SR = chimes.DEFAULT_SR
+_BLUE = "\033[34m"
+_RESET = "\033[0m"
+
+
+def _use_color() -> bool:
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def settings_text(cfg: Config, *, color: bool | None = None) -> str:
+    """A human-readable summary of the resolved settings (brain, voice, etc.)."""
+    use = _use_color() if color is None else color
+    blue = _BLUE if use else ""
+    reset = _RESET if use else ""
+    prompt_head = (cfg.system_prompt.strip().splitlines() or [""])[0][:68]
+    agent_ws = cfg.agent_workspace or "(disabled — set AGENT_WORKSPACE)"
+    rows = [
+        "current settings (override via .env or flags):",
+        f"  brain      {blue}{cfg.llm_provider} / {cfg.llm_model}{reset}  (deep: {cfg.llm_model_deep})",
+        f"  voice      en={blue}{cfg.tts_voices.get('en')}{reset}"
+        f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
+        f"  length-scale {cfg.tts_length_scale}",
+        f"  stt        {blue}{cfg.stt_model}{reset}",
+        f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
+        f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
+        f"  model {cfg.agent_model}",
+        f"  prompt     {blue}{prompt_head}…{reset}  (edit prompts/system_prompt.md)",
+    ]
+    return "\n".join(rows)
+
+
+def _epilog() -> str:
+    try:
+        return settings_text(Config.from_env())
+    except Exception:  # never let a bad .env break --help
+        return "current settings: (unavailable — check your .env)"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="my-stt-tts",
         description="Local voice assistant: wake/typed -> STT -> LLM -> TTS (Anthropic by default).",
+        epilog=_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--wake", action="store_true", help="Always-listen for the wake phrase.")
     parser.add_argument(
@@ -58,6 +97,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--list-voices", action="store_true", help="List the English voice presets and exit."
+    )
+    parser.add_argument(
+        "--settings", action="store_true", help="Print the resolved settings and exit."
     )
     return parser.parse_args(argv)
 
@@ -186,6 +228,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(message)s")
     try:
         cfg = _build_config(args)
+        if args.settings:
+            print(settings_text(cfg))
+            return 0
         cfg.validate()
     except ConfigError as exc:
         print(exc, file=sys.stderr)
@@ -201,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
         stt = ParakeetSTT(cfg.stt_model)
 
-    print(f"my-stt-tts ready (provider={cfg.llm_provider}, model={cfg.llm_model}).")
+    print(settings_text(cfg))
     try:
         if args.text is not None:
             run_turn(cfg, brain, tts, gate, typed_text=args.text)

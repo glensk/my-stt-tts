@@ -126,3 +126,20 @@ def test_agent_disabled_without_workspace():
     cfg = Config(llm_provider="claude-cli", agent_workspace=None)
     brain = Brain(cfg)
     assert "not configured" in "".join(brain.stream("agent, do something")).lower()
+
+
+def test_calibrate_threshold_recommends_reasonable_value():
+    from my_stt_tts.speaker_id import calibrate_threshold
+
+    centroids = {"alice": np.array([1.0, 0.0, 0.0]), "bob": np.array([0.0, 1.0, 0.0])}
+    labeled = {
+        "alice": [np.array([0.95, 0.1, 0.0]), np.array([0.9, 0.2, 0.0])],
+        "bob": [np.array([0.1, 0.95, 0.0])],
+        UNKNOWN: [np.array([0.6, 0.6, 0.6])],  # impostor ~equidistant -> must be rejected
+    }
+    best, rows = calibrate_threshold(centroids, labeled, margin=0.05)
+    assert 0.30 <= best <= 0.70
+    assert len(rows) == 21
+    assert match_speaker(labeled["alice"][0], centroids, threshold=best, margin=0.05)[0] == "alice"
+    rejected = match_speaker(labeled[UNKNOWN][0], centroids, threshold=best, margin=0.05)[0]
+    assert rejected in {UNKNOWN, AMBIGUOUS}

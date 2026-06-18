@@ -1,6 +1,6 @@
 """Speaker identification: enrollment centroids + cosine match with rejection.
 
-The matching math is pure and unit-tested. The ECAPA-TDNN embedder
+The matching + calibration math is pure and unit-tested. The ECAPA-TDNN embedder
 (``speechbrain``) is lazy-imported from the ``speaker`` extra and runs in
 parallel with STT on the same audio clip, so it adds ~no wall-clock latency.
 """
@@ -51,6 +51,49 @@ def match_speaker(
     if best - second < margin:
         return AMBIGUOUS, best
     return best_name, best
+
+
+def calibrate_threshold(
+    centroids: dict[str, np.ndarray],
+    labeled: dict[str, list[np.ndarray]],
+    *,
+    thresholds: list[float] | None = None,
+    margin: float = 0.06,
+) -> tuple[float, list[tuple[float, float, float]]]:
+    """Sweep the absolute match threshold over labeled held-out embeddings.
+
+    ``labeled`` maps each true speaker name (or :data:`UNKNOWN` for impostor /
+    guest clips) to a list of test embeddings. Returns
+    ``(recommended_threshold, rows)`` where each row is
+    ``(threshold, accuracy, impostor_accept_rate)``. The recommendation maximises
+    accuracy while preferring thresholds that accept zero impostors — i.e. it errs
+    toward rejecting strangers, which is what you want for a home assistant.
+    """
+    if thresholds is None:
+        thresholds = [round(0.30 + 0.02 * i, 2) for i in range(21)]  # 0.30 .. 0.70
+    rows: list[tuple[float, float, float]] = []
+    for thr in thresholds:
+        correct = total = impostors = impostor_accepts = 0
+        for true_name, embeddings in labeled.items():
+            is_impostor = true_name == UNKNOWN
+            for emb in embeddings:
+                name, _ = match_speaker(emb, centroids, threshold=thr, margin=margin)
+                total += 1
+                if is_impostor:
+                    impostors += 1
+                    if name in {UNKNOWN, AMBIGUOUS}:
+                        correct += 1
+                    else:
+                        impostor_accepts += 1
+                elif name == true_name:
+                    correct += 1
+        accuracy = correct / total if total else 0.0
+        far = impostor_accepts / impostors if impostors else 0.0
+        rows.append((thr, round(accuracy, 3), round(far, 3)))
+
+    zero_far = [r for r in rows if r[2] == 0.0]
+    best = max(zero_far or rows, key=lambda r: r[1])
+    return best[0], rows
 
 
 class EcapaEmbedder:
