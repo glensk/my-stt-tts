@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import wave
 from functools import lru_cache
 from pathlib import Path
 
@@ -177,8 +178,6 @@ def _read_wav(path: str) -> tuple[np.ndarray | None, int | None]:
     Returns ``(None, None)`` if the file can't be read; never raises (the AEC
     reference is best-effort and must not break playback).
     """
-    import wave  # noqa: PLC0415 — only needed when reading back the reference
-
     try:
         with wave.open(path, "rb") as handle:
             sr = handle.getframerate()
@@ -218,6 +217,59 @@ def _ensure_piper_voice(data_dir: str, voice: str) -> bool:
     return (Path(data_dir) / f"{voice}.onnx").exists()
 
 
+class CloudTTS:
+    """Optional cloud TTS (R2-7): an OpenAI-compatible speech endpoint.
+
+    Renders text to a WAV via a ``/audio/speech``-style API (OpenAI TTS, or any
+    compatible gateway) — useful for a **high-quality cloud German voice**, since
+    the local German TTS is the weak spot. **Local-first**: selected only when
+    ``tts_backend=cloud`` *and* an API key is present; otherwise the router uses
+    Piper / ``say``. The ``openai`` client is lazy-imported from the ``llm`` extra.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini-tts",
+        *,
+        voice: str = "alloy",
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        self.model = model
+        self.voice = voice
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client: object | None = None
+
+    def available(self) -> bool:
+        """True when an API key is configured (so cloud TTS can actually be used)."""
+        return bool(self.api_key)
+
+    def _ensure(self) -> object:
+        if self._client is None:
+            from openai import OpenAI
+
+            self._client = OpenAI(api_key=self.api_key or "not-needed", base_url=self.base_url)
+        return self._client
+
+    def render(self, text: str) -> tuple[np.ndarray | None, int | None]:
+        """Render ``text`` to PCM via the cloud endpoint (WAV response → float32)."""
+        client = self._ensure()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            out = handle.name
+        try:
+            response = client.audio.speech.create(  # type: ignore[attr-defined]
+                model=self.model, voice=self.voice, input=text, response_format="wav"
+            )
+            response.stream_to_file(out)
+            return _read_wav(out)
+        except Exception:  # never break the loop on a cloud hiccup
+            log.warning("cloud TTS render failed", exc_info=True)
+            return None, None
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+
 class TTSRouter:
     """Synthesize and play text in the right voice for its language.
 
@@ -228,10 +280,57 @@ class TTSRouter:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
+        self._cloud: CloudTTS | None = None
+        if getattr(cfg, "tts_backend", "local") == "cloud":
+            cloud = CloudTTS(
+                cfg.tts_cloud_model,
+                voice=cfg.tts_cloud_voice,
+                api_key=cfg.tts_cloud_api_key,
+                base_url=cfg.tts_cloud_base_url,
+            )
+            if cloud.available():
+                self._cloud = cloud
+            else:
+                log.info("cloud TTS requested but no API key set; using local Piper / say.")
 
     def speak(self, text: str, lang: str | None = None) -> None:
         """Synthesize ``text`` and play it, blocking until done."""
         self.start_speaking(text, lang).wait()
+
+    def synth_pcm(self, text: str, lang: str | None = None) -> tuple[np.ndarray, int]:
+        """Synthesize ``text`` to float32 mono PCM + sample rate (no playback).
+
+        Used by the network transport (R2-5): the TTS audio is forwarded to a
+        remote satellite / browser instead of being played on the local speaker.
+        Uses Piper when available (it already renders to a WAV we can read back);
+        falls back to macOS ``say`` rendering to an AIFF. Returns ``(empty, sr)``
+        for blank text or when no renderer is available (the caller then has
+        nothing to forward — graceful, never raises).
+        """
+        text = text.strip()
+        if not text:
+            return np.zeros(0, dtype=np.float32), self.cfg.sample_rate
+        if self._cloud is not None:
+            pcm, sr = self._cloud.render(text)
+            if pcm is not None and sr is not None:
+                return pcm, sr
+        lang = lang or detect_language(text, self.cfg.default_language)
+        engine, voice = select_voice(self.cfg, lang)
+        if (
+            engine == "piper"
+            and shutil.which("piper")
+            and _ensure_piper_voice(self.cfg.piper_data_dir, voice)
+        ):
+            pcm, sr = self._render_piper(text, voice)
+            if pcm is not None and sr is not None:
+                return pcm, sr
+        say_voice = self.cfg.say_voices.get(lang) or self.cfg.say_voices.get(
+            self.cfg.default_language, ""
+        )
+        pcm, sr = self._render_say(text, voice=say_voice)
+        if pcm is not None and sr is not None:
+            return pcm, sr
+        return np.zeros(0, dtype=np.float32), self.cfg.sample_rate
 
     def start_speaking(self, text: str, lang: str | None = None) -> Playback:
         """Synthesize ``text`` and start playing it; return a cancellable handle.
@@ -243,6 +342,10 @@ class TTSRouter:
         text = text.strip()
         if not text:
             return Playback()
+        if self._cloud is not None:
+            playback = self._play_cloud(text)
+            if playback is not None:
+                return playback
         lang = lang or detect_language(text, self.cfg.default_language)
         engine, voice = select_voice(self.cfg, lang)
         if (
@@ -255,6 +358,29 @@ class TTSRouter:
             self.cfg.default_language, ""
         )
         return self._play_say(text, voice=say_voice)
+
+    def _play_cloud(self, text: str) -> Playback | None:
+        """Render via the cloud TTS and play the WAV with the cancellable player.
+
+        Returns ``None`` (so the caller falls back to local TTS) when the cloud
+        render fails — never raises, so a transient API error can't break the loop.
+        """
+        assert self._cloud is not None
+        pcm, sr = self._cloud.render(text)
+        if pcm is None or sr is None or not pcm.size:
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            out = handle.name
+        # pylint: disable=no-member  # wave.open(..., "wb") -> Wave_write
+        pcm16 = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype("<i2")
+        with wave.open(out, "wb") as wh:
+            wh.setnchannels(1)
+            wh.setsampwidth(2)
+            wh.setframerate(sr)
+            wh.writeframes(pcm16.tobytes())
+        proc = _popen(["afplay", out])
+        threading.Thread(target=self._cleanup_after, args=(proc, out), daemon=True).start()
+        return Playback(proc, reference=pcm, sample_rate=sr)
 
     def _play_piper(self, text: str, voice: str) -> Playback:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
@@ -290,6 +416,39 @@ class TTSRouter:
             cmd += ["-v", voice]
         cmd.append(text)
         return Playback(_popen(cmd))
+
+    def _render_piper(self, text: str, voice: str) -> tuple[np.ndarray | None, int | None]:
+        """Render ``text`` to a WAV via Piper and read it back as PCM (no playback)."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            out = handle.name
+        cmd = ["piper", "-m", voice, "-f", out, "--length-scale", str(self.cfg.tts_length_scale)]
+        if self.cfg.piper_data_dir:
+            cmd += ["--data-dir", self.cfg.piper_data_dir]
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True)  # noqa: S603, S607
+            return _read_wav(out)
+        except (subprocess.CalledProcessError, OSError):
+            log.warning("Piper render failed for %r", voice, exc_info=True)
+            return None, None
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+    def _render_say(self, text: str, *, voice: str) -> tuple[np.ndarray | None, int | None]:
+        """Render ``text`` to PCM via macOS ``say`` (AIFF -> WAV read-back)."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            out = handle.name
+        cmd = ["say"]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["--data-format=LEI16@22050", "-o", out, "--file-format=WAVE", text]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)  # noqa: S603, S607
+            return _read_wav(out)
+        except (subprocess.CalledProcessError, OSError):
+            log.warning("`say` render failed", exc_info=True)
+            return None, None
+        finally:
+            Path(out).unlink(missing_ok=True)
 
     @staticmethod
     def _cleanup_after(proc: subprocess.Popen, path: str) -> None:

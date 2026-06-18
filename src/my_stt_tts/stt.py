@@ -270,6 +270,73 @@ class ParakeetSTT:
         return STTResult(text=text, language=language)
 
 
+class CloudTranscriber:
+    """Optional cloud STT (R2-7): an OpenAI-compatible transcription endpoint.
+
+    Sends the clip as a WAV to a ``/audio/transcriptions``-style API (OpenAI,
+    Deepgram-compatible gateways, a local server, …). **Local-first**: this is only
+    selected when ``stt_backend=cloud`` is configured *and* an API key is present;
+    the orchestrator falls back to the local engine otherwise (never hard-fails on
+    a missing key). The ``openai`` client is lazy-imported from the ``llm`` extra.
+    """
+
+    def __init__(
+        self,
+        model: str = "whisper-1",
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client: Any = None
+
+    def available(self) -> bool:
+        """True when an API key is configured (so cloud STT can actually be used)."""
+        return bool(self.api_key)
+
+    def _ensure(self) -> Any:
+        if self._client is None:
+            from openai import OpenAI
+
+            self._client = OpenAI(api_key=self.api_key or "not-needed", base_url=self.base_url)
+        return self._client
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> STTResult:
+        """Transcribe a clip via the cloud endpoint; returns text (+ language if given)."""
+        client = self._ensure()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            wav_path = handle.name
+        try:
+            _write_wav(wav_path, audio, sample_rate)
+            with open(wav_path, "rb") as fh:  # noqa: PTH123 — SDK wants a file object
+                result = client.audio.transcriptions.create(model=self.model, file=fh)
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+        text = str(getattr(result, "text", result) or "").strip()
+        language = getattr(result, "language", None)
+        return STTResult(text=text, language=language)
+
+
+def make_transcriber(cfg: Any) -> Transcriber:
+    """Select the STT engine from config (R2-7): local-first, cloud when usable.
+
+    ``stt_backend=cloud`` selects :class:`CloudTranscriber` *only* when it has an
+    API key; otherwise (and by default) the on-device :class:`ParakeetSTT` is used.
+    """
+    if getattr(cfg, "stt_backend", "local") == "cloud":
+        cloud = CloudTranscriber(
+            cfg.stt_cloud_model,
+            api_key=cfg.stt_cloud_api_key,
+            base_url=cfg.stt_cloud_base_url,
+        )
+        if cloud.available():
+            return cloud
+        log.info("cloud STT requested but no API key set; using local parakeet-mlx.")
+    return ParakeetSTT(cfg.stt_model)
+
+
 class WhisperCppSTT:
     """Alternate backend: whisper.cpp via ``pywhispercpp`` (Metal/CoreML)."""
 

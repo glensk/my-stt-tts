@@ -25,9 +25,11 @@ import tempfile
 import uuid
 from collections.abc import Generator, Iterator
 from pathlib import Path
+from typing import Any
 
 from .agent import AgentError, dispatch_to_agent
 from .config import Config
+from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
 
 log = logging.getLogger("my_stt_tts.brain")
@@ -45,7 +47,7 @@ def should_use_deep(cfg: Config, text: str) -> bool:
 class Brain:
     """Streaming chat with short conversation memory, fast/deep + agent routing."""
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, tools: ToolRegistry | None = None) -> None:
         self.cfg = cfg
         self.history: list[dict[str, str]] = []
         self._client: object | None = None
@@ -55,6 +57,35 @@ class Brain:
         # Index of the assistant turn just appended by stream(); commit_spoken()
         # uses it to repair history after a barge-in (G5).
         self._pending_assistant_index: int | None = None
+        # In-conversation tool calling (R2-7). The registry exposes get_time, a
+        # calculator, and home_control (routed to the existing agent / HA dispatch).
+        # Injectable so tests can supply fakes; built from config when omitted.
+        if tools is None and cfg.tools_enabled:
+            tools = ToolRegistry(default_tools(home_dispatch=self._home_dispatch))
+        self.tools = tools
+
+    def _home_dispatch(self, command: str) -> str:
+        """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).
+
+        Mirrors the legacy "agent, ..." path: a capable agent only runs when an
+        ``agent_workspace`` is configured, so without one the tool reports that
+        cleanly instead of acting in an arbitrary directory.
+        """
+        if not command:
+            return "error: no command given"
+        if not self.cfg.agent_workspace:
+            return "Home control is not configured (set AGENT_WORKSPACE)."
+        try:
+            result = dispatch_to_agent(
+                command,
+                workspace=self.cfg.agent_workspace,
+                model=self.cfg.agent_model,
+                session_id=self._agent_session_id,
+            )
+        except AgentError as exc:
+            return f"error: {exc}"
+        self._agent_session_id = result.session_id
+        return result.text or "done"
 
     def reset(self) -> None:
         """Forget the conversation (e.g. after an idle timeout)."""
@@ -104,14 +135,21 @@ class Brain:
         self._pending_assistant_index = None
         try:
             agent_task = self._agent_task(user_text)
+            use_tools = self.tools is not None and len(self.tools) > 0
             if agent_task is not None:
                 deltas = self._dispatch_agent(agent_task)
             elif self.cfg.llm_provider == "claude-cli":
                 deltas = self._stream_claude_cli(model, user_text)
             elif self.cfg.llm_provider == "anthropic":
-                deltas = self._stream_anthropic(model)
+                deltas = (
+                    self._stream_anthropic_tools(model)
+                    if use_tools
+                    else self._stream_anthropic(model)
+                )
             else:
-                deltas = self._stream_openai(model)
+                deltas = (
+                    self._stream_openai_tools(model) if use_tools else self._stream_openai(model)
+                )
             for delta in deltas:
                 reply.append(delta)
                 yield delta
@@ -242,3 +280,177 @@ class Brain:
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
+
+    # --- tool-calling round-trips (R2-7) ---------------------------------
+
+    def _stream_anthropic_tools(self, model: str) -> Iterator[str]:
+        """Anthropic tool-use loop: call -> run tools -> feed results -> stream answer.
+
+        Runs the (non-streaming) messages API with the tool schemas. While the
+        model asks for tools (``stop_reason == "tool_use"``) we execute them, append
+        the assistant tool-use turn and the tool results, and iterate; any text the
+        model spoke alongside the call is yielded. Once the model stops requesting
+        tools the final answer is streamed token-by-token. Bounded by
+        ``tools_max_iterations`` so a model can't loop forever.
+        """
+        assert self.tools is not None
+        client = self._ensure_client()
+        messages: list[dict[str, Any]] = [dict(m) for m in self.history]
+        tool_schemas = self.tools.anthropic_tools()
+        for _ in range(self.cfg.tools_max_iterations):
+            msg = client.messages.create(  # type: ignore[attr-defined]
+                model=model,
+                max_tokens=1024,
+                system=self.cfg.system_prompt,
+                messages=messages,
+                tools=tool_schemas,
+            )
+            calls = _anthropic_tool_calls(msg)
+            if not calls:
+                break  # no tool requested: stream the real answer below
+            for block in _anthropic_text_blocks(msg):
+                if block:
+                    yield block
+            messages.append({"role": "assistant", "content": _content_blocks(msg)})
+            messages.append({"role": "user", "content": self._anthropic_tool_results(calls)})
+        # Final pass with the (possibly tool-augmented) context — streamed.
+        with client.messages.stream(  # type: ignore[attr-defined]
+            model=model,
+            max_tokens=1024,
+            system=self.cfg.system_prompt,
+            messages=messages,
+            tools=tool_schemas,
+        ) as stream:
+            yield from stream.text_stream
+
+    def _anthropic_tool_results(self, calls: list[ToolCall]) -> list[dict[str, Any]]:
+        """Execute ``calls`` and wrap each result as an Anthropic ``tool_result`` block."""
+        assert self.tools is not None
+        results: list[dict[str, Any]] = []
+        for call in calls:
+            output = self.tools.dispatch(call.name, call.arguments)
+            results.append({"type": "tool_result", "tool_use_id": call.id, "content": output})
+        return results
+
+    def _stream_openai_tools(self, model: str) -> Iterator[str]:
+        """OpenAI tool-call loop: call -> run tools -> feed results -> stream answer.
+
+        Mirror of the Anthropic path against the OpenAI chat-completions tool API:
+        the model emits ``tool_calls``; we run each, append a ``tool`` message with
+        its result, and iterate; the final answer is streamed. Bounded by
+        ``tools_max_iterations``.
+        """
+        assert self.tools is not None
+        client = self._ensure_client()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.cfg.system_prompt},
+            *(dict(m) for m in self.history),
+        ]
+        tool_schemas = self.tools.openai_tools()
+        for _ in range(self.cfg.tools_max_iterations):
+            completion = client.chat.completions.create(  # type: ignore[attr-defined]
+                model=model, messages=messages, tools=tool_schemas
+            )
+            message = completion.choices[0].message
+            calls = _openai_tool_calls(message)
+            if not calls:
+                break
+            messages.append(_openai_assistant_message(message, calls))
+            for call in calls:
+                output = self.tools.dispatch(call.name, call.arguments)
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+        stream = client.chat.completions.create(  # type: ignore[attr-defined]
+            model=model, messages=messages, stream=True
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+
+# --- provider-response parsing helpers (R2-7) ----------------------------------
+# Defensive accessors so the round-trip works with both the real SDK objects and
+# the lightweight fakes the tests inject (duck-typed: ``.type``/``.content``/etc).
+
+
+def _anthropic_tool_calls(msg: Any) -> list[ToolCall]:
+    """Extract ``tool_use`` blocks from an Anthropic message as :class:`ToolCall`s."""
+    calls: list[ToolCall] = []
+    for block in getattr(msg, "content", None) or []:
+        if getattr(block, "type", None) == "tool_use":
+            calls.append(
+                ToolCall(
+                    id=str(getattr(block, "id", "")),
+                    name=str(getattr(block, "name", "")),
+                    arguments=dict(getattr(block, "input", {}) or {}),
+                )
+            )
+    return calls
+
+
+def _anthropic_text_blocks(msg: Any) -> list[str]:
+    """Extract the text spoken alongside any tool call (usually empty)."""
+    out: list[str] = []
+    for block in getattr(msg, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            out.append(str(getattr(block, "text", "")))
+    return out
+
+
+def _content_blocks(msg: Any) -> list[dict[str, Any]]:
+    """Re-serialize an Anthropic message's content blocks for the next request.
+
+    Anthropic requires the assistant ``tool_use`` turn echoed back verbatim before
+    the matching ``tool_result``; rebuild the minimal block dicts (text + tool_use).
+    """
+    blocks: list[dict[str, Any]] = []
+    for block in getattr(msg, "content", None) or []:
+        kind = getattr(block, "type", None)
+        if kind == "text":
+            blocks.append({"type": "text", "text": str(getattr(block, "text", ""))})
+        elif kind == "tool_use":
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": str(getattr(block, "id", "")),
+                    "name": str(getattr(block, "name", "")),
+                    "input": dict(getattr(block, "input", {}) or {}),
+                }
+            )
+    return blocks
+
+
+def _openai_tool_calls(message: Any) -> list[ToolCall]:
+    """Extract ``tool_calls`` from an OpenAI chat message as :class:`ToolCall`s."""
+    calls: list[ToolCall] = []
+    for tc in getattr(message, "tool_calls", None) or []:
+        fn = getattr(tc, "function", None)
+        raw_args = getattr(fn, "arguments", "") if fn is not None else ""
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        calls.append(
+            ToolCall(
+                id=str(getattr(tc, "id", "")),
+                name=str(getattr(fn, "name", "") if fn is not None else ""),
+                arguments=args if isinstance(args, dict) else {},
+            )
+        )
+    return calls
+
+
+def _openai_assistant_message(message: Any, calls: list[ToolCall]) -> dict[str, Any]:
+    """Rebuild the assistant turn (with ``tool_calls``) to echo back to OpenAI."""
+    return {
+        "role": "assistant",
+        "content": getattr(message, "content", None) or "",
+        "tool_calls": [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            }
+            for call in calls
+        ],
+    }
