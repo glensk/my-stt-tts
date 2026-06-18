@@ -24,7 +24,10 @@ Selection is via :func:`make_turn_analyzer` (config-driven).
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -40,6 +43,39 @@ log = logging.getLogger("my_stt_tts.turn")
 # Smart Turn v3 operates on the last 8 s of 16 kHz mono audio.
 _SMART_TURN_SR = 16000
 _SMART_TURN_WINDOW_S = 8
+
+
+def ensure_smart_turn_model(model_path: str, url: str, *, auto_download: bool = True) -> bool:
+    """Make sure the Smart Turn ONNX exists at ``model_path``, downloading if needed.
+
+    Mirrors the Piper-voice auto-download (:func:`tts._ensure_piper_voice`) so smart
+    endpointing works out of the box (R2-4): if the file is present it is used; if
+    absent and ``auto_download`` is on, it is fetched once from ``url`` to a temp
+    file and atomically renamed into place. Returns whether the file is available.
+    Network/IO failures are swallowed (the analyzer then falls back to silence) so
+    a first run offline never breaks the loop.
+    """
+    path = Path(model_path)
+    if path.is_file():
+        return True
+    if not auto_download or not url:
+        return False
+    log.info("downloading Smart Turn model %s -> %s ...", url, model_path)
+    tmp = path.with_suffix(path.suffix + ".part")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 — pinned HTTPS URL
+            data = resp.read()
+        if not data:
+            return False
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    except (urllib.error.URLError, OSError, ValueError):
+        log.warning("Smart Turn model download failed; falling back to silence.", exc_info=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        return False
+    return path.is_file()
 
 
 @runtime_checkable
@@ -91,8 +127,12 @@ class SmartTurnAnalyzer:
         sample_rate: int = _SMART_TURN_SR,
         threshold: float = 0.5,
         hard_silence_seconds: float = 2.5,
+        model_url: str = "",
+        auto_download: bool = False,
     ) -> None:
         self.model_path = model_path
+        self.model_url = model_url
+        self.auto_download = auto_download
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.frame_seconds = frame_seconds
@@ -107,12 +147,18 @@ class SmartTurnAnalyzer:
     # --- model loading (lazy, with graceful fallback) ---
 
     def _ensure_model(self) -> bool:
-        """Load the ONNX session + feature extractor once. Returns availability."""
+        """Load the ONNX session + feature extractor once. Returns availability.
+
+        Auto-downloads the model on first use when configured (R2-4), mirroring the
+        Piper-voice download; falls back to silence if it is genuinely unavailable.
+        """
         if self._fallback:
             return False
         if self._session is not None:
             return True
-        if not Path(self.model_path).is_file():
+        if not ensure_smart_turn_model(
+            self.model_path, self.model_url, auto_download=self.auto_download
+        ):
             log.info(
                 "Smart Turn model not found at %s; falling back to silence endpointing.",
                 self.model_path,
@@ -191,8 +237,10 @@ class SmartTurnAnalyzer:
 def make_turn_analyzer(cfg: Config, frame_seconds: float) -> TurnAnalyzer:
     """Build the configured :class:`TurnAnalyzer` (``cfg.turn_analyzer``).
 
-    ``"smart"`` selects :class:`SmartTurnAnalyzer` (which itself falls back to
-    silence if the model is absent); anything else selects the pure silence timer.
+    ``"smart"`` is the default (R2-4): it selects :class:`SmartTurnAnalyzer`, which
+    auto-downloads the Smart Turn v3 ONNX on first run and itself falls back to the
+    silence endpointer if the model/runtime is genuinely unavailable. ``"silence"``
+    selects the pure silence timer (explicit opt-out).
     """
     if cfg.turn_analyzer == "smart":
         return SmartTurnAnalyzer(
@@ -201,5 +249,7 @@ def make_turn_analyzer(cfg: Config, frame_seconds: float) -> TurnAnalyzer:
             frame_seconds=frame_seconds,
             sample_rate=cfg.sample_rate,
             threshold=cfg.smart_turn_threshold,
+            model_url=getattr(cfg, "smart_turn_model_url", ""),
+            auto_download=getattr(cfg, "smart_turn_auto_download", False),
         )
     return SilenceTurnAnalyzer(cfg.vad_silence_seconds, frame_seconds=frame_seconds)
