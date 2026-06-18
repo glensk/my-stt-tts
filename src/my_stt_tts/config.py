@@ -12,6 +12,23 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Audio transport modes (R2-5; see transport.py). Where the loop sources mic audio
+# and sinks TTS audio:
+#   local      — the local sound card via sounddevice (default, today's behaviour)
+#   websocket  — a network link: a WS server feeds remote satellites / the browser
+TRANSPORT_MODES = ("local", "websocket")
+
+# STT backend selection (R2-7). Local-first; cloud is opt-in and needs an API key.
+#   local — on-device parakeet-mlx (default)
+#   cloud — an OpenAI-compatible transcription endpoint (OpenAI / Deepgram-compat)
+STT_BACKENDS = ("local", "cloud")
+
+# TTS backend selection (R2-7). Local-first; cloud is opt-in (e.g. a high-quality
+# cloud German voice, since local German TTS is the weak spot).
+#   local — Piper / macOS say (default)
+#   cloud — an OpenAI-compatible speech endpoint (e.g. OpenAI TTS)
+TTS_BACKENDS = ("local", "cloud")
+
 # Barge-in safety modes (see Config.barge_in). Without acoustic echo cancellation
 # (AEC) an open speaker bleeds into the mic, so interruption is opt-in:
 #   off         — half-duplex: mic is gated shut during playback (legacy behaviour)
@@ -196,6 +213,35 @@ class Config:
     speaker_margin: float = 0.06
     enroll_dir: Path = field(default_factory=lambda: Path("enroll"))
 
+    # --- Audio transport (R2-5): move mic/TTS audio over the wire for satellites /
+    # the browser. `local` (sounddevice) is the default; `websocket` runs a server
+    # that bridges remote clients into this same pipeline. `transport_token`, when
+    # set, is a shared secret the client must present in its handshake. ---
+    transport: str = "local"
+    transport_host: str = "0.0.0.0"  # noqa: S104 — bind LAN-wide so satellites can reach it
+    transport_port: int = 8770
+    transport_token: str | None = None
+
+    # --- Tool / function calling (R2-7): let the model call tools mid-conversation
+    # (get_time, calculator, home_control routing to the agent/HA dispatch). Works
+    # with the anthropic + openai providers' native tool-use round-trip. The legacy
+    # "agent, ..." trigger still works; this is the inline upgrade. ---
+    tools_enabled: bool = True
+    tools_max_iterations: int = 4  # cap tool-use loops so a model can't spin forever
+
+    # --- Cloud STT/TTS backends (R2-7): optional, behind the existing seams.
+    # Local-first defaults; cloud is selected explicitly and degrades gracefully
+    # when no API key is set. Both speak an OpenAI-compatible API by default. ---
+    stt_backend: str = "local"
+    stt_cloud_model: str = "whisper-1"
+    stt_cloud_base_url: str | None = None  # defaults to the OpenAI endpoint
+    stt_cloud_api_key: str | None = None
+    tts_backend: str = "local"
+    tts_cloud_model: str = "gpt-4o-mini-tts"
+    tts_cloud_voice: str = "alloy"
+    tts_cloud_base_url: str | None = None
+    tts_cloud_api_key: str | None = None
+
     debug: bool = False
 
     @classmethod
@@ -225,8 +271,23 @@ class Config:
             smart_turn_auto_download=_env_bool("SMART_TURN_AUTO_DOWNLOAD", default=True),
             stt_streaming=_env_bool("STT_STREAMING", default=False),
             interrupt_predict=_env_bool("INTERRUPT_PREDICT", default=True),
+            transport=env.get("TRANSPORT", "local"),
+            transport_host=env.get("TRANSPORT_HOST", "0.0.0.0"),  # noqa: S104 — LAN bind
+            transport_token=env.get("TRANSPORT_TOKEN") or None,
+            tools_enabled=_env_bool("TOOLS_ENABLED", default=True),
+            stt_backend=env.get("STT_BACKEND", "local"),
+            stt_cloud_model=env.get("STT_CLOUD_MODEL", "whisper-1"),
+            stt_cloud_base_url=env.get("STT_CLOUD_BASE_URL") or None,
+            stt_cloud_api_key=env.get("STT_CLOUD_API_KEY") or env.get("OPENAI_API_KEY") or None,
+            tts_backend=env.get("TTS_BACKEND", "local"),
+            tts_cloud_model=env.get("TTS_CLOUD_MODEL", "gpt-4o-mini-tts"),
+            tts_cloud_voice=env.get("TTS_CLOUD_VOICE", "alloy"),
+            tts_cloud_base_url=env.get("TTS_CLOUD_BASE_URL") or None,
+            tts_cloud_api_key=env.get("TTS_CLOUD_API_KEY") or env.get("OPENAI_API_KEY") or None,
             debug=_env_bool("DEBUG", default=False),
         )
+        if env.get("TRANSPORT_PORT"):
+            cfg.transport_port = int(env["TRANSPORT_PORT"])
         if env.get("TTS_VOICE_EN"):
             cfg.tts_voices["en"] = env["TTS_VOICE_EN"]
         if env.get("TTS_LENGTH_SCALE"):
@@ -309,5 +370,15 @@ class Config:
             errors.append(
                 f"interrupt_min_speech_ms must be >= 0; got {self.interrupt_min_speech_ms}"
             )
+        if self.transport not in TRANSPORT_MODES:
+            errors.append(f"transport must be one of {TRANSPORT_MODES}; got {self.transport!r}")
+        if not 0 < self.transport_port < 65536:
+            errors.append(f"transport_port must be in (0, 65535]; got {self.transport_port}")
+        if self.tools_max_iterations <= 0:
+            errors.append(f"tools_max_iterations must be > 0; got {self.tools_max_iterations}")
+        if self.stt_backend not in STT_BACKENDS:
+            errors.append(f"stt_backend must be one of {STT_BACKENDS}; got {self.stt_backend!r}")
+        if self.tts_backend not in TTS_BACKENDS:
+            errors.append(f"tts_backend must be one of {TTS_BACKENDS}; got {self.tts_backend!r}")
         if errors:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(errors))

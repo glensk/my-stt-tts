@@ -33,6 +33,7 @@ from .config import (
     AEC_MODES,
     BARGE_IN_MODES,
     BRAIN_PRESETS,
+    TRANSPORT_MODES,
     TURN_ANALYZERS,
     Config,
     ConfigError,
@@ -67,7 +68,10 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
         f"  length-scale {cfg.tts_length_scale}",
         f"  stt        {blue}{cfg.stt_model}{reset}  streaming {cfg.stt_streaming}"
-        f"  window {cfg.stt_window_s}s",
+        f"  window {cfg.stt_window_s}s  backend {cfg.stt_backend}",
+        f"  transport  {blue}{cfg.transport}{reset}"
+        f"  {cfg.transport_host}:{cfg.transport_port}"
+        f"  tools {cfg.tools_enabled}  tts-backend {cfg.tts_backend}",
         f"  turn       barge-in {blue}{cfg.barge_in}{reset}  aec {cfg.aec_mode}"
         f"  analyzer {cfg.turn_analyzer}  min-words {cfg.interrupt_min_words}"
         f"  predict {cfg.interrupt_predict}",
@@ -103,6 +107,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--text", help="Run one typed turn with this text, then exit.")
     parser.add_argument("--once", action="store_true", help="Run a single mic turn, then exit.")
     parser.add_argument("--browser", action="store_true", help="Serve the live web GUI.")
+    parser.add_argument(
+        "--browser-audio",
+        action="store_true",
+        help="Carry REAL audio in the GUI: browser mic → WS → pipeline → TTS back "
+        "(loads on-device STT). Without it the GUI is state/transcript only.",
+    )
     parser.add_argument("--port", type=int, default=8765, help="Web GUI port (default 8765).")
     parser.add_argument("--debug", action="store_true", help="Speak stage cues + verbose logs.")
     parser.add_argument(
@@ -155,6 +165,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Disable the acoustic interruption predictor (3rd barge-in guard).",
     )
     parser.add_argument(
+        "--transport",
+        choices=TRANSPORT_MODES,
+        help="Audio transport: local (sound card, default) | websocket (network "
+        "server for remote satellites / the browser).",
+    )
+    parser.add_argument(
+        "--transport-port", type=int, help="WebSocket transport port (default 8770)."
+    )
+    parser.add_argument(
+        "--transport-token", help="Shared token a transport client must present (optional auth)."
+    )
+    parser.add_argument(
         "--list-voices", action="store_true", help="List the English voice presets and exit."
     )
     parser.add_argument(
@@ -163,28 +185,36 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# CLI flag -> Config field for the plain "override when present" overrides, applied
+# table-driven in _build_config (keeps its branch count low as flags grow). A None
+# arg leaves the .env/default value untouched; the special cases (brain preset,
+# voice-name mapping, store_true toggles) are handled explicitly below.
+_CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
+    ("provider", "llm_provider"),
+    ("model", "llm_model"),
+    ("barge_in", "barge_in"),
+    ("aec_mode", "aec_mode"),
+    ("turn_analyzer", "turn_analyzer"),
+    ("stt_window_s", "stt_window_s"),
+    ("interrupt_predict", "interrupt_predict"),
+    ("transport", "transport"),
+    ("transport_port", "transport_port"),
+    ("transport_token", "transport_token"),
+)
+
+
 def _build_config(args: argparse.Namespace) -> Config:
     cfg = Config.from_env()
     if args.brain:
         cfg.apply_brain_preset(args.brain)
-    if args.provider:
-        cfg.llm_provider = args.provider
-    if args.model:
-        cfg.llm_model = args.model
     if args.voice:
         cfg.tts_voices["en"] = VOICE_PRESETS[args.voice]
-    if args.barge_in:
-        cfg.barge_in = args.barge_in
-    if args.aec_mode:
-        cfg.aec_mode = args.aec_mode
-    if args.turn_analyzer:
-        cfg.turn_analyzer = args.turn_analyzer
+    for arg_name, field_name in _CONFIG_OVERRIDES:
+        value = getattr(args, arg_name)
+        if value is not None and value != "":
+            setattr(cfg, field_name, value)
     if args.stt_streaming:
         cfg.stt_streaming = True
-    if args.stt_window_s is not None:
-        cfg.stt_window_s = args.stt_window_s
-    if args.interrupt_predict is not None:
-        cfg.interrupt_predict = args.interrupt_predict
     if args.debug:
         cfg.debug = True
     return cfg
@@ -560,7 +590,16 @@ def _run_browser(
         else:
             bus.log(f"unknown action '{name}'", "error")
 
-    ui = WebUI(cfg, on_turn, on_action, port=port)
+    # Real browser audio (R2-5): when an STT engine is available, the page can
+    # stream mic PCM over a same-origin WebSocket and play TTS PCM back, driving the
+    # full pipeline (not just state). Disabled (state/transcript only) without STT.
+    def _audio_session(transport: object) -> None:
+        from .net_loop import run_transport_session
+
+        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
+
+    on_audio_session = _audio_session if stt is not None else None
+    ui = WebUI(cfg, on_turn, on_action, port=port, on_audio_session=on_audio_session)
     bus.state("idle")
     if wake and stt is not None:
         threading.Thread(
@@ -571,6 +610,45 @@ def _run_browser(
         webbrowser.open(ui.url())
     try:
         ui.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbye")
+    return 0
+
+
+def _run_websocket_server(cfg: Config, brain: Brain, tts: TTSRouter, stt: object | None) -> int:
+    """Serve the WebSocket audio transport (R2-5): bridge remote clients to the pipeline.
+
+    Each accepted client (satellite or browser) gets a :class:`WebSocketTransport`
+    that becomes the mic source + audio sink for a full :func:`run_transport_session`
+    turn loop — the same STT/LLM/TTS stages, just with the device boundary on the
+    wire. Needs the ``transport`` extra; prints a clear message if it is missing.
+    """
+    from .net_loop import run_transport_session
+    from .ws_transport import serve_websocket
+
+    if stt is None:
+        from .stt import make_transcriber
+
+        stt = make_transcriber(cfg)
+
+    def on_session(transport: object) -> None:
+        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
+
+    print(
+        f"my-stt-tts WebSocket transport → ws://{cfg.transport_host}:{cfg.transport_port}"
+        "  (Ctrl-C to quit)"
+    )
+    try:
+        serve_websocket(
+            on_session,
+            host=cfg.transport_host,
+            port=cfg.transport_port,
+            token=cfg.transport_token,
+            sample_rate=cfg.sample_rate,
+        )
+    except RuntimeError as exc:  # missing 'transport' extra
+        print(exc, file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("\nbye")
     return 0
@@ -598,43 +676,61 @@ def main(argv: list[str] | None = None) -> int:
     tts = TTSRouter(cfg)
     gate = audio.MicGate(cfg.mic_gate_tail_seconds)
 
-    needs_stt = not args.type_mode and args.text is None and (not args.browser or args.wake)
+    needs_stt = (
+        cfg.transport == "websocket"
+        or (args.browser and args.browser_audio)
+        or (not args.type_mode and args.text is None and (not args.browser or args.wake))
+    )
     stt: object | None = None
     if needs_stt:
-        from .stt import ParakeetSTT  # heavy (MLX); only needed for mic modes
+        from .stt import make_transcriber  # heavy (MLX); only needed for mic modes
 
-        stt = ParakeetSTT(cfg.stt_model)
+        stt = make_transcriber(cfg)
 
     if not args.browser:
         print(settings_text(cfg))
     try:
+        if cfg.transport == "websocket":
+            return _run_websocket_server(cfg, brain, tts, stt)
         if args.browser:
             return _run_browser(cfg, brain, tts, gate, stt, wake=args.wake, port=args.port)
-        if args.text is not None:
-            run_turn(cfg, brain, tts, gate, typed_text=args.text)
-        elif args.type_mode:
-            print("Type a message ('quit' or blank to exit).")
-            while True:
-                line = input("you> ").strip()
-                if line in {"", "quit", "exit"}:
-                    break
-                run_turn(cfg, brain, tts, gate, typed_text=line)
-        elif args.wake:
+        if args.wake:
             return run_wake_loop(cfg, brain, tts, gate, stt)
-        else:
-            ptt_vad = None
-            if cfg.barge_in != "off":
-                from .vad import SileroVad
-
-                ptt_vad = SileroVad(cfg.sample_rate)
-            print("Push-to-talk: Enter to start/stop each turn. Ctrl-C to quit.")
-            while True:
-                run_turn(cfg, brain, tts, gate, stt=stt, vad=ptt_vad)
-                if args.once:
-                    break
+        _run_terminal_modes(args, cfg, brain, tts, gate, stt)
     except (KeyboardInterrupt, EOFError):
         print("\nbye")
     return 0
+
+
+def _run_terminal_modes(
+    args: argparse.Namespace,
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    gate: audio.MicGate,
+    stt: object | None,
+) -> None:
+    """One typed turn, the interactive typed loop, or the push-to-talk mic loop."""
+    if args.text is not None:
+        run_turn(cfg, brain, tts, gate, typed_text=args.text)
+        return
+    if args.type_mode:
+        print("Type a message ('quit' or blank to exit).")
+        while True:
+            line = input("you> ").strip()
+            if line in {"", "quit", "exit"}:
+                return
+            run_turn(cfg, brain, tts, gate, typed_text=line)
+    ptt_vad = None
+    if cfg.barge_in != "off":
+        from .vad import SileroVad
+
+        ptt_vad = SileroVad(cfg.sample_rate)
+    print("Push-to-talk: Enter to start/stop each turn. Ctrl-C to quit.")
+    while True:
+        run_turn(cfg, brain, tts, gate, stt=stt, vad=ptt_vad)
+        if args.once:
+            return
 
 
 if __name__ == "__main__":
