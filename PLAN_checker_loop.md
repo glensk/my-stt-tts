@@ -73,11 +73,11 @@ Remaining gaps:
   barge-in audio for intent-to-take-floor (talk through "mhm", yield to a real interrupt).
 - [x] **R2-4 — Smart-turn by default**: auto-download the Smart Turn ONNX on first run
   (like Piper voices) and make it the default `turn_analyzer`; silence = explicit fallback.
-- [ ] **R2-5 — Network transport (G7)**: a WebSocket (and/or WebRTC) audio transport so
+- [x] **R2-5 — Network transport (G7)**: a WebSocket (and/or WebRTC) audio transport so
   remote satellites / the browser carry mic+TTS audio, not just the local mic.
 - [x] **R2-6 — Robust interrupt plumbing**: feed the captured barge-in audio straight
   into the streaming transcriber (no from-scratch re-transcribe); interrupt as bus events.
-- [ ] **R2-7 — Backend breadth + in-conversation tool calling**: optional cloud STT/TTS
+- [x] **R2-7 — Backend breadth + in-conversation tool calling**: optional cloud STT/TTS
   behind the existing seams (esp. better German TTS); real function calling in `Brain.stream`.
 
 Merged R2-1/2/3/4/6 at `878bbc7` (7 commits, +1712 lines, new `aec.py`; **101 tests
@@ -86,5 +86,12 @@ NLMS fallback (~19 dB ERLE); the HW-cancelled PCM isn't yet routed end-to-end th
 `sounddevice` capture path (residual G3). Smart-turn download guard tested with mocked
 network only.
 
-Current action: Wave B implementer (R2-5 WebSocket/WebRTC transport, R2-7 in-conversation
-tool calling + optional cloud STT/TTS), then a fresh round-3 checker.
+Merged R2-5/R2-7 at `9e0e115` (6 commits, +~2900 lines, new `transport.py`/`ws_transport.py`/
+`ws_frame.py`/`net_loop.py`/`satellite.py`/`tools.py`; **146 tests pass**, lint clean). The
+browser and satellite client now carry real int16-PCM audio over WebSocket into the pipeline;
+`Brain.stream` does full provider tool-use round-trips (Anthropic+OpenAI) with example tools;
+optional key-gated cloud STT/TTS behind the existing seams. Caveats: full WebRTC not done (PCM
+WS is real + sufficient); cloud adapters not exercised against a live key.
+
+**All 7 round-2 gaps closed.** Current action: fresh round-3 checker (pipecat vs my-stt-tts) —
+the round where the verdict can flip to my-stt-tts.
