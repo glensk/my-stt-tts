@@ -93,5 +93,36 @@ browser and satellite client now carry real int16-PCM audio over WebSocket into 
 optional key-gated cloud STT/TTS behind the existing seams. Caveats: full WebRTC not done (PCM
 WS is real + sufficient); cloud adapters not exercised against a live key.
 
-**All 7 round-2 gaps closed.** Current action: fresh round-3 checker (pipecat vs my-stt-tts) —
-the round where the verdict can flip to my-stt-tts.
+**All 7 round-2 gaps closed.** Round-3 checker result below.
+
+### Repo 1 — pipecat · Round 3 → WINNER: pipecat (very close)
+
+Judge calls it "close"; we're now **ahead** on AEC (NLMS proven >6 dB ERLE), the 3-stage
+barge-in (duration + word + acoustic-intent), and context repair. pipecat wins on
+production-readiness / transport robustness / breadth. Remaining gaps — **Wave C** (core
+transport/audio robustness, highest leverage):
+
+- [ ] **R3-1 — True WebRTC transport** (Opus + jitter buffer + NAT): `aiortc` as a 3rd
+  `AudioTransport` (`transport=webrtc`); browser `getUserMedia({echoCancellation:true})`.
+- [ ] **R3-2 — Full-duplex barge-in over the network transport**: `net_loop.respond_over_transport`
+  is half-duplex — satellite/browser users can't interrupt. Port `_BargeInCtx` (VAD + gate +
+  AEC + predictor) into the transport loop; cancel outbound TTS + LLM on confirmed interrupt.
+- [ ] **R3-3 — Streamed low-latency TTS playout**: replace whole-sentence WAV→`afplay` with
+  PCM-frame streaming (clause-chunked) so first audio plays in ~200–300 ms.
+- [ ] **R3-4 — Wire macOS hardware-AEC into capture (close G3)**: capture via `AVAudioEngine`
+  `VoiceProcessingIO` (PyObjC) so HW-cancelled PCM reaches Python, replacing `sounddevice`
+  when `aec_mode=voiceprocessing`.
+- [ ] **R3-6 — Drop-in noise suppression**: optional pre-VAD denoiser (RNNoise / ONNX speech
+  enhancement) on mic frames, behind a config flag.
+
+**Wave D** (breadth / ops):
+
+- [ ] **R3-5 — Speech-to-speech / realtime LLM option** (OpenAI Realtime / Gemini Live):
+  stream mic audio to a realtime endpoint and play its audio back, bypassing the cascade.
+- [ ] **R3-7 — Per-stage latency telemetry**: emit STT/LLM/TTS/first-audio latencies keyed by
+  `speech_id` to the bus + structured log (optional OpenTelemetry).
+- [ ] **R3-8 — Verified first-run bootstrap**: a preflight that fetches+checksums the Smart-Turn
+  model (and Piper voices), with a surfaced warning when it falls back to the silence timer.
+- [ ] **R3-9 — Telephony reach**: a Twilio-Media-Streams serializer over the WS transport.
+
+Current action: Wave C implementer (R3-1/2/3/4/6), then Wave D (R3-5/7/8/9), then a round-4 checker.
