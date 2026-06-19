@@ -10,7 +10,7 @@
 
 <br>
 
-<a href="#-quick-start"><img alt="Talk to your Mac. It talks back. German · French · English. Interrupt any time." src="https://readme-typing-svg.demolab.com/?font=JetBrains+Mono&weight=600&size=24&pause=900&color=22E7FF&center=true&vCenter=true&width=720&height=54&lines=Talk+to+your+Mac.;It+talks+back.;German+%C2%B7+French+%C2%B7+English.;Interrupt+any+time."></a>
+<a href="#-get-started"><img alt="Talk to your Mac. It talks back. German · French · English. Interrupt any time." src="https://readme-typing-svg.demolab.com/?font=JetBrains+Mono&weight=600&size=24&pause=900&color=22E7FF&center=true&vCenter=true&width=720&height=54&lines=Talk+to+your+Mac.;It+talks+back.;German+%C2%B7+French+%C2%B7+English.;Interrupt+any+time."></a>
 
 <br>
 
@@ -28,7 +28,7 @@ A private voice assistant that lives on your own machine — say a word, ask out
 
 <br>
 
-**🎙️ [What it does](#what-it-does) · ⚡ [Quick start](#-quick-start) · 🔁 [How it works](#how-it-works) · 🔒 [Privacy](#-your-audio-never-leaves-your-mac) · 🛠️ [Developers](#for-developers)**
+**🚀 [Get started](#-get-started) · 🎙️ [What it does](#what-it-does) · ⚡ [Quick start](#-quick-start) · 🔁 [How it works](#how-it-works) · 🔒 [Privacy](#-your-audio-never-leaves-your-mac) · 🛠️ [Developers](#for-developers)**
 
 </div>
 
@@ -51,6 +51,40 @@ The pipeline, live — wake word → speech-to-text → LLM → speech, all on o
      then paste that bare URL on its own line right here — GitHub mounts a native <video> player. -->
 
 </div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
+
+## 🚀 Get started
+
+**New here? Start in one of these two ways — that's the whole onboarding.**
+
+### ▶ Try it live (no install)
+
+**[Open the control room demo →](https://glensk.github.io/my-stt-tts/gui.html)** — a
+zero-setup, look-and-feel tour of the interface. It runs in **scripted demo mode** (a static
+showcase, no backend), so you can watch the live pipeline — listening → transcribe → thinking →
+speaking — and feel the experience right in your browser. Nothing to download.
+
+### ⌨️ Run it for real (one command)
+
+Talking to a **real LLM in seconds** — no microphone and no API key:
+
+```bash
+git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts && ./quickstart.sh
+```
+
+`quickstart.sh` runs `uv sync --extra all`, then opens the **browser control room in typed
+mode** — so you're typing to a live LLM right away (the bundled key-free Claude CLI brain; a local
+Ollama model also works key-free).
+
+> **Next:** once the control room is open, use the **Settings** panel to switch the
+> **brain/model, voice, and language (DE / FR / EN)** and set your **location + units** (defaults:
+> Lausanne, Switzerland / metric). Then click the mic 🎙️ (or press **Space**) to talk out loud.
+>
+> *Full local stack is a working prototype on **macOS Apple Silicon**. Deeper install options,
+> voices, and flags live in **[🚀 Quick start](#-quick-start)** below.*
+
+<div align="right"><a href="#top">↑ back to top</a></div>
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
@@ -249,6 +283,9 @@ token if you have a key.
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## 🚀 Quick start
+
+Fastest path is **[🚀 Get started](#-get-started)** above (`./quickstart.sh`); this section is the
+full set of flags, voices, and manual steps.
 
 ```bash
 git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts
