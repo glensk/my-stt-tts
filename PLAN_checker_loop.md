@@ -175,3 +175,12 @@ Plan:
   protocol, a formalized web/JS client + a mobile example, and `clients/PROTOCOL.md`. Builds against
   the EXISTING transport — no core `src/` changes.
 - Then **round-5 reframed checker** (multi-user-on-Mac; maturity metrics excluded). Loop until it picks my-stt-tts.
+
+**Wave E + Wave F merged.** Wave E (`fe4702f..51a0ab2`, +105 tests → **307 total**, lint clean):
+pluggable registry + Deepgram/ElevenLabs/Cartesia adapters, whisper.cpp + Linux/WebRTC-APM AEC,
+typed non-droppable event model, per-speaker SQLite memory + provider-agnostic context aggregator,
+Smart-Turn latency bench. Wave F (`a383d86`): M5Stack-Atom ESP32 firmware (PlatformIO build passes),
+web/JS client, mobile guide, `clients/PROTOCOL.md`. (Fixed one host-dependent bench test → hermetic.)
+
+**Round-5 reframed checker running** — judges *"different people in a household talking to a Mac"*
+and is told to IGNORE stars/contributors/company/production-track-record (STT/TTS breadth stays fair).
