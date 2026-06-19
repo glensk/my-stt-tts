@@ -62,9 +62,16 @@ enroll/
 # Downloaded Piper TTS voices (large; fetched via piper.download_voices)
 voices/
 
-# Trained wake-word models (generated; see wakewords/WAKEWORD.md)
+# Trained wake-word models (generated; see wakewords/WAKEWORD.md). User-trained
+# models stay ignored, but the small pre-shipped set IS committed so the repo ships
+# selectable wake words out of the box (~200 KB each).
 wakewords/*.onnx
 wakewords/*.tflite
+!wakewords/maziko.onnx
+!wakewords/nexus.onnx
+!wakewords/alexa.onnx
+!wakewords/jarvis.onnx
+!wakewords/computer.onnx
 
 # Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run)
 models/
