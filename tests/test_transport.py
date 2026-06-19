@@ -320,10 +320,11 @@ def test_respond_over_transport_sinks_tts_pcm():
     t = WebSocketTransport(sample_rate=16000)
     brain = _FakeBrain(["Hello there. ", "How are you?"])
     tts = _SinkTTS()
-    spoken = net_loop.respond_over_transport(t, cfg, brain, tts, "hi")
+    result = net_loop.respond_over_transport(t, cfg, brain, tts, "hi")
     # Two sentences were synthesized and at least one PCM chunk queued outbound.
     assert "Hello there." in "".join(tts.spoken)
-    assert spoken  # the full spoken text is returned
+    assert result.interrupted is False  # half-duplex (no mic source) -> no barge-in
+    assert result.spoken  # the full spoken text is recorded on the result
     assert t.iter_outbound(timeout=0.1) is not None
 
 
