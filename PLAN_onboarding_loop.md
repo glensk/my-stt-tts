@@ -53,6 +53,21 @@ in config + CLI + `--settings` + web-UI; **Open-Meteo no-key weather tool** (liv
 (executable). ✅ **Onboarding README merged** (`b1b86d3`): top **"🚀 Get started"** with *▶ Try it live*
 (hosted demo) + *one-command* `git clone … && ./quickstart.sh` → real LLM in the browser, no mic/no key.
 
-**Onboarding-seamlessness checker (round 1) RUNNING** — single question only; my-stt-tts vs the 5 prior
-repos + award-winning onboarding exemplars (checker researches). If a competitor is more seamless,
-implement the cited onboarding gaps + re-check; loop until ours wins.
+### Onboarding-seamlessness checker · Round 1 → 🏆 WINNER: my-stt-tts — LOOP WON
+
+Vs the 5 prior repos + researched award-winning exemplars (ollama, bun, fastapi, LiveKit Playground),
+the indifferent judge picked **my-stt-tts** for the **lowest-friction real path**: a single copy-paste
+command to a working LLM with **no mic, no account, no API key** — the wall every competitor leaves up
+(API keys, Cloud accounts, manual Ollama/PortAudio + multi-GB model pulls). Won on the whole-journey
+time-to-first-interaction.
+
+**One honest, infra-gated enhancement (NOT required for the win, deferred to user):** our hosted
+"▶ Try it live" is a *scripted, backend-less* showcase; the only place we're beaten is LiveKit's hosted
+Playground (talk to a *real* agent in-browser, zero install). Making ours a real hosted conversation
+needs hosting + a brain (a server + an API key or a hosted model) — i.e. the user's infra/account call.
+A turnkey deploy recipe (Dockerfile + Fly.io/Cloud Run config + a configurable-backend Pages demo) is
+code-achievable and would make the lead "unassailable"; offered to Albert as the next optional step.
+Also optional: drop the macOS-Apple-Silicon limit from the entry path (Linux brain already shipped via
+whisper.cpp; a Docker entry would generalize it).
+
+**Loop status: WON / RESTING.** Reopen only for the hosted-playground enhancement (user infra) or new requirements.
