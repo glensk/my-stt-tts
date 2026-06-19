@@ -299,9 +299,13 @@ class _FakeBrain:
 
     def __init__(self, parts: list[str]) -> None:
         self._parts = parts
+        self.speaker: str | None = None
 
     def stream(self, text: str):  # noqa: ARG002
         yield from self._parts
+
+    def set_speaker(self, name: str | None) -> None:  # mirrors Brain.set_speaker (G7)
+        self.speaker = name
 
 
 class _SinkTTS:

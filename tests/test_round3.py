@@ -405,6 +405,7 @@ class _FakeBrainStream:
         self._parts = parts
         self.committed = None
         self.closed = False
+        self.speaker = None
 
     def stream(self, text):  # noqa: ARG002
         def _gen():
@@ -414,6 +415,9 @@ class _FakeBrainStream:
 
     def commit_spoken(self, text):
         self.committed = text
+
+    def set_speaker(self, name):  # mirrors Brain.set_speaker (G7)
+        self.speaker = name
 
 
 class _StreamObj:
