@@ -26,7 +26,7 @@ import numpy as np
 
 log = logging.getLogger("my_stt_tts.transport")
 
-TRANSPORT_MODES = ("local", "websocket")
+TRANSPORT_MODES = ("local", "websocket", "webrtc")
 
 # Wire format. A binary frame carries raw PCM (int16 LE); a text frame carries a
 # small JSON control envelope. The handshake is the first text frame from the

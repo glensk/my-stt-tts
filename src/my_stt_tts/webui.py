@@ -23,6 +23,7 @@ from .config import (
     AEC_MODES,
     BARGE_IN_MODES,
     BRAIN_PRESETS,
+    DENOISER_MODES,
     PROVIDERS,
     TRANSPORT_MODES,
     TURN_ANALYZERS,
@@ -71,6 +72,8 @@ def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]
         "transport": cfg.transport,
         "stt_backend": cfg.stt_backend,
         "tts_backend": cfg.tts_backend,
+        "tts_streaming": cfg.tts_streaming,
+        "denoiser": cfg.denoiser,
         "tools_enabled": cfg.tools_enabled,
         "brain_presets": sorted(BRAIN_PRESETS),
         "providers": list(PROVIDERS),
@@ -78,6 +81,7 @@ def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]
         "aec_modes": list(AEC_MODES),
         "turn_analyzers": list(TURN_ANALYZERS),
         "transport_modes": list(TRANSPORT_MODES),
+        "denoiser_modes": list(DENOISER_MODES),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
             for name in VOICE_PRESETS
@@ -121,6 +125,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         cfg.interrupt_min_words = int(data["interrupt_min_words"])
     if "interrupt_predict" in data:
         cfg.interrupt_predict = bool(data["interrupt_predict"])
+    if "tts_streaming" in data:
+        cfg.tts_streaming = bool(data["tts_streaming"])
+    if "denoiser" in data:
+        cfg.denoiser = str(data["denoiser"])
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -191,6 +199,32 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self._ui.run_audio_session(self.connection)
 
+    def _webrtc_offer(self, body: dict[str, Any]) -> None:
+        """Answer a browser WebRTC SDP offer (R3-1): negotiate Opus + run the session.
+
+        The browser opens a real ``RTCPeerConnection`` with
+        ``getUserMedia({audio:{echoCancellation:true}})`` and POSTs its SDP offer
+        here; the server builds the aiortc peer, wires the transport into the turn
+        loop (``on_audio_session``), and returns the SDP answer. Only available when
+        the WebUI carries audio AND the ``webrtc`` extra is installed; otherwise
+        returns a clear error so the page falls back to the WS PCM path.
+        """
+        if self._ui.on_audio_session is None:
+            self._json(404, {"error": "audio transport disabled"})
+            return
+        sdp = str(body.get("sdp", ""))
+        if not sdp:
+            self._json(400, {"error": "missing sdp offer"})
+            return
+        try:
+            answer = self._ui.run_webrtc_session(
+                {"sdp": sdp, "type": str(body.get("type", "offer"))}
+            )
+        except RuntimeError as exc:  # webrtc extra missing
+            self._json(501, {"error": str(exc)})
+            return
+        self._json(200, answer)
+
     def do_POST(self) -> None:  # noqa: N802
         body = self._body()
         if self.path == "/api/settings":
@@ -208,6 +242,8 @@ class _Handler(BaseHTTPRequestHandler):
             if text:
                 self._ui.run_turn_async(text)
             self._json(200, {"ok": True})
+        elif self.path == "/api/webrtc/offer":
+            self._webrtc_offer(body)
         elif self.path == "/api/action":
             self._ui.action(str(body.get("action", "")), body)
             self._json(200, {"ok": True})
@@ -290,6 +326,47 @@ class WebUI:
             transport.close()
             with contextlib.suppress(Exception):
                 sock.sendall(ws_frame.close_frame())
+
+    def run_webrtc_session(self, offer: dict[str, str]) -> dict[str, str]:
+        """Negotiate a WebRTC peer for ``offer`` and run the turn loop on it (R3-1).
+
+        Builds a :class:`~my_stt_tts.webrtc_transport.WebRtcTransport`, runs the real
+        aiortc negotiation in a private asyncio loop on a worker thread (so the
+        stdlib ``http.server`` request thread isn't blocked), starts the synchronous
+        turn loop (``on_audio_session``) on the transport, and returns the SDP
+        answer. Raises ``RuntimeError`` if the ``webrtc`` extra is missing.
+        """
+        import asyncio
+
+        from .webrtc_transport import WebRtcTransport, run_webrtc_offer
+
+        assert self.on_audio_session is not None
+        transport = WebRtcTransport(sample_rate=self.cfg.sample_rate)
+        result: dict[str, dict[str, str] | Exception] = {}
+        done = threading.Event()
+
+        def _negotiate() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                answer = loop.run_until_complete(run_webrtc_offer(transport, offer))
+                result["answer"] = answer
+            except Exception as exc:  # surface to the request thread
+                result["error"] = exc
+            finally:
+                done.set()
+                # keep the loop alive so the peer connection's media pumps run
+                with contextlib.suppress(Exception):
+                    loop.run_forever()
+
+        threading.Thread(target=_negotiate, daemon=True).start()
+        threading.Thread(target=self.on_audio_session, args=(transport,), daemon=True).start()
+        done.wait(timeout=15)
+        if isinstance(result.get("error"), Exception):
+            raise RuntimeError(str(result["error"]))
+        answer = result.get("answer")
+        if not isinstance(answer, dict):
+            raise RuntimeError("WebRTC negotiation timed out")
+        return answer
 
     @staticmethod
     def _ws_recv_loop(sock: Any, transport: WebSocketTransport) -> None:

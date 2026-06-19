@@ -951,9 +951,50 @@ function playPcm(f32){
   src.start(playHead); playHead += buf.duration;
 }
 
-async function startLiveAudio(){
+// R3-1: a real WebRTC peer connection (Opus + jitter buffer + ICE NAT traversal)
+// with hardware/browser echo cancellation. Falls back to the raw-PCM WebSocket path
+// below if WebRTC is unavailable or the server lacks the `webrtc` extra.
+let pc = null;
+async function startWebRtc(){
+  let stream;
   try{
-    micStream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
+    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,
+      noiseSuppression:true, autoGainControl:true, channelCount:1}});
+  }catch(e){ log("mic permission denied: "+e.message, "error"); return false; }
+  try{
+    pc = new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
+    stream.getTracks().forEach(t=>pc.addTrack(t, stream));
+    micStream = stream;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    pc.ontrack = ev=>{
+      const a = new Audio(); a.srcObject = ev.streams[0]; a.autoplay = true;
+      a.play().catch(()=>{});
+    };
+    const offer = await pc.createOffer({offerToReceiveAudio:true});
+    await pc.setLocalDescription(offer);
+    const res = await fetch("/api/webrtc/offer", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})});
+    if(!res.ok) throw new Error("server declined WebRTC ("+res.status+")");
+    const answer = await res.json();
+    await pc.setRemoteDescription(answer);
+    log("WebRTC audio channel open (Opus)", "sys");
+    return true;
+  }catch(e){
+    log("WebRTC unavailable ("+e.message+"); falling back to PCM", "sys");
+    try{ if(pc) pc.close(); }catch(_){}
+    pc = null;
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+    micStream = null;
+    return false;
+  }
+}
+
+async function startLiveAudio(){
+  if(window.RTCPeerConnection && await startWebRtc()) return true;
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
+      echoCancellation:true, noiseSuppression:true}});
   }catch(e){ log("mic permission denied: "+e.message, "error"); return false; }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   playHead = 0;
@@ -978,6 +1019,7 @@ async function startLiveAudio(){
 function stopLiveAudio(fromClose){
   if(micNode){ try{ micNode.disconnect(); }catch(_){} micNode = null; }
   if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
+  if(pc){ try{ pc.close(); }catch(_){} pc = null; }
   if(audioWS && !fromClose){ try{ audioWS.close(); }catch(_){} }
   audioWS = null;
   liveOn = false;
