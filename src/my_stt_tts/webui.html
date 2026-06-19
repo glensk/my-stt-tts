@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: ws: wss:; font-src 'self'; base-uri 'none'; form-action 'none'">
 <title>my-stt-tts · mission control</title>
 <style>
 :root{
@@ -456,6 +456,46 @@ const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
+/* ============================================================
+   BACKEND TARGET  (?backend=…&token=…)
+   When a `backend` query param is present the page talks to THAT server
+   (your own `my-stt-tts --browser` instance behind a tunnel or on the LAN)
+   for a REAL conversation. Absent → same-origin, exactly as before, with the
+   scripted demo as the offline fallback. CSP connect-src allows http/https/ws/wss.
+   ============================================================ */
+const BACKEND = (function(){
+  let base = "", token = "", explicit = false;
+  try{
+    const q = new URLSearchParams(location.search);
+    const b = (q.get("backend") || "").trim();
+    token = (q.get("token") || "").trim();
+    if(b){
+      // Accept a bare host ("my-box:8765") or a full URL; normalise to an origin
+      // with scheme, no trailing slash. Default to https for a bare host so the
+      // hosted (https) page isn't blocked by mixed-content on http.
+      let u = b;
+      if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = "https://" + u;
+      const url = new URL(u);
+      base = (url.origin + url.pathname).replace(/\/+$/, "");  // honour a path prefix if given
+      explicit = true;
+    }
+  }catch(_e){ base = ""; token = ""; explicit = false; }
+  // HTTP origin used for fetch()/EventSource; WS origin used for /ws/audio.
+  const httpBase = base;                                   // "" → same-origin
+  const wsBase   = base ? base.replace(/^http/i, "ws") : "";
+  // Append ?token=… to a path when a token was supplied.
+  function withToken(path){
+    if(!token) return path;
+    return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+  }
+  return {
+    explicit, token,
+    host: (function(){ try{ return base ? new URL(base).host : location.host; }catch(_e){ return location.host; } })(),
+    http: path => httpBase + (token ? withToken(path) : path),  // /api/* + /events
+    ws:   path => (wsBase || (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host) + withToken(path),
+  };
+})();
+
 /* ---------- state model ---------- */
 const STATES = {
   idle:        {label:"IDLE",        color:"#22e7ff", hot:false, mode:"flat",   step:0},
@@ -687,7 +727,7 @@ $("#clearLog").addEventListener("click", ()=>{ logEl.innerHTML=""; });
 let DEMO = false;
 
 async function api(path, opts){
-  const res = await fetch(path, Object.assign({headers:{"Content-Type":"application/json"}}, opts||{}));
+  const res = await fetch(BACKEND.http(path), Object.assign({headers:{"Content-Type":"application/json"}}, opts||{}));
   if(!res.ok) throw new Error(path+" → "+res.status);
   const ct = res.headers.get("content-type")||"";
   return ct.includes("json") ? res.json() : res.text();
@@ -852,16 +892,16 @@ function setConn(state, label){
 let es = null, retry = 0, retryTimer = null, sawOpen = false, probeTimer = null;
 
 function connect(){
-  setConn("connecting");
-  try{ es = new EventSource("/events"); }
+  setConn("connecting", BACKEND.explicit ? "connecting → "+BACKEND.host : null);
+  try{ es = new EventSource(BACKEND.http("/events")); }
   catch(e){ scheduleReconnect(); return; }
 
   es.onopen = ()=>{
     sawOpen = true;
     clearTimeout(probeTimer);
-    setConn("open");
+    setConn("open", BACKEND.explicit ? "connected · "+BACKEND.host : null);
     retry=0;
-    log("event stream connected","sys");
+    log(BACKEND.explicit ? "event stream connected → "+BACKEND.host : "event stream connected","sys");
   };
   es.onmessage = ev => handleEvent(ev.data);
   es.onerror = ()=>{
@@ -972,7 +1012,7 @@ async function startWebRtc(){
     };
     const offer = await pc.createOffer({offerToReceiveAudio:true});
     await pc.setLocalDescription(offer);
-    const res = await fetch("/api/webrtc/offer", {method:"POST",
+    const res = await fetch(BACKEND.http("/api/webrtc/offer"), {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})});
     if(!res.ok) throw new Error("server declined WebRTC ("+res.status+")");
@@ -998,8 +1038,7 @@ async function startLiveAudio(){
   }catch(e){ log("mic permission denied: "+e.message, "error"); return false; }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   playHead = 0;
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  audioWS = new WebSocket(`${proto}://${location.host}/ws/audio`);
+  audioWS = new WebSocket(BACKEND.ws("/ws/audio"));
   audioWS.binaryType = "arraybuffer";
   audioWS.onopen = ()=> log("live audio channel open", "sys");
   audioWS.onmessage = ev => { if(ev.data instanceof ArrayBuffer) playPcm(int16ToF32(ev.data)); };
@@ -1086,7 +1125,12 @@ function enterDemo(){
   clearTimeout(retryTimer);
   $("#demoBadge").classList.add("show");
   setConn("demo","demo mode");
-  log("no backend detected — entering DEMO MODE (scripted showcase)","sys");
+  log(BACKEND.explicit
+        ? "backend "+BACKEND.host+" unreachable — entering DEMO MODE (scripted showcase)"
+        : "no backend detected — entering DEMO MODE (scripted showcase)","sys");
+  if(!BACKEND.explicit){
+    log("tip: append  ?backend=https://<your-server>  to this URL for a REAL conversation against your own `my-stt-tts --browser`","info");
+  }
   if(!settings.brain_presets) populate(DEMO_SETTINGS);
   demoStep = 0;
   runDemoStep();
@@ -1161,17 +1205,25 @@ setState("idle");
 log("my-stt-tts console initialized","sys");
 
 (async function boot(){
+  if(BACKEND.explicit){
+    log("target backend: "+BACKEND.host+(BACKEND.token?" (token supplied)":""),"sys");
+    setConn("connecting","connecting → "+BACKEND.host);
+  }
   let settingsOk = false;
   try{
     populate(await api("/api/settings"));
-    log("settings loaded","sys");
+    log(BACKEND.explicit ? "settings loaded from "+BACKEND.host : "settings loaded","sys");
     settingsOk = true;
   }catch(e){
     log("could not load settings: "+e.message,"error");
   }
   connect();
-  // If the stream never opens, assume a static/no-backend page → demo mode.
-  const wait = settingsOk ? 2000 : 1200;   // shorter wait if settings already failed
+  // If the stream never opens, assume no reachable backend → scripted demo.
+  // A remote backend (tunnel/LAN) gets a longer grace window than same-origin;
+  // if settings already loaded we know it's reachable, so wait a touch longer.
+  const wait = BACKEND.explicit
+                 ? (settingsOk ? 5000 : 4000)
+                 : (settingsOk ? 2000 : 1200);
   probeTimer = setTimeout(()=>{ if(!sawOpen && !DEMO) enterDemo(); }, wait);
 })();
 })();

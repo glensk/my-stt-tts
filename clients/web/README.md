@@ -12,6 +12,44 @@ the TTS reply gaplessly via the Web Audio API. Extracted from the reference page
 | `my-stt-tts-client.js`  | The reusable ES module. Exports `SttTtsClient` + pure PCM helpers.      |
 | `demo.html`             | A tiny standalone page that wires the module to start/stop buttons.     |
 
+## Hosted GUI → your own server (`?backend=`)
+
+The full mission-control page (`src/my_stt_tts/webui.html`, also published to
+GitHub Pages as `gui.html`) can talk to **any** my-stt-tts server you run — not
+just its own origin. Append a `backend` query param pointing at your running
+`my-stt-tts --browser` instance and the page becomes a **real** conversation
+instead of the scripted demo:
+
+```text
+https://glensk.github.io/my-stt-tts/gui.html?backend=https://<your-server>
+```
+
+- `backend` is used as the base for every call: `GET <base>/api/settings`,
+  the SSE stream `<base>/events`, `POST <base>/api/turn` and `<base>/api/action`,
+  and the live-audio socket `<base>/ws/audio` (the scheme is auto-switched to
+  `ws`/`wss`). A bare host (`my-box:8765`) is normalised to `https://`.
+- An optional `&token=<TOKEN>` is appended as a query param to those calls
+  (EventSource/WebSocket can't send custom headers, so the token rides the URL).
+  The bundled key-free server ignores it; a token only matters for a transport
+  you've explicitly secured.
+- The connection indicator reflects reality: it shows **`connected · <host>`**
+  (green) when your server answers, and falls back to the amber **demo** badge
+  with the scripted showcase only if the backend is genuinely unreachable.
+
+Your server must be reachable from the browser — same LAN, or exposed via a
+tunnel (e.g. `cloudflared`, `tailscale funnel`, `ngrok`). The bundled key-free
+brain works out of the box, so no API keys are required for a real chat. This
+works because the page's CSP allows cross-origin `connect-src` and the server
+sends permissive CORS headers (see [CSP](#csp)).
+
+Run your server with:
+
+```bash
+my-stt-tts --browser            # serves the WebUI + API on 127.0.0.1:8765
+```
+
+then point a tunnel at `127.0.0.1:8765` and use that public URL as `?backend=`.
+
 ## Quick start
 
 The demo uses an ES module `import`, so it must be **served over HTTP** (opening
@@ -105,6 +143,15 @@ Exported pure helpers (unit-testable, mirror the server): `floatToInt16`,
 
 Both files are self-contained: no external scripts/styles/fonts, no AudioWorklet
 URL (a deprecated `ScriptProcessorNode` is used precisely so a strict
-`script-src 'self'` page works). The demo's CSP is `connect-src 'self'`, matching
-the WebUI page, so it can only open a WebSocket back to its own origin. To target
-a different host, serve from that host or adjust the demo CSP for your deployment.
+`script-src 'self'` page works). This standalone `demo.html`'s CSP is
+`connect-src 'self'`, so it can only open a WebSocket back to its own origin — to
+target a different host, serve from that host or adjust the demo CSP for your
+deployment.
+
+The full mission-control page (`webui.html` / hosted `gui.html`) is different: it
+relaxes **only** `connect-src` to `'self' https: http: ws: wss:` so the
+[`?backend=`](#hosted-gui--your-own-server-backend) flow can reach a user-run
+server cross-origin (`script-src`/`style-src`/`default-src` stay locked). That
+server replies with `Access-Control-Allow-Origin: *` (plus `-Methods`/`-Headers`
+and an `OPTIONS` preflight handler) on its `/api/*` and `/events` responses so the
+browser permits the cross-origin calls.
