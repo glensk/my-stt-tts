@@ -248,6 +248,22 @@ class EventBus:
     def wake(self) -> None:
         self.publish({"type": "wake", "fired": True})
 
+    def mic_result(self, *, ok: bool, verdict: str, message: str, level: int = 0) -> None:
+        """Publish the outcome of a server-side mic test (GUI "Test mic").
+
+        DATA priority — the UI shows it prominently (green/red status chip) and
+        also logs it. ``verdict`` is the machine tag (``ok`` / ``silent`` /
+        ``no_device`` / ``error``); ``level`` is the measured loudness 0–100."""
+        self.publish(
+            {
+                "type": "mic_result",
+                "ok": ok,
+                "verdict": verdict,
+                "message": message,
+                "level": level,
+            }
+        )
+
     def speaker(self, name: str | None) -> None:
         """Publish the identified speaker for the current turn (G7).
 

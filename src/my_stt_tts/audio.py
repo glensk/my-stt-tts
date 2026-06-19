@@ -99,6 +99,131 @@ def mic_available() -> bool:
         return False
 
 
+@dataclass(slots=True)
+class MicTestResult:
+    """Outcome of a short server-side microphone capture (GUI "Test mic").
+
+    ``ok`` is True only when audio was actually captured above the silence floor.
+    ``level`` is the measured loudness as a 0–100 percentage (peak-based, the most
+    intuitive for a UI meter); ``rms`` / ``peak`` are the raw 0–1 amplitudes.
+    ``verdict`` is a short machine tag (``ok`` / ``silent`` / ``no_device`` /
+    ``error``); ``message`` is the human-facing line the UI shows prominently.
+    """
+
+    ok: bool
+    verdict: str
+    message: str
+    level: int = 0
+    rms: float = 0.0
+    peak: float = 0.0
+
+
+# Below this peak amplitude (of full-scale 1.0) a capture is treated as "no audio"
+# — a silent/near-zero stream on macOS almost always means the mic permission was
+# never granted to the terminal/app (the OS feeds zeros, no error).
+_SILENCE_PEAK = 0.01
+
+_MIC_PERMISSION_HINT = (
+    "grant microphone permission to your terminal/app in System Settings › "
+    "Privacy & Security › Microphone, then retry"
+)
+
+
+def mic_test_verdict(
+    *, captured: bool, rms: float, peak: float, error: str | None = None
+) -> MicTestResult:
+    """Map a capture outcome to a user-facing :class:`MicTestResult` (pure).
+
+    Split out from :func:`mic_test` so the verdict logic is unit-testable without a
+    real microphone. ``error`` (when set) is the exact device/sounddevice failure
+    reason and wins; otherwise ``captured`` + ``peak`` decide working vs. silent.
+    """
+    if error is not None:
+        return MicTestResult(ok=False, verdict="error", message=error)
+    if not captured:
+        return MicTestResult(
+            ok=False,
+            verdict="no_device",
+            message="No microphone available — connect an input device and grant mic access.",
+        )
+    level = int(round(min(1.0, max(0.0, peak)) * 100))
+    if peak < _SILENCE_PEAK:
+        return MicTestResult(
+            ok=False,
+            verdict="silent",
+            message=f"No audio — {_MIC_PERMISSION_HINT}.",
+            level=level,
+            rms=rms,
+            peak=peak,
+        )
+    return MicTestResult(
+        ok=True,
+        verdict="ok",
+        message=f"Microphone OK — level {level}%",
+        level=level,
+        rms=rms,
+        peak=peak,
+    )
+
+
+def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 1280) -> MicTestResult:
+    """Capture ~``seconds`` from the input device and report a clear verdict.
+
+    Never raises: a missing ``sounddevice`` / PortAudio / input device, or any
+    capture error, is turned into an ``error`` / ``no_device`` verdict so the
+    server stays up. Computes peak + RMS over the captured float32 mono frames and
+    delegates the working / silent / error decision to :func:`mic_test_verdict`.
+    On macOS a silent (near-zero) capture is the tell-tale sign of an ungranted
+    microphone permission — the verdict says exactly that.
+    """
+    try:
+        sd = _sd()
+    except Exception as exc:  # noqa: BLE001 — no audio extra / no PortAudio
+        return mic_test_verdict(
+            captured=False, rms=0.0, peak=0.0, error=f"audio capture unavailable: {exc}"
+        )
+    if not mic_available():
+        return mic_test_verdict(captured=False, rms=0.0, peak=0.0)
+
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    collected: list[np.ndarray] = []
+    try:
+        with sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=frame_samples,
+            callback=_callback,
+        ):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    collected.append(frames_q.get(timeout=0.1))
+                except queue.Empty:
+                    continue
+    except Exception as exc:  # noqa: BLE001 — device opened/failed mid-capture
+        return mic_test_verdict(captured=False, rms=0.0, peak=0.0, error=f"microphone error: {exc}")
+
+    # Drain any frames the callback queued right at/after the deadline (and, for a
+    # synchronous-callback backend, every frame) so the last syllable isn't lost.
+    while True:
+        try:
+            collected.append(frames_q.get_nowait())
+        except queue.Empty:
+            break
+
+    if not collected:
+        return mic_test_verdict(captured=False, rms=0.0, peak=0.0, error="no audio frames captured")
+    samples = np.concatenate(collected)
+    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
+    return mic_test_verdict(captured=True, rms=rms, peak=peak)
+
+
 def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
     """Play a float32 mono array and block until done (cross-platform, G8).
 

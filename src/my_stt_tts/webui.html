@@ -198,6 +198,27 @@ header.bar{
   border-radius:4px; color:var(--ink); background:#060c12}
 kbd{font-size:9px; padding:1px 5px; border:1px solid var(--line2); border-radius:4px;
   color:var(--ink-faint); background:#060c12}
+/* mic-test result chip — green (ok) / red (silent|error) / neutral (testing) */
+.mic-result{margin-top:6px; display:flex; align-items:center; gap:9px; font-size:11px;
+  letter-spacing:.3px; padding:7px 11px; border-radius:var(--rad); border:1px solid var(--line2);
+  background:#060c12; color:var(--ink)}
+.mic-result .mic-dot{width:9px; height:9px; border-radius:50%; background:var(--ink-faint);
+  flex:0 0 auto; transition:.25s}
+.mic-result.ok{border-color:var(--green); color:var(--green); box-shadow:0 0 16px -6px var(--green)}
+.mic-result.ok .mic-dot{background:var(--green); box-shadow:var(--glow) var(--green)}
+.mic-result.bad{border-color:var(--red); color:var(--red); box-shadow:0 0 16px -6px var(--red)}
+.mic-result.bad .mic-dot{background:var(--red); box-shadow:var(--glow) var(--red)}
+.mic-result.testing{border-color:var(--cyan-dim); color:var(--cyan)}
+.mic-result.testing .mic-dot{background:var(--cyan); animation:blink .9s steps(2) infinite}
+.mic-result .mic-msg{flex:1 1 auto}
+.mic-meter{flex:0 0 84px; height:8px; border-radius:5px; background:#0a141d;
+  border:1px solid var(--line2); overflow:hidden}
+.mic-meter i{display:block; height:100%; width:0%;
+  background:linear-gradient(90deg,var(--green),var(--amber),var(--red)); transition:width .12s}
+.mic-browser{margin-top:6px; display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+.mic-browser .mic-browser-msg{font-size:10px; color:var(--ink-dim); letter-spacing:.3px}
+.mic-hint{color:var(--ink-dim)}
+.mic-hint::before{content:"ⓘ"; color:var(--cyan-dim)}
 
 /* ---------- transcript ---------- */
 .transcript-card{flex:1; min-height:280px; display:flex; flex-direction:column}
@@ -361,12 +382,36 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.4M20 5v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Reset
             </button>
+            <button class="btn" id="micTestBtn" type="button" title="Capture ~1.5s from the SERVER mic and report the level / permission state">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
+              🎤 Test mic
+            </button>
             <button class="btn" id="listVoicesBtn" type="button" title="Refresh voice list">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h10M4 12h16M4 17h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               List Voices
             </button>
           </div>
+          <!-- Server-side mic-test result: a status chip that turns green/red with the verdict. -->
+          <div class="mic-result" id="micResult" role="status" aria-live="assertive" hidden>
+            <span class="mic-dot" aria-hidden="true"></span>
+            <span class="mic-msg" id="micResultMsg"></span>
+            <span class="mic-meter" id="micResultMeter" hidden><i id="micResultBar"></i></span>
+          </div>
+          <!-- BONUS: browser-mic level meter (separate capability from the server "Test mic"). -->
+          <div class="mic-browser" id="micBrowser">
+            <button class="btn" id="micBrowserBtn" type="button" title="Test the BROWSER mic (getUserMedia) used by Live Audio">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
+              Test browser mic
+            </button>
+            <span class="mic-meter" id="micBrowserMeter" hidden><i id="micBrowserBar"></i></span>
+            <span class="mic-browser-msg" id="micBrowserMsg"></span>
+          </div>
           <div class="voice-note" id="voiceNoteRow" role="status" aria-live="polite" hidden></div>
+          <!-- First-use macOS hint: grant the terminal/app mic permission. -->
+          <div class="voice-note mic-hint" id="micHintRow" role="note">
+            First use on macOS prompts your terminal/app for microphone access — grant it in
+            <code>System Settings › Privacy &amp; Security › Microphone</code>, then retry.
+          </div>
         </div>
       </section>
 
@@ -973,6 +1018,86 @@ $("#resetBtn").addEventListener("click", ()=>{
 });
 $("#listVoicesBtn").addEventListener("click", ()=> postAction("list_voices"));
 
+/* ============================================================
+   MIC TEST  (server mic) — capture ~1.5s server-side, show a
+   prominent green/red verdict chip + a level meter. Available
+   regardless of voice state (it's how you diagnose why voice is off).
+   ============================================================ */
+const micResult = $("#micResult"), micResultMsg = $("#micResultMsg");
+const micResultMeter = $("#micResultMeter"), micResultBar = $("#micResultBar");
+const hotFlag = $("#hotFlag");
+function setMicResult(cls, msg, level){
+  micResult.hidden = false;
+  micResult.classList.remove("ok","bad","testing");
+  if(cls) micResult.classList.add(cls);
+  micResultMsg.textContent = msg;
+  if(typeof level === "number"){
+    micResultMeter.hidden = false;
+    micResultBar.style.width = Math.max(0, Math.min(100, level)) + "%";
+  }else{
+    micResultMeter.hidden = true;
+  }
+}
+function showMicResult(d){
+  const ok = !!d.ok;
+  setMicResult(ok ? "ok" : "bad", (ok?"✓ ":"✗ ") + (d.message||""), d.level);
+  // The server capture is finished → mic is cold again.
+  if(hotFlag){ hotFlag.textContent = "MIC ● COLD"; hotFlag.classList.remove("hot"); }
+  log((ok?"✓ ":"✗ ") + "mic test: " + (d.message||""), ok ? "evt" : "error");
+}
+$("#micTestBtn").addEventListener("click", ()=>{
+  setMicResult("testing", "Testing microphone (1.5s)…");
+  // The server mic goes HOT for the duration of the capture (real capture state).
+  if(hotFlag){ hotFlag.textContent = "MIC ● HOT"; hotFlag.classList.add("hot"); }
+  postAction("mic_test");
+});
+
+/* ============================================================
+   BROWSER MIC TEST  (BONUS) — getUserMedia level meter for the
+   *browser* mic used by Live Audio. Separate permission + device
+   from the server "Test mic" above; clearly labelled as such.
+   ============================================================ */
+const micBrowserBtn = $("#micBrowserBtn"), micBrowserMeter = $("#micBrowserMeter");
+const micBrowserBar = $("#micBrowserBar"), micBrowserMsg = $("#micBrowserMsg");
+let browserMicCtx = null, browserMicStream = null, browserMicRAF = 0, browserMicOn = false;
+function stopBrowserMic(){
+  browserMicOn = false;
+  if(browserMicRAF){ cancelAnimationFrame(browserMicRAF); browserMicRAF = 0; }
+  if(browserMicStream){ browserMicStream.getTracks().forEach(t=>t.stop()); browserMicStream = null; }
+  if(browserMicCtx){ browserMicCtx.close().catch(()=>{}); browserMicCtx = null; }
+  micBrowserBtn.classList.remove("on"); micBrowserBtn.setAttribute("aria-pressed","false");
+}
+micBrowserBtn.addEventListener("click", async ()=>{
+  if(browserMicOn){ stopBrowserMic(); micBrowserMsg.textContent = "browser mic stopped"; micBrowserMeter.hidden = true; return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    micBrowserMsg.textContent = "browser mic unavailable (needs HTTPS / a supported browser)"; return;
+  }
+  micBrowserMsg.textContent = "requesting browser mic permission…";
+  try{
+    browserMicStream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    micBrowserMsg.textContent = "browser mic blocked — allow it in the site's permission prompt (" + (e&&e.name||"error") + ")";
+    return;
+  }
+  browserMicCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const src = browserMicCtx.createMediaStreamSource(browserMicStream);
+  const an = browserMicCtx.createAnalyser(); an.fftSize = 512;
+  src.connect(an);
+  const buf = new Uint8Array(an.fftSize);
+  browserMicOn = true; micBrowserMeter.hidden = false;
+  micBrowserBtn.classList.add("on"); micBrowserBtn.setAttribute("aria-pressed","true");
+  micBrowserMsg.textContent = "browser mic live — speak to see the level";
+  const tick = ()=>{
+    if(!browserMicOn) return;
+    an.getByteTimeDomainData(buf);
+    let peak = 0;
+    for(let i=0;i<buf.length;i++){ const v = Math.abs(buf[i]-128)/128; if(v>peak) peak = v; }
+    micBrowserBar.style.width = Math.min(100, Math.round(peak*140)) + "%";
+    browserMicRAF = requestAnimationFrame(tick);
+  };
+  tick();
+});
+
 // keyboard: SPACE = push-to-talk (when not typing in a field)
 addEventListener("keydown", e=>{
   if(e.code==="Space" && !e.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)){
@@ -1040,6 +1165,8 @@ function handleEvent(raw){
       log(`response${d.final?" (final)":" (stream)"}: ${txt.slice(0,60)}${txt.length>60?"…":""}`,"evt");
       break;
     }
+    case "mic_result":
+      showMicResult(d); break;
     case "log":
       log(d.message, d.level==="error" ? "error" : "info"); break;
     default:
@@ -1297,6 +1424,9 @@ function demoAction(action){
     clearTimeout(demoStreamTimer); demoStep=0; clearTimeout(demoTimer); demoTimer=setTimeout(runDemoStep,1200);
   }else if(action==="list_voices"){
     log("voices: "+(settings.voices||[]).map(v=>v.name).join(", "),"evt");
+  }else if(action==="mic_test"){
+    // No real server in demo mode — simulate a clean OK so the chip is exercised.
+    setTimeout(()=> showMicResult({ok:true, verdict:"ok", message:"Microphone OK — level 62% (demo)", level:62}), 900);
   }
   // wake_start / wake_stop / ptt are already visualized by the running loop
 }

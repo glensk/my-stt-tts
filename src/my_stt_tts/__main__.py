@@ -744,7 +744,7 @@ def run_wake_loop(
     from .denoise import make_denoiser
     from .turn import make_turn_analyzer
     from .vad import SileroVad
-    from .wake import WakeWord
+    from .wake import WakeUnavailable, WakeWord
 
     wake = WakeWord.from_config(cfg)
     if not wake.available():
@@ -768,7 +768,18 @@ def run_wake_loop(
             bus.state("idle")
             return 0
         bus.state("listening", cfg.wake_phrase)
-        if not audio.listen_for_wake(wake, cfg.sample_rate, stop=stop):
+        try:
+            fired = audio.listen_for_wake(wake, cfg.sample_rate, stop=stop)
+        except WakeUnavailable as exc:
+            # Construction/predict failed (e.g. an openwakeword API/version
+            # mismatch). Log ONCE with a clear hint and stop — never spin the
+            # same error forever.
+            msg = f"wake word disabled: {exc}"
+            print(msg, file=sys.stderr)
+            bus.log(msg, "error")
+            bus.state("idle")
+            return 2
+        if not fired:
             bus.state("idle")
             return 0  # stop requested while idle-listening for the wake word
         bus.wake()
@@ -921,6 +932,27 @@ class _WakeController:
             self._ptt_busy = True
         threading.Thread(target=self._ptt_target, daemon=True).start()
 
+    def mic_test(self) -> None:
+        """Run a short server-side mic capture + report a verdict, in a worker thread.
+
+        Runs regardless of wake state: if the wake loop is holding the input device
+        it is stopped first (so the test owns the mic), then restarted afterwards so
+        the user lands back where they were. Never blocks the HTTP handler."""
+        threading.Thread(target=self._mic_test_target, daemon=True).start()
+
+    def _mic_test_target(self) -> None:
+        # Free the device if the wake loop currently holds it; remember to restore.
+        with self._lock:
+            was_listening = self._thread is not None and self._thread.is_alive()
+        thread = self._thread
+        if was_listening:
+            self.stop_wake()
+            if thread is not None:
+                thread.join(timeout=3.0)
+        _run_mic_test(self._cfg)  # capture + publish verdict (single source of truth)
+        if was_listening:
+            self.start_wake()  # restore the always-listen loop we paused for the test
+
     def _wake_target(self, stop: threading.Event) -> None:
         try:
             run_wake_loop(
@@ -965,6 +997,24 @@ class _WakeController:
             with self._lock:
                 self._ptt_busy = False
             bus.state("idle")
+
+
+def _run_mic_test(cfg: Config) -> None:
+    """Capture a short mic sample, publish the verdict, and log it (standalone).
+
+    Used by the GUI ``mic_test`` action when no wake controller exists (voice off)
+    — so the user can still diagnose the mic. :func:`audio.mic_test` is defensive,
+    but the outer guard keeps a surprise from killing the worker thread silently.
+    """
+    bus.log("testing microphone (1.5s)…")
+    try:
+        result = audio.mic_test(cfg.sample_rate)
+    except Exception as exc:  # mic_test is defensive; belt-and-braces
+        log.error("mic test error: %s", exc)
+        result = audio.MicTestResult(ok=False, verdict="error", message=f"microphone error: {exc}")
+    bus.mic_result(ok=result.ok, verdict=result.verdict, message=result.message, level=result.level)
+    bus.log(("✓ " if result.ok else "✗ ") + result.message, "info" if result.ok else "error")
+    bus.state("idle")
 
 
 def _voice_status(cfg: Config, stt: object | None) -> tuple[bool, str]:
@@ -1025,6 +1075,15 @@ def _run_browser(
             bus.log("conversation reset")
         elif name == "list_voices":
             bus.log("voices: " + ", ".join(VOICE_PRESETS))
+        elif name == "mic_test":
+            # Diagnostic: capture ~1.5s and report a clear verdict. Runs regardless
+            # of voice/wake state — it's *most* useful when voice is off (to find
+            # out why). With a controller it pauses/restores the wake loop; without
+            # one it runs a standalone capture in a worker (never block the handler).
+            if controller is not None:
+                controller.mic_test()
+            else:
+                threading.Thread(target=lambda: _run_mic_test(cfg), daemon=True).start()
         elif name in {"wake_start", "wake_stop", "ptt"}:
             if controller is None:
                 bus.log(f"'{name}' unavailable: {voice_hint}", "error")
