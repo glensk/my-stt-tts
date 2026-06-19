@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# quickstart.sh — one command from a fresh clone to typing at a real LLM.
+# quickstart.sh — one command from a fresh clone to talking with a real LLM.
 #
-# Purpose : bootstrap my-stt-tts and open the browser control room in typed mode,
-#           so a brand-new user is chatting with the LLM in seconds — no mic, and
-#           NO API key. It auto-detects a key-free "brain" you already have:
-#           the Claude CLI, a local Ollama model, or the OpenAI codex CLI.
+# Purpose : bootstrap my-stt-tts and open the browser control room. If the wake
+#           model is present it launches with the wake word LIVE (--browser
+#           --wake) so you can just say it; otherwise it falls back to typed mode
+#           (--browser --type). Either way it auto-detects a key-free "brain" you
+#           already have: the Claude CLI, a local Ollama model, or the codex CLI.
+#           No API key needed.
 # Usage   : ./quickstart.sh [-h|--help]
 # What it does:
 #   1. checks for `uv` (prints an install hint and exits if missing),
 #   2. runs `uv sync --extra all` to install the project + optional extras,
 #   3. auto-detects a key-free brain (claude CLI -> ollama -> codex CLI),
-#   4. launches `./mstt --browser --type` wired to that brain (web GUI, typed
-#      input, no microphone). If none is found, prints how to enable one.
+#   4. launches `./mstt --browser --wake` if the wake model exists (voice live),
+#      else `./mstt --browser --type` (typed, no mic). If no brain is found,
+#      prints how to enable one.
 set -euo pipefail
 
 usage() {
 	cat <<'EOF'
-quickstart.sh — bootstrap my-stt-tts and start typing to the LLM in seconds.
+quickstart.sh — bootstrap my-stt-tts and start talking to the LLM in seconds.
 
 Usage:
   ./quickstart.sh            Set up the environment and open the browser control room.
@@ -29,13 +32,14 @@ What it does:
        - the `claude` CLI (claude.ai/code)         -> --brain haiku-sub
        - `ollama` + an installed model             -> LLM_PROVIDER=ollama
        - the OpenAI `codex` CLI                     -> --brain codex
-  4. Launches `./mstt --browser --type` wired to that brain — the web GUI in
-     typed mode (no mic). Type a message in the browser and you are talking to
-     the LLM. No API key needed for any of the three brains above.
-     To talk to it (wake word / mic) instead, run `./mstt --browser --wake`
-     (macOS will ask for microphone permission on first capture).
+  4. Opens the web control room:
+       - wake model present  -> `./mstt --browser --wake`  (say the wake word, or
+         click Start wake / Push-to-talk; macOS asks for mic permission once)
+       - no wake model yet   -> `./mstt --browser --type`  (typed, no mic). Train
+         the wake word (see wakewords/WAKEWORD.md) to enable voice.
+     No API key needed for any of the three brains above.
 
-If none is found it prints how to enable one (install claude/ollama/codex, or
+If no brain is found it prints how to enable one (install claude/ollama/codex, or
 set ANTHROPIC_API_KEY) and exits 1.
 EOF
 }
@@ -100,12 +104,22 @@ else
 	exit 1
 fi
 
-echo "quickstart: opening the browser control room (typed mode, no mic needed)…"
-echo "            Type a message in the browser to talk to the LLM. Ctrl-C to quit."
-echo
-echo "🎙️  To talk to it (wake word / mic), run:  ./mstt --browser --wake"
-echo "    (loads on-device STT + the wake model so the GUI voice buttons go live;"
-echo "     macOS asks for microphone permission on the first capture — grant it to"
-echo "     the Terminal/app.)"
-echo
-exec ./mstt --browser --type "${ARGS[@]}"
+# --- Launch: wake word live if the model is present, else typed --------------
+wake_phrase="${WAKE_PHRASE:-maziko}"
+wake_model="${WAKE_MODEL_PATH:-wakewords/${wake_phrase}.onnx}"
+if [ -f "${wake_model}" ]; then
+	echo "quickstart: opening the browser control room with the WAKE WORD live…"
+	echo "            Say \"${wake_phrase}\" (or click Start wake / Push-to-talk), or just type."
+	echo "            macOS will ask for microphone permission on the first capture — grant it."
+	echo "            Ctrl-C to quit."
+	echo
+	exec ./mstt --browser --wake "${ARGS[@]}"
+else
+	echo "quickstart: opening the browser control room (typed mode — no wake model found)…"
+	echo "            Type a message to talk to the LLM. Ctrl-C to quit."
+	echo
+	echo "🎙️  To enable the wake word: train it (see wakewords/WAKEWORD.md) so"
+	echo "    ${wake_model} exists, then re-run ./quickstart.sh — it will launch with voice."
+	echo
+	exec ./mstt --browser --type "${ARGS[@]}"
+fi
