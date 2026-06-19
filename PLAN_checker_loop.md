@@ -21,10 +21,10 @@ the orchestrator before re-checking.
 ## Repo queue (ranked, voice↔LLM suitability)
 
 - [x] 1. **pipecat** — https://github.com/pipecat-ai/pipecat — ✅ **WON** (round 5, reframed: multi-user-on-Mac, maturity excluded)
-- [ ] 2. **livekit/agents** — https://github.com/livekit/agents — *in progress (reframed criteria)*
-- [ ] 3. huggingface/speech-to-speech — https://github.com/huggingface/speech-to-speech
-- [ ] 4. dnhkng/GLaDOS — https://github.com/dnhkng/GLaDOS
-- [ ] 5. KoljaB/RealtimeSTT (+ RealtimeTTS) — https://github.com/KoljaB/RealtimeSTT
+- [x] 2. **livekit/agents** — https://github.com/livekit/agents — ✅ **WON** (round 1, first pass)
+- [ ] 3. **huggingface/speech-to-speech** — https://github.com/huggingface/speech-to-speech — *checker running*
+- [ ] 4. **dnhkng/GLaDOS** — https://github.com/dnhkng/GLaDOS — *checker running*
+- [ ] 5. **KoljaB/RealtimeSTT** (+ RealtimeTTS) — https://github.com/KoljaB/RealtimeSTT — *checker running*
 - [ ] … remaining survey repos appended as reached
 
 ## Round log
@@ -197,7 +197,17 @@ Atom Echo half-duplex).
 Mac; capability only; **ignore ecosystem-maturity/popularity** (stars, contributors, company, track
 record); STT/TTS *integration breadth* stays a fair axis.
 
-### Repo 2 — livekit/agents · Round 1 (reframed) — IN PROGRESS
+### Repo 2 — livekit/agents · Round 1 (reframed) → 🏆 WINNER: my-stt-tts — REPO #2 WON (first pass)
 
-Fresh indifferent checker comparing **livekit/agents vs my-stt-tts** on the standing criteria. If it
-picks livekit, implement the cited capability gaps until a fresh checker picks my-stt-tts, then repo #3.
+Judge: my-stt-tts wins on voice-biometric speaker ID (ECAPA enrollment + rejection margin) wired into
+**cross-session per-speaker memory** (LiveKit has only single-session cloud diarization — no enrollment,
+no per-person memory), full on-device privacy + no-API-key, on-device open-speaker AEC, and a buildable
+in-home satellite path (ESP32). LiveKit's only edge is cloud-integration breadth — the axis least aligned
+with a private household-on-a-Mac assistant, and my-stt-tts covers it opt-in via the registry anyway. No gaps.
+
+### Repos 3–5 · Round 1 (reframed) — CHECKERS RUNNING IN PARALLEL
+
+Since my-stt-tts now wins outright and these are narrower projects, running their checkers concurrently:
+**#3 huggingface/speech-to-speech**, **#4 dnhkng/GLaDOS**, **#5 KoljaB/RealtimeSTT(+RealtimeTTS)** — each
+a fresh indifferent judge vs my-stt-tts on the standing criteria. Any that picks the reference repo →
+implement its cited capability gaps + re-check; wins stand.
