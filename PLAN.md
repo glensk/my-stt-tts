@@ -11,6 +11,50 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave J: startup audio preflight HARD STOP
+
+The user hit a control room that opened and *silently recorded nothing*: capture
+ran at the device-native 48 kHz and either couldn't be made 16 kHz or the inbound
+mic queue flooded (`inbound mic queue full; dropping a frame` / PortAudio
+`Input overflowed`), so wake/STT got garbage with no error. Prior waves added
+`resample_to` / `reframe` / a 16 kHz pipeline; this wave adds a **hard stop that
+refuses to launch** when capture is broken. Branch `audio-preflight`. 457 → 476
+tests (+19), green with `--extra all` and CI core-only (474 + 2 extras-gated skips).
+
+- **`audio.audio_preflight(sample_rate=16000) -> PreflightResult`** (`audio.py`,
+  pure-ish + faked in tests): opens a short (~0.5 s) REAL capture and checks (a) a
+  usable input device exists; (b) the device delivers a rate resolvable to 16 kHz
+  mono (records `device_rate`); (c) frames are consumed without **persistent**
+  overflow — counts PortAudio `input_overflow` + bounded-queue-full drops over the
+  window and computes a `drop_ratio` (fails at/above 25 %; a single warm-up glitch
+  is tolerated). Returns `ok` / `reason` (`ok`/`no_device`/`rate_unresolvable`/
+  `overflow`/`permission_denied`/`error`) / actionable `message` + `device_rate` /
+  `drop_ratio` / `permission`. **Never raises**; reuses `mic_permission_status()`
+  (a conclusively `denied` permission wins immediately).
+- **HARD STOP wiring** (`__main__.main`): `_audio_preflight_gate` runs BEFORE the
+  heavy STT load / GUI / capture for the mic-using modes — `--wake`, `--browser
+  --wake`, `--browser --browser-audio`, and the default terminal push-to-talk — and
+  on `not ok` prints the `message` to stderr + `bus.log(..., "error")` and returns
+  exit **3** WITHOUT opening the GUI or starting capture. Mic-LESS modes skip it
+  (`--type`, `--text`, plain `--browser`, and the network/telephony servers whose
+  mic lives on a remote client). A passing-but-marginal preflight still logs its
+  device-rate / drop-ratio / reason via the audio debug instrument.
+- **Escape hatch**: `--skip-audio-preflight` (+ `SKIP_AUDIO_PREFLIGHT` env, +
+  `Config.skip_audio_preflight`) bypasses the gate for power users; the hard-stop
+  message names it.
+- **Tests** (+19, `test_audio_preflight.py`): preflight OK on a fake 16 kHz device,
+  a 48 kHz device that resamples, a tolerated warm-up overflow; hard-stop on a fake
+  overflowing device (high drop ratio), unresolvable rate (no positive rate / no
+  frames), no-device, denied permission, and a raising/missing-sounddevice error
+  (never propagates). `main()` returns non-zero AND does NOT open the GUI
+  (`_ExplodingUI`) / start the wake loop / push-to-talk on a failing preflight;
+  mic-less modes never call it; the skip flag short-circuits. `sounddevice` is
+  mocked entirely — no real mic.
+- **Caveats:** verified only with a mocked `sounddevice` — no real microphone, no
+  real 48 kHz device, and no real PortAudio overflow were exercised here. The
+  bounded-queue drop count is a secondary backpressure signal; the authoritative
+  overflow signal is PortAudio's `input_overflow` status flag.
+
 ## Build status (2026-06-19) — Wave I: wake-loop crash fix + GUI mic test
 
 Two real bugs the user hit: (1) the wake word never fired — the loop crashed on
