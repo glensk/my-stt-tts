@@ -157,6 +157,21 @@ Turn model, Krisp-grade AEC, mem0 memory, production deployments). 8 gaps, split
   cannot manufacture them.
 
 Honest assessment: rounds 1–3 won the conversational core; the residual gap is largely
-maturity/breadth/live-verification that code alone won't flip on a fair judge. **PAUSED for a
-strategic decision** before spending further rounds (keep grinding code gaps · reframe the contest
-to the real single-Mac use case · or declare parity and stop).
+maturity/breadth/live-verification that code alone won't flip on a fair judge.
+
+**Decision (Albert): Wave E + reframe the judge, and continue.** The reframed checker must judge the
+REAL use case — **"different people talking to a Mac"** (multi-user, on-device, household) — and is
+**explicitly told to IGNORE ecosystem-maturity metrics** (stars, contributors, company backing,
+production track record). STT/TTS *integration breadth* stays a fair capability axis. **ESP32 is now
+in scope** — Albert has an **M5Stack Atom (ESP32)** to target.
+
+Plan:
+
+- **Wave E** (core code): pluggable STT/TTS service registry + real Deepgram/ElevenLabs/Cartesia
+  adapters; whisper.cpp (non-MLX) STT + Linux playback/AEC (cross-platform — brain off-Mac); typed
+  prioritized interruption/event model (#2); persistent memory + provider-agnostic context
+  aggregation (#7); Smart-Turn latency bench + language matrix (#4). **Commit per gap** (survive cutoffs).
+- **Wave F** (clients): an **ESP32 firmware client for M5Stack Atom Echo** speaking the WS audio
+  protocol, a formalized web/JS client + a mobile example, and `clients/PROTOCOL.md`. Builds against
+  the EXISTING transport — no core `src/` changes.
+- Then **round-5 reframed checker** (multi-user-on-Mac; maturity metrics excluded). Loop until it picks my-stt-tts.
