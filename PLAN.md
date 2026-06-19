@@ -11,6 +11,54 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave G+: seamless key-free quickstart
+
+Goal: make `./quickstart.sh` **genuinely seamless**. Before this, it launched the
+default `anthropic` provider, which needs `ANTHROPIC_API_KEY`, so a fresh clone died
+with `Invalid configuration: ANTHROPIC_API_KEY is required for provider 'anthropic'`.
+Fixed: quickstart now **auto-detects a key-free brain**; a new `codex-cli` provider
+was added; the browser URL is shown + opened; and the no-key error self-guides.
+No regression to the 348-test baseline (now 356).
+
+- **`quickstart.sh` auto-detects a key-free brain** after `uv sync --extra all`, in
+  order: (1) `claude` CLI on PATH → `--brain haiku-sub` (Claude CLI, no key);
+  (2) else `ollama` on PATH **and** at least one model pulled (`ollama list`) →
+  `LLM_PROVIDER=ollama` + the first installed model + `LLM_BASE_URL=
+  http://localhost:11434/v1`; (3) else `codex` CLI on PATH → `--brain codex`
+  (OpenAI codex CLI, no key); (4) else a friendly message (install claude / ollama
+  - pull / codex, or set `ANTHROPIC_API_KEY`) and exit 1 — no stack trace. Prints
+  which brain it chose. `-h`/`--help` and the 100755 git mode preserved;
+  `shellcheck`-clean.
+- **New `codex-cli` brain provider** (`brain.py` `_stream_codex_cli` + `config.py`):
+  mirrors `claude-cli` but shells out to the OpenAI `codex` CLI in non-interactive
+  `codex exec` mode (uses your logged-in codex auth, no API key). Isolated:
+  `--sandbox read-only`, `--skip-git-repo-check` in a scratch cwd, and
+  `--ignore-user-config` (skips `$CODEX_HOME/config.toml`). `codex exec` prints only
+  the final assistant message to stdout, which we capture as the reply; stateless
+  per call (no resume session id). Base command overridable via `CODEX_CLI_CMD`
+  (default `codex exec`). Added `codex-cli` to `PROVIDERS`, a `codex` brain preset
+  (`gpt-5-codex`), and a validate() PATH check.
+  **ASSUMPTION:** the exact `codex exec` flags (`--model`, `--sandbox read-only`,
+  `--skip-git-repo-check`, `--ignore-user-config`) are taken from the documented
+  OpenAI Codex CLI reference (developers.openai.com/codex/cli/reference) and were
+  **NOT verified against a live binary** (codex is not installed in this env).
+  Override with `CODEX_CLI_CMD` if a build differs; noted in code + `.env.example`.
+- **`__main__.py` `_run_browser`** now announces the URL via a small
+  `_announce_browser_url(url)` helper that **prints it prominently**
+  (`▶ Open in your browser:  http://127.0.0.1:8765/`) **and auto-opens** it with
+  `webbrowser.open(url)`. (Extracted to a helper so `_run_browser` gains no extra
+  local and pylint stays at the prior warning count.)
+- **Friendlier no-key error** (`config.py`): the `ANTHROPIC_API_KEY is required`
+  message now points at the easy fixes — run `./quickstart.sh`, or `--brain
+  haiku-sub`, or `LLM_PROVIDER=ollama`, or `--brain codex` — so even a bare `./mstt`
+  failure self-guides.
+- **Tests** (`tests/test_logic.py`, `tests/test_config.py`, new
+  `tests/test_run_browser.py`): codex-cli runs `codex exec` with the isolation flags
+  - returns stdout, error propagation, `CODEX_CLI_CMD` override; `codex-cli` in
+  `PROVIDERS`, the codex PATH-gate, the `codex` preset, and the self-guiding no-key
+  message; and `_run_browser` prints + `webbrowser.open`s the URL. All subprocess /
+  browser boundaries are mocked — nothing runs live.
+
 ## Build status (2026-06-19) — Wave G: locale awareness + one-command quickstart
 
 Goal: make the assistant generally **location- and units-aware**, ship a **real
@@ -40,9 +88,10 @@ wired + tested; no regression to the prior 326-test baseline (now 345).
   "weather unavailable" message and never crash the turn.
 - **One-command quickstart** (`quickstart.sh`): checks for `uv` (prints an install
   hint if missing), runs `uv sync --extra all`, then launches `./mstt --browser
-  --type` — the web control room in typed mode (no mic, and the default `claude-cli`
-  brain needs no API key), so a new user is typing to a real LLM in seconds. `-h`/
-  `--help` print purpose/usage and exit 0; executable bit set in the git index.
+  --type` — the web control room in typed mode (no mic), so a new user is typing to
+  a real LLM in seconds. `-h`/`--help` print purpose/usage and exit 0; executable
+  bit set in the git index. (Superseded by the key-free auto-detect below — the
+  default provider is actually `anthropic`, so a bare launch needed a key.)
 - **Tests** (`tests/test_weather.py` new, `tests/test_config.py` extended): weather
   metric vs imperial formatting + the unit params sent, default-vs-explicit location,
   graceful network/unknown-place/empty failures, WMO mapping, the full `urllib`
