@@ -60,6 +60,13 @@ _RESET = "\033[0m"
 _SESSION_SINK: object | None = None
 _SESSION_SINK_BUILT = False
 
+# Turn-source tags threaded onto bus.transcript(...) so the GUI can label the user
+# bubble with how the turn was entered (e.g. "YOU · push-to-talk").
+SOURCE_TYPED = "typed"
+SOURCE_PTT = "push_to_talk"
+SOURCE_WAKE = "wake"
+SOURCE_LIVE_AUDIO = "live_audio"
+
 
 def _session_sink(cfg: Config) -> Any:
     """Return the process-wide telemetry sink (built once from config), or None."""
@@ -70,6 +77,30 @@ def _session_sink(cfg: Config) -> Any:
         _SESSION_SINK = make_sink(cfg)
         _SESSION_SINK_BUILT = True
     return _SESSION_SINK
+
+
+def _signal_mic_confirmed(clip: np.ndarray, sample_rate: int) -> None:
+    """Emit a "mic working" signal once a real (non-silent) capture is confirmed.
+
+    A successful wake / push-to-talk capture proves the microphone path works, so we
+    publish a ``mic_result(ok=True)`` — the same event the GUI's "Test mic" uses — so
+    the page can hide the macOS permission hint the instant audio is confirmed,
+    without the user having to run a separate mic test. Best-effort + no-op on an
+    empty/silent clip (that would not prove anything)."""
+    arr = np.asarray(clip, dtype=np.float32).ravel()
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if arr.size == 0 or peak < audio._SILENCE_PEAK:  # noqa: SLF001 — shared silence floor
+        return
+    level = int(round(min(1.0, peak) * 100))
+    duration = round(arr.size / sample_rate, 1) if sample_rate else 0.0
+    with contextlib.suppress(Exception):
+        bus.mic_result(
+            ok=True,
+            verdict="ok",
+            message=f"Microphone confirmed working — captured {duration}s at level {level}%",
+            level=level,
+            permission=audio.mic_permission_status(),
+        )
 
 
 def debug_audio_enabled(cfg: Config, *, browser: bool = False) -> bool:
@@ -514,8 +545,13 @@ def _respond(
     denoiser: object | None = None,
     speaker_id: object | None = None,
     clip: np.ndarray | None = None,
+    turn_source: str = "",
 ) -> RespondResult:
     """Stream the LLM for ``text``, speak it, and publish live state to the bus.
+
+    ``turn_source`` tags where the turn's text came from (``"typed"`` /
+    ``"push_to_talk"`` / ``"wake"`` / ``"live_audio"``) so the GUI can label the
+    user bubble (e.g. "YOU · push-to-talk"); it rides the published transcript.
 
     When ``cfg.barge_in`` is enabled and a ``vad`` is supplied, the mic stays live
     during playback; confirmed user speech (gated by :class:`InterruptGate`)
@@ -529,7 +565,7 @@ def _respond(
     _set_speaker(brain, speaker_id, clip)
     metrics = TurnMetrics()
     metrics.note(transcript=text)
-    bus.transcript(text)
+    bus.transcript(text, source=turn_source)
     chunker = SentenceChunker()
     voiced_any = False  # first-audio (R3-7): mark the instant the first audio plays
     barge_in = cfg.barge_in != "off" and vad is not None
@@ -737,6 +773,7 @@ def _capture_ptt(
     if clip.size == 0:
         bus.state("idle")
         return _Captured()
+    _signal_mic_confirmed(clip, cfg.sample_rate)  # audio confirmed -> GUI can hide perm hint
     bus.state("stt")
     dbg("stt_input", **audio.capture_stats(clip, cfg.sample_rate))
     text = str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
@@ -800,9 +837,11 @@ def run_turn(
     if typed_text is not None:
         text = typed_text.strip()
         clip: np.ndarray | None = None
+        turn_source = SOURCE_TYPED
     else:
         captured = _capture_ptt(cfg, stt, gate)
         text, clip = captured.text, captured.clip
+        turn_source = SOURCE_PTT
     if not text:
         return
     if cfg.debug and typed_text is None:
@@ -810,15 +849,24 @@ def run_turn(
     active_vad = vad if typed_text is None else None
     while text:
         result = _respond(
-            cfg, brain, tts, gate, text, vad=active_vad, speaker_id=speaker_id, clip=clip
+            cfg,
+            brain,
+            tts,
+            gate,
+            text,
+            vad=active_vad,
+            speaker_id=speaker_id,
+            clip=clip,
+            turn_source=turn_source,
         )
         if not result.interrupted:
             return
         # User barged in: their captured audio is handed straight to the streaming
         # transcriber (no from-scratch re-transcribe) as the next turn (R2-6). The
         # interrupter may be a different person, so the captured clip is re-identified
-        # on the next _respond (G7).
+        # on the next _respond (G7). Barge-in audio came from the live mic.
         clip = result.captured
+        turn_source = SOURCE_LIVE_AUDIO
         text = _transcribe_barge_in(cfg, stt, result.captured) if stt is not None else ""
 
 
@@ -886,9 +934,13 @@ def run_wake_loop(
         if not fired:
             bus.state("idle")
             return 0  # stop requested while idle-listening for the wake word
+        # Wake phrase fired: flash the GUI cue (bus.wake) AND play a distinct
+        # detection chime so the user gets an unmistakable acknowledgement. This
+        # runs once per detection (outside the follow-up loop), so it never beeps
+        # repeatedly while a conversation is in progress.
         bus.wake()
         gate.gate()
-        _play(chimes.chime_listening())
+        _play(chimes.chime_wake())
         gate.release()
         follow_up = False
         while True:
@@ -899,19 +951,21 @@ def run_wake_loop(
             analyzer = make_turn_analyzer(cfg, frame_seconds)
             streamer = _maybe_streamer(cfg, stt)
             max_s = cfg.follow_up_seconds if follow_up else cfg.max_record_seconds
+            partial_src = SOURCE_LIVE_AUDIO if follow_up else SOURCE_WAKE
             clip = audio.record_turn(
                 cfg.sample_rate,
                 vad,
                 analyzer,
                 max_seconds=max_s,
                 streamer=streamer,
-                on_partial=lambda t: bus.transcript(t, partial=True),
+                on_partial=lambda t, s=partial_src: bus.transcript(t, partial=True, source=s),
                 source=hw_source,
                 denoiser=denoiser,
             )
             if clip.size == 0:
                 dbg("no_speech", **audio.capture_stats(clip, cfg.sample_rate))
                 break  # silence -> back to listening for the wake word
+            _signal_mic_confirmed(clip, cfg.sample_rate)  # audio confirmed -> hide perm hint
             dbg("stt_input", **audio.capture_stats(clip, cfg.sample_rate))
             text = (
                 str(streamer.final().text).strip()  # type: ignore[union-attr]
@@ -932,6 +986,9 @@ def run_wake_loop(
                 denoiser=denoiser,
                 speaker_id=speaker_id,
                 clip=clip,
+                # The first utterance after the phrase fires is tagged "wake";
+                # subsequent follow-ups (no re-wake) are live-mic audio.
+                turn_source=SOURCE_WAKE if not follow_up else SOURCE_LIVE_AUDIO,
             )
             while result.interrupted:
                 # Hand the captured barge-in audio straight to the transcriber as
@@ -953,6 +1010,7 @@ def run_wake_loop(
                     denoiser=denoiser,
                     speaker_id=speaker_id,
                     clip=barge_clip,
+                    turn_source=SOURCE_LIVE_AUDIO,  # barge-in audio is from the live mic
                 )
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
@@ -1049,8 +1107,24 @@ class _WakeController:
         the user lands back where they were. Never blocks the HTTP handler."""
         threading.Thread(target=self._mic_test_target, daemon=True).start()
 
+    def mic_record_replay(self) -> None:
+        """Record ~3s from the mic and play it back, in a worker thread.
+
+        Like :meth:`mic_test`, it owns the input device for the duration: if the wake
+        loop holds the mic it is paused first and restored afterwards. Never blocks
+        the HTTP handler."""
+        threading.Thread(target=self._mic_record_replay_target, daemon=True).start()
+
     def _mic_test_target(self) -> None:
-        # Free the device if the wake loop currently holds it; remember to restore.
+        self._with_paused_wake(lambda: _run_mic_test(self._cfg))
+
+    def _mic_record_replay_target(self) -> None:
+        self._with_paused_wake(lambda: _run_mic_record_replay(self._cfg))
+
+    def _with_paused_wake(self, fn: Any) -> None:
+        """Run ``fn`` with exclusive use of the mic: pause the wake loop if it holds
+        the device, run ``fn``, then restore the loop — so a mic diagnostic always
+        owns the input device and the user lands back where they were."""
         with self._lock:
             was_listening = self._thread is not None and self._thread.is_alive()
         thread = self._thread
@@ -1058,9 +1132,9 @@ class _WakeController:
             self.stop_wake()
             if thread is not None:
                 thread.join(timeout=3.0)
-        _run_mic_test(self._cfg)  # capture + publish verdict (single source of truth)
+        fn()
         if was_listening:
-            self.start_wake()  # restore the always-listen loop we paused for the test
+            self.start_wake()  # restore the always-listen loop we paused for the diagnostic
 
     def _wake_target(self, stop: threading.Event) -> None:
         try:
@@ -1099,6 +1173,7 @@ class _WakeController:
                 captured.text,
                 speaker_id=self._speaker_id,
                 clip=captured.clip,
+                turn_source=SOURCE_PTT,
             )
         except Exception as exc:
             log.error("push-to-talk error: %s", exc)
@@ -1130,6 +1205,66 @@ def _run_mic_test(cfg: Config) -> None:
         permission=result.permission,
     )
     bus.log(("✓ " if result.ok else "✗ ") + result.message, "info" if result.ok else "error")
+    bus.state("idle")
+
+
+def _run_mic_record_replay(cfg: Config, *, seconds: float = 3.0) -> None:
+    """Record ~``seconds`` from the mic, play it back, and report capture stats.
+
+    The GUI "record & replay" diagnostic: the user hears their OWN microphone played
+    back through the speaker, which makes a working capture path unmistakable. Emits
+    the measured level / duration / sample-rate via the bus (a ``mic_result`` event
+    plus a human ``bus.log`` line) and, on a successful (non-silent) capture, emits
+    ``mic_result(ok=True)`` so the GUI can hide the macOS permission hint (the audio
+    is confirmed working). Never raises — a missing device / PortAudio / permission
+    is turned into a clear failing verdict so the worker thread stays alive.
+    """
+    permission = audio.mic_permission_status()
+    bus.log(f"recording {seconds:.0f}s from the mic for replay…")
+    bus.state("recording")
+    try:
+        clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=seconds)
+    except Exception as exc:  # noqa: BLE001 — no device / PortAudio / capture error
+        log.error("mic record-replay error: %s", exc)
+        bus.log(f"✗ record & replay failed: {exc}", "error")  # SYSTEM log first…
+        bus.mic_result(  # …then the verdict, so it isn't flushed by the error log
+            ok=False,
+            verdict="error",
+            message=f"microphone error: {exc}",
+            permission=permission,
+        )
+        bus.state("idle")
+        return
+    stats = audio.capture_stats(clip, cfg.sample_rate)
+    peak = float(stats["peak"])
+    level = int(round(min(1.0, max(0.0, peak)) * 100))
+    ok = clip.size > 0 and peak >= audio._SILENCE_PEAK  # noqa: SLF001 — shared silence floor
+    if ok:
+        bus.log(
+            f"playing back your recording ({stats['duration_s']}s @ {cfg.sample_rate} Hz, "
+            f"device {device_rate} Hz, level {level}%)…"
+        )
+        try:
+            _play(clip)
+        except Exception as exc:  # noqa: BLE001 — playback backend missing/failed
+            log.error("mic replay playback error: %s", exc)
+            bus.log(f"recorded OK but playback failed: {exc}", "error")
+    message = (
+        f"Microphone OK — recorded & replayed {stats['duration_s']}s, level {level}%"
+        if ok
+        else "No audio captured to replay — check the microphone permission and input device."
+    )
+    # Log first, then the authoritative mic_result LAST: a failing verdict logs at
+    # "error" level, which is a SYSTEM frame that flushes the subscriber's data queue
+    # — emitting mic_result after it keeps the verdict from being flushed away.
+    bus.log(("✓ " if ok else "✗ ") + message, "info" if ok else "error")
+    bus.mic_result(
+        ok=ok,
+        verdict="ok" if ok else "silent",
+        message=message,
+        level=level,
+        permission=permission,
+    )
     bus.state("idle")
 
 
@@ -1218,7 +1353,7 @@ def _run_browser(
     def on_turn(text: str) -> None:
         # Typed-only from the page in this build -> guest bucket (no clip to embed).
         dbg.action("turn", chars=len(text))
-        _respond(cfg, brain, tts, gate, text)
+        _respond(cfg, brain, tts, gate, text, turn_source=SOURCE_TYPED)
 
     def on_action(name: str, data: dict) -> None:
         dbg.action(name, **{k: v for k, v in data.items() if k != "action"})
@@ -1241,6 +1376,15 @@ def _run_browser(
                 controller.mic_test()
             else:
                 threading.Thread(target=lambda: _run_mic_test(cfg), daemon=True).start()
+        elif name == "mic_record_replay":
+            # Record ~3s and play it back so the user hears their own mic — the most
+            # unambiguous "is the mic working" check. Owns the device (pauses the wake
+            # loop if needed); a non-silent capture emits mic_result(ok=True) so the
+            # GUI can hide the macOS permission hint. Always runs in a worker thread.
+            if controller is not None:
+                controller.mic_record_replay()
+            else:
+                threading.Thread(target=lambda: _run_mic_record_replay(cfg), daemon=True).start()
         elif name in {"wake_start", "wake_stop", "ptt"}:
             if controller is None:
                 bus.log(f"'{name}' unavailable: {voice_hint}", "error")
