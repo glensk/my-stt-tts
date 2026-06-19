@@ -32,6 +32,8 @@ What it does:
   4. Launches `./mstt --browser --type` wired to that brain — the web GUI in
      typed mode (no mic). Type a message in the browser and you are talking to
      the LLM. No API key needed for any of the three brains above.
+     To talk to it (wake word / mic) instead, run `./mstt --browser --wake`
+     (macOS will ask for microphone permission on first capture).
 
 If none is found it prints how to enable one (install claude/ollama/codex, or
 set ANTHROPIC_API_KEY) and exits 1.
@@ -100,4 +102,10 @@ fi
 
 echo "quickstart: opening the browser control room (typed mode, no mic needed)…"
 echo "            Type a message in the browser to talk to the LLM. Ctrl-C to quit."
+echo
+echo "🎙️  To talk to it (wake word / mic), run:  ./mstt --browser --wake"
+echo "    (loads on-device STT + the wake model so the GUI voice buttons go live;"
+echo "     macOS asks for microphone permission on the first capture — grant it to"
+echo "     the Terminal/app.)"
+echo
 exec ./mstt --browser --type "${ARGS[@]}"

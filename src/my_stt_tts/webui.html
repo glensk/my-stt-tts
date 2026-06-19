@@ -189,6 +189,13 @@ header.bar{
 .btn.held{background:linear-gradient(180deg,#3a0f2c,#2a0b22); border-color:var(--mag); color:#fff;
   box-shadow:0 0 20px -3px var(--mag)}
 .btn:disabled{opacity:.4; cursor:not-allowed; box-shadow:none}
+.btn[aria-disabled="true"]{opacity:.4; cursor:not-allowed; box-shadow:none}
+.btn[aria-disabled="true"]:hover{border-color:var(--line2); color:var(--ink)}
+.voice-note{margin-top:2px; font-size:10px; letter-spacing:.5px; color:var(--amber);
+  display:flex; align-items:center; gap:7px}
+.voice-note::before{content:"⚠"; color:var(--amber)}
+.voice-note code{font-size:10px; padding:1px 5px; border:1px solid var(--line2);
+  border-radius:4px; color:var(--ink); background:#060c12}
 kbd{font-size:9px; padding:1px 5px; border:1px solid var(--line2); border-radius:4px;
   color:var(--ink-faint); background:#060c12}
 
@@ -359,6 +366,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               List Voices
             </button>
           </div>
+          <div class="voice-note" id="voiceNoteRow" role="status" aria-live="polite" hidden></div>
         </div>
       </section>
 
@@ -781,9 +789,7 @@ function populate(s){
   $("#length").value = ls;
   $("#lengthVal").textContent = ls.toFixed(2);
   updateVoiceNote();
-  // Real-audio control is shown only when the backend can carry mic/TTS PCM (R2-5).
-  const liveBtn = $("#liveAudioBtn");
-  if(liveBtn) liveBtn.hidden = !settings.audio_enabled;
+  setVoiceControls(settings);
   // readout
   $("#roWake").textContent  = settings.wake_phrase || "—";
   const v = (settings.voices||[]).find(x=>x.id===settings.voice_en);
@@ -794,6 +800,43 @@ function updateVoiceNote(){
   const sel = $("#voice");
   const v = (settings.voices||[]).find(x=>x.id===sel.value);
   $("#voiceNote").textContent = v && v.note ? v.note : "";
+}
+
+/* ----------------------------------------------------------------
+   VOICE CONTROLS GATING
+   Server-side wake / push-to-talk only work when the backend can
+   actually do them (STT + wake model + mic) → settings.voice_available.
+   Live Audio is a separate capability (browser mic → WS PCM) →
+   settings.audio_enabled. When voice is off we DISABLE the buttons
+   (greyed, aria-disabled, a one-line hint) instead of letting them
+   POST and silently error.
+   ---------------------------------------------------------------- */
+let voiceAvailable = false;
+function disableBtn(btn, off, reason){
+  if(!btn) return;
+  btn.disabled = off;
+  btn.setAttribute("aria-disabled", String(off));
+  if(off && reason) btn.title = reason;
+}
+function setVoiceControls(s){
+  voiceAvailable = !!s.voice_available;
+  const hint = s.voice_hint || "Voice off — relaunch with `./mstt --browser --wake` and grant mic access";
+  disableBtn($("#wakeBtn"), !voiceAvailable, hint);
+  disableBtn($("#pttBtn"),  !voiceAvailable, hint);
+  // Live Audio rides the browser mic over a WebSocket — shown only when the
+  // backend carries audio (R2-5), independent of server-side voice.
+  const liveBtn = $("#liveAudioBtn");
+  if(liveBtn) liveBtn.hidden = !s.audio_enabled;
+  // One-line note explaining why the wake / PTT buttons are off.
+  const row = $("#voiceNoteRow");
+  if(row){
+    if(voiceAvailable){ row.hidden = true; row.innerHTML = ""; }
+    else{
+      row.hidden = false;
+      // Render `code`-fenced spans from the hint without injecting HTML.
+      row.innerHTML = esc(hint).replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+  }
 }
 
 async function applyPatch(patch){
@@ -840,6 +883,7 @@ $("#sendForm").addEventListener("submit", e=>{
 
 let wakeOn = false;
 $("#wakeBtn").addEventListener("click", ()=>{
+  if(!voiceAvailable){ log("voice controls are off — "+(settings.voice_hint||"relaunch with --wake"), "error"); return; }
   wakeOn = !wakeOn;
   const b = $("#wakeBtn");
   b.classList.toggle("on", wakeOn);
@@ -851,6 +895,7 @@ $("#wakeBtn").addEventListener("click", ()=>{
 const pttBtn = $("#pttBtn");
 let pttHeld = false;
 function pttDown(){
+  if(!voiceAvailable) return;       // disabled when the server can't capture audio
   if(pttHeld) return;
   pttHeld = true;
   pttBtn.classList.add("held");
