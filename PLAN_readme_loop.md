@@ -52,13 +52,14 @@ Ours judged the most *cohesive/tasteful*, but lobe-chat wins on **motion + image
 embedded demo video, per-feature screenshots, animation, social-proof widgets. Round-2 plan
 (browser-free techniques that actually render/animate on GitHub):
 
-- [ ] **Animate the hero SVGs** with SMIL (looping waveform bars, pulsing status dots, sweeping
-  gradient) — motion, no JS; renders via `<img>` on GitHub.
-- [ ] **Animated "control room" SVG mock** (on-brand oscilloscope sweep + cycling state chips +
-  transcript) embedded near the top — our motion + product-imagery in one.
-- [ ] **Typing-SVG tagline** (readme-typing-svg, palette-matched) cycling the pitch lines.
-- [ ] **Capsule-render section dividers** + **anchored centered TOC** + "↑ back to top" links.
+- [x] **Animate the hero SVGs** with SMIL (63 `<animate>` each: looping waveform bars, pulsing
+  dots, blinking cursor, sweeping gradient) — motion, no JS; renders via `<img>` on GitHub.
+- [x] **Animated "control room" SVG** (`docs/assets/control-room.svg` — oscilloscope sweep +
+  6 cycling state chips + typing transcript) embedded near the top: motion + product-imagery in one.
+- [x] **Typing-SVG tagline** (readme-typing-svg, palette-matched) cycling the pitch lines.
+- [x] **Capsule-render section dividers** + **anchored centered TOC** + 5 "↑ back to top" links.
 - SKIP: star-history (repo is new — a flat 0-star chart hurts) and award widgets (none — won't fabricate).
 - DEFER to user: a *real* spoken-demo video (GitHub inline player) — needs a real mic recording.
 
-Then re-run the fancy-checker (round 2). Loop until ours wins or ties at the top.
+Round-2 merged at `bb854f2` (all self-hosted SVGs validated + SMIL-animated; lint clean). **Next:**
+fancy-checker round 2 vs lobe-chat — does the motion + control-room demo flip it? Loop until ours wins/ties.
