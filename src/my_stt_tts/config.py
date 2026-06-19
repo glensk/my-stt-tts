@@ -12,11 +12,21 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
-# Audio transport modes (R2-5; see transport.py). Where the loop sources mic audio
-# and sinks TTS audio:
+# Audio transport modes (R2-5/R3-1; see transport.py). Where the loop sources mic
+# audio and sinks TTS audio:
 #   local      — the local sound card via sounddevice (default, today's behaviour)
 #   websocket  — a network link: a WS server feeds remote satellites / the browser
-TRANSPORT_MODES = ("local", "websocket")
+#   webrtc     — a real WebRTC peer (Opus + jitter buffer + ICE/NAT, the `webrtc`
+#                extra: aiortc); the browser uses a real RTCPeerConnection
+TRANSPORT_MODES = ("local", "websocket", "webrtc")
+
+# Pre-VAD noise-suppression backends (R3-6; see denoise.py). Applied to mic frames
+# AFTER echo cancellation and BEFORE VAD/STT so STT accuracy rises and false
+# barge-ins fall in noisy rooms:
+#   off       — no denoising (default)
+#   spectral  — pure-numpy spectral-gate noise reduction (always available)
+#   rnnoise   — RNNoise via an optional wheel; falls back to spectral if missing
+DENOISER_MODES = ("off", "spectral", "rnnoise")
 
 # STT backend selection (R2-7). Local-first; cloud is opt-in and needs an API key.
 #   local — on-device parakeet-mlx (default)
@@ -164,6 +174,17 @@ class Config:
     aec_mode: str = "off"
     aec_nlms_taps: int = 256  # FIR length of the software adaptive filter
     aec_nlms_mu: float = 0.3  # NLMS step size in (0, 2]; higher = faster but less stable
+    # R3-4: when aec_mode=voiceprocessing, capture mic audio THROUGH the macOS
+    # AVAudioEngine VoiceProcessingIO input node (PyObjC) so HARDWARE-cancelled PCM
+    # reaches Python — instead of capturing via plain sounddevice and cancelling in
+    # software. Falls back to sounddevice + NLMS if the PyObjC bridge is unavailable.
+    aec_hw_capture: bool = True
+
+    # --- Pre-VAD noise suppression (R3-6) ---
+    # Clean mic frames AFTER echo cancellation and BEFORE VAD/STT to raise STT
+    # accuracy and cut false barge-ins in noisy rooms. See DENOISER_MODES / denoise.py.
+    denoiser: str = "off"
+    denoiser_strength: float = 1.0  # spectral-gate over-subtraction factor (>=0)
 
     # --- Acoustic interruption prediction (R2-3) ---
     # A 3rd, purely-acoustic barge-in guard: score sustained voiced energy + pitch/
@@ -207,6 +228,14 @@ class Config:
     )
     piper_data_dir: str = "voices"
     tts_length_scale: float = 1.1  # Piper duration multiplier; >1 = slower/calmer
+    # --- Streamed, low-latency TTS playout (R3-3) ---
+    # Render + play the reply CLAUSE-by-clause through a sounddevice OutputStream
+    # (local) / the transport sink (network), so first audio plays within a few
+    # hundred ms instead of after the whole sentence is synthesized. Keeps cancel
+    # semantics for barge-in. `tts_streaming` is the master switch.
+    tts_streaming: bool = True
+    tts_stream_min_chars: int = 12  # min speakable chars before a sub-sentence clause fires
+    tts_stream_frame: int = 1024  # OutputStream write block (samples) for streamed playout
 
     # --- Speaker ID ---
     speaker_threshold: float = 0.45
@@ -265,6 +294,9 @@ class Config:
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             barge_in=env.get("BARGE_IN", "off"),
             aec_mode=env.get("AEC_MODE", "off"),
+            aec_hw_capture=_env_bool("AEC_HW_CAPTURE", default=True),
+            denoiser=env.get("DENOISER", "off"),
+            tts_streaming=_env_bool("TTS_STREAMING", default=True),
             turn_analyzer=env.get("TURN_ANALYZER", "smart"),
             smart_turn_model_path=env.get("SMART_TURN_MODEL_PATH", "models/smart-turn-v3.0.onnx"),
             smart_turn_model_url=env.get("SMART_TURN_MODEL_URL", SMART_TURN_MODEL_URL),
@@ -310,6 +342,12 @@ class Config:
             cfg.interrupt_predict_threshold = float(env["INTERRUPT_PREDICT_THRESHOLD"])
         if env.get("INTERRUPT_PREDICT_MIN_MS"):
             cfg.interrupt_predict_min_ms = float(env["INTERRUPT_PREDICT_MIN_MS"])
+        if env.get("TTS_STREAM_MIN_CHARS"):
+            cfg.tts_stream_min_chars = int(env["TTS_STREAM_MIN_CHARS"])
+        if env.get("TTS_STREAM_FRAME"):
+            cfg.tts_stream_frame = int(env["TTS_STREAM_FRAME"])
+        if env.get("DENOISER_STRENGTH"):
+            cfg.denoiser_strength = float(env["DENOISER_STRENGTH"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -380,5 +418,13 @@ class Config:
             errors.append(f"stt_backend must be one of {STT_BACKENDS}; got {self.stt_backend!r}")
         if self.tts_backend not in TTS_BACKENDS:
             errors.append(f"tts_backend must be one of {TTS_BACKENDS}; got {self.tts_backend!r}")
+        if self.denoiser not in DENOISER_MODES:
+            errors.append(f"denoiser must be one of {DENOISER_MODES}; got {self.denoiser!r}")
+        if self.denoiser_strength < 0:
+            errors.append(f"denoiser_strength must be >= 0; got {self.denoiser_strength}")
+        if self.tts_stream_min_chars <= 0:
+            errors.append(f"tts_stream_min_chars must be > 0; got {self.tts_stream_min_chars}")
+        if self.tts_stream_frame <= 0:
+            errors.append(f"tts_stream_frame must be > 0; got {self.tts_stream_frame}")
         if errors:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(errors))
