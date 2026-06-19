@@ -86,8 +86,13 @@ def test_summarize_shape():
     assert s["fits_silence_window"] is True
 
 
-def test_main_skips_gracefully_without_model(capsys):
-    # No onnxruntime/model on the test host -> the bench reports skipped + exits 0.
+def test_main_skips_gracefully_without_model(capsys, monkeypatch):
+    # Force the no-model path so the test is hermetic regardless of host: a real
+    # models/smart-turn-v3.0.onnx + onnxruntime present would otherwise run the bench.
+    def _no_model(_cfg: object) -> object:
+        raise RuntimeError("Smart Turn model / runtime unavailable")
+
+    monkeypatch.setattr(bench, "_build_real_infer", _no_model)
     rc = bench.main(["--json"])
     assert rc == 0
     out = capsys.readouterr().out
