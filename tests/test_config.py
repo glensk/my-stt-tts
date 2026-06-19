@@ -36,6 +36,38 @@ def test_bad_provider_rejected():
         Config(llm_provider="bogus", anthropic_api_key="x").validate()
 
 
+def test_codex_cli_provider_is_valid():
+    from my_stt_tts.config import PROVIDERS
+
+    assert "codex-cli" in PROVIDERS
+
+
+def test_codex_cli_requires_codex_on_path(monkeypatch):
+    import my_stt_tts.config as config_mod
+
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _name: None)
+    with pytest.raises(ConfigError, match="codex-cli"):
+        Config(llm_provider="codex-cli").validate()
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _name: "/usr/bin/codex")
+    Config(llm_provider="codex-cli").validate()  # no key needed when codex is present
+
+
+def test_codex_brain_preset_sets_provider_and_model():
+    cfg = Config()
+    cfg.apply_brain_preset("codex")
+    assert cfg.llm_provider == "codex-cli"
+    assert cfg.llm_model
+
+
+def test_missing_anthropic_key_message_points_at_fixes():
+    with pytest.raises(ConfigError) as exc:
+        Config().validate()
+    msg = str(exc.value)
+    assert "quickstart.sh" in msg
+    assert "haiku-sub" in msg
+    assert "ollama" in msg.lower()
+
+
 def test_from_env(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("LLM_MODEL", "gpt-4o-mini")

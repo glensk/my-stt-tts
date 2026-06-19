@@ -95,6 +95,49 @@ def test_claude_cli_error_propagates():
         list(brain.stream("hi"))
 
 
+def test_codex_cli_runs_exec_and_returns_stdout():
+    cfg = Config(llm_provider="codex-cli", llm_model="gpt-5-codex")
+    brain = Brain(cfg)
+    completed = MagicMock(returncode=0, stdout="the answer\n", stderr="")
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/codex"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
+    ):
+        assert "".join(brain.stream("hello")) == "the answer"
+        argv = run.call_args.args[0]
+        assert argv[:2] == ["codex", "exec"]  # non-interactive exec mode
+        assert "--model" in argv and "gpt-5-codex" in argv
+        assert "--sandbox" in argv and "read-only" in argv  # isolated
+        assert "--skip-git-repo-check" in argv
+        assert "--ignore-user-config" in argv
+
+
+def test_codex_cli_error_propagates():
+    cfg = Config(llm_provider="codex-cli")
+    brain = Brain(cfg)
+    failed = MagicMock(returncode=1, stdout="", stderr="boom")
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/codex"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=failed),
+        pytest.raises(LLMError),
+    ):
+        list(brain.stream("hi"))
+
+
+def test_codex_cli_command_overridable_via_env(monkeypatch):
+    cfg = Config(llm_provider="codex-cli", llm_model="gpt-5-codex")
+    brain = Brain(cfg)
+    monkeypatch.setenv("CODEX_CLI_CMD", "mycodex run --foo")
+    completed = MagicMock(returncode=0, stdout="ok", stderr="")
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/mycodex"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
+    ):
+        assert "".join(brain.stream("hello")) == "ok"
+        argv = run.call_args.args[0]
+        assert argv[:3] == ["mycodex", "run", "--foo"]
+
+
 def test_agent_trigger_extracts_task():
     cfg = Config(llm_provider="claude-cli", agent_trigger="agent")
     brain = Brain(cfg)
