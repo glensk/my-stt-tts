@@ -42,6 +42,14 @@ The pipeline, live — wake word → speech-to-text → LLM → speech, all on o
 
 ### 🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html) &nbsp;·&nbsp; 🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)
 
+<br>
+
+▶ **Live demo video** — coming soon (the animated control room above shows the interface in motion).
+
+<!-- DEMO VIDEO: record ~20-40s of `./mstt --wake --barge-in always --browser`,
+     drag the file into a GitHub issue/PR comment to get a https://github.com/user-attachments/... URL,
+     then paste that bare URL on its own line right here — GitHub mounts a native <video> player. -->
+
 </div>
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
@@ -385,6 +393,16 @@ This project is **Apache-2.0**. Optional backends carry their own licenses and a
 Conventions for humans and AI agents are in **[AGENTS.md](AGENTS.md)**; the design rationale and
 full roadmap are in **[PLAN.md](PLAN.md)**. Contributions and security reports: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
+<div align="center">
+
+### Contributors
+
+<a href="https://github.com/glensk/my-stt-tts/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=glensk/my-stt-tts" alt="Contributors to my-stt-tts">
+</a>
+
+</div>
 
 <div align="center">
 
