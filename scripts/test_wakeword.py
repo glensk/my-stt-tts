@@ -42,12 +42,26 @@ def main(argv: list[str] | None = None) -> int:
     if sample_rate != 16000:
         print(f"warning: expected 16 kHz mono, got {sample_rate} Hz")
     wake = WakeWord(args.model, args.threshold)
+    wake.reset()
+    # openWakeWord is STATEFUL: its melspectrogram/feature buffers must fill before a
+    # short utterance can score. A bare clip with no lead-in scores low; prepend ~1.5 s
+    # of silence (as the always-listen loop naturally provides) so the buffers warm up.
+    # WakeWord.detect converts float32 [-1, 1] -> int16 PCM internally (openWakeWord
+    # requires int16 — a raw float feed is truncated to zeros and never fires).
+    lead = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio = np.concatenate([lead, audio.astype(np.float32)])
     step = 1280  # 80 ms at 16 kHz
     fired = False
-    for i in range(0, max(0, len(audio) - step), step):
-        if wake.detect(audio[i : i + step]):
-            print(f"WAKE fired at ~{i / sample_rate:.2f}s")
+    best = 0.0
+    for i in range(0, len(audio) - step + 1, step):
+        hit = wake.detect(audio[i : i + step])
+        best = max(best, wake.last_score)
+        if hit:
+            print(
+                f"WAKE fired at ~{(i - lead.size) / sample_rate:.2f}s (score {wake.last_score:.3f})"
+            )
             fired = True
+    print(f"max score: {best:.3f} (threshold {args.threshold})")
     print("RESULT:", "fired ✓" if fired else "did NOT fire ✗")
     return 0 if fired else 1
 
