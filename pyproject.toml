@@ -41,6 +41,14 @@ webrtc = ["aiortc>=1.9"]
 # Pre-VAD noise suppression (R3-6): RNNoise via a wheel. The default `spectral`
 # denoiser is pure-numpy (no extra needed); this is only for the RNNoise backend.
 denoiser = ["pyrnnoise>=0.4"]
+# Realtime speech-to-speech (R3-5) + Twilio telephony (R3-9) both ride the same
+# `websockets` dep as the `transport` extra; no separate package is needed (the
+# realtime/telephony protocols are pure-numpy here). Listed for documentation.
+realtime = ["websockets>=12"]
+telephony = ["websockets>=12"]
+# Per-stage latency telemetry (R3-7) is dependency-free (stdlib logging + the bus);
+# the OpenTelemetry span hook is OFF by default and only needs this extra when on.
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc]"]
 
 [project.scripts]
