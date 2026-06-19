@@ -137,6 +137,26 @@ Wave D merged at `93f3227..841bc2f` (7 commits, new `realtime.py`/`metrics.py`/`
 latency telemetry (+ live-verified OpenTelemetry), checksum-verified `--preflight` bootstrap (real
 Smart-Turn SHA pinned), and a Twilio Media-Streams telephony transport (G.711 μ-law verified vs stdlib).
 
-**All round-3 gaps (R3-1…R3-9) closed.** Current action: round-4 checker (pipecat vs my-stt-tts) —
-with full-duplex+AEC barge-in, WebRTC/WebSocket/telephony transports, streaming STT, smart-turn,
-tool calling, realtime S2S, and telemetry all shipped, this is the strongest case yet for the flip.
+**All round-3 gaps (R3-1…R3-9) closed.**
+
+### Repo 1 — pipecat · Round 4 → WINNER: pipecat ("not close")
+
+With the conversational core matched/beaten, the checker now decides on **breadth + ecosystem +
+production maturity**: pipecat is a Daily.co framework (~13k stars, ~130 contributors, 20+ STT /
+30+ TTS / 23 LLM integrations, JS/React/iOS/Android/**ESP32** client SDKs, its own 14-lang Smart
+Turn model, Krisp-grade AEC, mem0 memory, production deployments). 8 gaps, split by closeability:
+
+- **CODE-achievable** (a Wave E could do): typed prioritized interruption/event model (#2);
+  persistent memory + provider-agnostic context aggregation (#7); pluggable STT/TTS service
+  registry + adapters (#1, the interface); cross-platform whisper.cpp + Linux playback/AEC (#8);
+  Smart-Turn latency bench + language matrix (#4).
+- **Account/hardware/commercial-SDK-gated** (human): live-verify cloud/realtime/Twilio adapters
+  (#6); Krisp/Koala AEC measured on open speakers (#3); an ESP32/satellite hardware client (#5).
+- **Structural / uncloseable by code**: ecosystem scale, contributor count, stars, production
+  track record — a fair indifferent judge weights these for "real home use" and a solo repo
+  cannot manufacture them.
+
+Honest assessment: rounds 1–3 won the conversational core; the residual gap is largely
+maturity/breadth/live-verification that code alone won't flip on a fair judge. **PAUSED for a
+strategic decision** before spending further rounds (keep grinding code gaps · reframe the contest
+to the real single-Mac use case · or declare parity and stop).
