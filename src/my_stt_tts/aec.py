@@ -28,6 +28,7 @@ with the echo removed. The monitor loop pushes the active
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -39,7 +40,7 @@ import numpy as np
 
 log = logging.getLogger("my_stt_tts.aec")
 
-AEC_MODES = ("off", "nlms", "voiceprocessing", "auto")
+AEC_MODES = ("off", "nlms", "voiceprocessing", "webrtc", "auto")
 
 
 @runtime_checkable
@@ -353,6 +354,107 @@ class _suppress_full:  # noqa: N801 — tiny queue.Full swallow
         return exc_type is not None and issubclass(exc_type, queue.Full)
 
 
+class WebRtcApmEchoCanceller:
+    """Linux AEC via the WebRTC Audio Processing Module (APM) — G8.
+
+    On a non-Mac brain host there is no VoiceProcessingIO, so the open-speaker AEC
+    path needs a Linux backend. ``webrtc-audio-processing`` (the ``linux-aec``
+    extra) exposes the same battle-tested echo canceller + noise suppressor Chrome
+    uses. We feed it the playback reference (``push_reference``) and run it on each
+    captured frame (``process``) — the same :class:`EchoCanceller` seam as NLMS.
+
+    The native module is lazy-imported; if it is unavailable (not Linux, wheel
+    missing) :attr:`active` is False and :meth:`process` passes through, so the
+    factory falls back to the pure-numpy NLMS canceller. We never raise into the
+    audio loop. The APM works on 10 ms frames at 16 kHz; frames are buffered to that
+    grain and processed when a full APM frame is available.
+    """
+
+    active: bool
+
+    #: WebRTC APM operates on 10 ms frames.
+    FRAME_MS = 10
+
+    def __init__(self, sample_rate: int = 16000) -> None:
+        self.sample_rate = sample_rate
+        self._frame_n = max(1, int(sample_rate * self.FRAME_MS / 1000))
+        self._apm: Any = self._build()
+        self.active = self._apm is not None
+        self._ref = np.zeros(0, dtype=np.float32)
+        self._mic = np.zeros(0, dtype=np.float32)
+
+    @staticmethod
+    def available() -> bool:
+        """Whether a WebRTC Audio Processing Module wheel is importable on this host."""
+        try:
+            import importlib.util
+
+            return importlib.util.find_spec("webrtc_audio_processing") is not None
+        except Exception:
+            return False
+
+    def _build(self) -> Any:
+        try:
+            from webrtc_audio_processing import (
+                AudioProcessingModule,  # type: ignore[import-not-found]
+            )
+
+            apm = AudioProcessingModule(enable_ns=True, enable_aec=True)
+            with contextlib.suppress(Exception):
+                apm.set_stream_format(self.sample_rate, 1)
+                apm.set_reverse_stream_format(self.sample_rate, 1)
+            return apm
+        except Exception:  # not Linux / wheel missing / API mismatch
+            log.info("WebRTC APM unavailable; AEC will fall back to NLMS.", exc_info=True)
+            return None
+
+    def push_reference(self, samples: np.ndarray) -> None:
+        """Feed played-back samples to the APM far-end (reverse) stream."""
+        if self._apm is None:
+            return
+        arr = np.asarray(samples, dtype=np.float32).ravel()
+        self._ref = np.concatenate([self._ref, arr])
+        self._drain_reference()
+
+    def _drain_reference(self) -> None:
+        while self._ref.size >= self._frame_n:
+            chunk = self._ref[: self._frame_n]
+            self._ref = self._ref[self._frame_n :]
+            with contextlib.suppress(Exception):
+                self._apm.process_reverse_stream(self._to_i16(chunk))
+
+    def process(self, frame: np.ndarray) -> np.ndarray:
+        """Cancel echo from ``frame`` via the APM (buffered to 10 ms grain)."""
+        mic = np.asarray(frame, dtype=np.float32).ravel()
+        if self._apm is None or mic.size == 0:
+            return mic
+        self._mic = np.concatenate([self._mic, mic])
+        out: list[np.ndarray] = []
+        while self._mic.size >= self._frame_n:
+            chunk = self._mic[: self._frame_n]
+            self._mic = self._mic[self._frame_n :]
+            try:
+                cleaned = self._apm.process_stream(self._to_i16(chunk))
+                out.append(self._from_i16(cleaned))
+            except Exception:  # APM hiccup -> pass the frame through unmodified
+                out.append(chunk)
+        return np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
+
+    @staticmethod
+    def _to_i16(arr: np.ndarray) -> bytes:
+        return (np.clip(arr, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+    @staticmethod
+    def _from_i16(data: Any) -> np.ndarray:
+        buf = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+        return np.frombuffer(buf, dtype="<i2").astype(np.float32) / 32768.0
+
+    def reset(self) -> None:
+        """Clear the buffered far-end / near-end audio for a new utterance."""
+        self._ref = np.zeros(0, dtype=np.float32)
+        self._mic = np.zeros(0, dtype=np.float32)
+
+
 def make_voiceprocessing_capture(cfg: Any) -> VoiceProcessingCapture | None:
     """Build + start a :class:`VoiceProcessingCapture`, or None to fall back (R3-4).
 
@@ -377,15 +479,23 @@ def make_voiceprocessing_capture(cfg: Any) -> VoiceProcessingCapture | None:
 def make_echo_canceller(cfg: Any) -> EchoCanceller:
     """Build the configured :class:`EchoCanceller` (from ``cfg.aec_mode``).
 
-    * ``"voiceprocessing"`` — hardware AEC if available, else NLMS.
-    * ``"auto"`` — hardware AEC if available, else NLMS (the recommended default).
+    * ``"voiceprocessing"`` — macOS hardware AEC if available, else NLMS.
+    * ``"webrtc"`` — Linux WebRTC Audio Processing Module if available, else NLMS (G8).
+    * ``"auto"`` — macOS HW AEC if available, else WebRTC-APM (Linux), else NLMS.
     * ``"nlms"`` — always the software adaptive filter.
     * ``"off"`` / anything else — identity pass-through.
     """
     mode = getattr(cfg, "aec_mode", "off")
+    sample_rate = int(getattr(cfg, "sample_rate", 16000))
     if mode == "off":
         return NullEchoCanceller()
     if mode == "nlms":
+        return _make_nlms(cfg)
+    if mode == "webrtc":
+        apm = _try_webrtc_apm(sample_rate)
+        if apm is not None:
+            return apm
+        log.info("WebRTC APM unavailable; using software NLMS.")
         return _make_nlms(cfg)
     if mode in ("voiceprocessing", "auto"):
         if VoiceProcessingEchoCanceller.available():
@@ -395,8 +505,23 @@ def make_echo_canceller(cfg: Any) -> EchoCanceller:
             log.info("hardware AEC inactive; falling back to software NLMS.")
         elif mode == "voiceprocessing":
             log.info("VoiceProcessingIO unavailable (no PyObjC); using software NLMS.")
+        elif mode == "auto":
+            apm = _try_webrtc_apm(sample_rate)
+            if apm is not None:
+                return apm
         return _make_nlms(cfg)
     return NullEchoCanceller()
+
+
+def _try_webrtc_apm(sample_rate: int) -> WebRtcApmEchoCanceller | None:
+    """Build a :class:`WebRtcApmEchoCanceller` if the native module is active (G8)."""
+    if not WebRtcApmEchoCanceller.available():
+        return None
+    apm = WebRtcApmEchoCanceller(sample_rate)
+    if apm.active:
+        log.info("using the WebRTC Audio Processing Module for AEC (Linux).")
+        return apm
+    return None
 
 
 def _make_nlms(cfg: Any) -> NlmsEchoCanceller:

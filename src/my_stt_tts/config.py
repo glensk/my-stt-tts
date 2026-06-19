@@ -69,8 +69,9 @@ TURN_ANALYZERS = ("silence", "smart")
 #   off             — no AEC (legacy; barge-in reliable only with headphones)
 #   nlms            — pure-numpy adaptive filter referencing the played signal
 #   voiceprocessing — macOS hardware AEC (AVAudioEngine VoiceProcessingIO), NLMS fallback
-#   auto            — hardware AEC if available, else NLMS (recommended default)
-AEC_MODES = ("off", "nlms", "voiceprocessing", "auto")
+#   webrtc          — Linux WebRTC Audio Processing Module (APM) AEC, NLMS fallback (G8)
+#   auto            — macOS HW AEC if available, else WebRTC-APM on Linux, else NLMS
+AEC_MODES = ("off", "nlms", "voiceprocessing", "webrtc", "auto")
 
 # Smart Turn v3 ONNX model: auto-downloaded on first run (like Piper voices) so
 # smart endpointing works out of the box. Pinned to the upstream pipecat release.

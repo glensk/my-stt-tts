@@ -308,8 +308,19 @@ def _popen(cmd: list[str], *, stdin: bytes | None = None) -> subprocess.Popen:
     return proc
 
 
+def _player_argv(cfg: Config | None = None) -> tuple[str, ...]:
+    """The argv prefix for a cancellable WAV player (G8: afplay on macOS, aplay on Linux).
+
+    The WAV path is appended by the caller. Falls back to ``afplay`` when no player
+    is found on PATH (the macOS default), so behaviour is unchanged on a Mac.
+    """
+    from .platform import select_player
+
+    return select_player(cfg) or ("afplay",)
+
+
 def _afplay(path: str) -> None:
-    subprocess.run(["afplay", path], check=False)  # noqa: S603, S607
+    subprocess.run([*_player_argv(), path], check=False)  # noqa: S603
 
 
 def _read_wav(path: str) -> tuple[np.ndarray | None, int | None]:
@@ -567,7 +578,7 @@ class TTSRouter:
             wh.setsampwidth(2)
             wh.setframerate(sr)
             wh.writeframes(pcm16.tobytes())
-        proc = _popen(["afplay", out])
+        proc = _popen([*_player_argv(self.cfg), out])
         threading.Thread(target=self._cleanup_after, args=(proc, out), daemon=True).start()
         return Playback(proc, reference=pcm, sample_rate=sr)
 
@@ -595,7 +606,7 @@ class TTSRouter:
         # echo canceller can subtract exactly what the speaker emits.
         reference, ref_sr = _read_wav(out)
         # afplay is the cancellable player; unlink the temp WAV once it exits.
-        proc = _popen(["afplay", out])
+        proc = _popen([*_player_argv(self.cfg), out])
         threading.Thread(target=self._cleanup_after, args=(proc, out), daemon=True).start()
         return Playback(proc, reference=reference, sample_rate=ref_sr)
 

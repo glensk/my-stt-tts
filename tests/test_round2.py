@@ -144,7 +144,8 @@ def test_voiceprocessing_falls_back_to_nlms_when_inactive():
 
 
 def test_aec_modes_constant_matches_config():
-    assert AEC_MODES == ("off", "nlms", "voiceprocessing", "auto")
+    # G8 added the Linux WebRTC-APM AEC backend ("webrtc").
+    assert AEC_MODES == ("off", "nlms", "voiceprocessing", "webrtc", "auto")
 
 
 # --- R2-1: monitor-loop wiring (AEC processes frames + relaxes the floor) ------

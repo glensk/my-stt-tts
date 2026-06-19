@@ -218,6 +218,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Cloud is key-gated (falls back to local Piper / say).",
     )
     parser.add_argument(
+        "--platform",
+        dest="platform",
+        choices=("auto", "macos", "linux"),
+        help="Host platform for the brain (G8): auto-detect (default) | macos | linux. "
+        "Linux selects native playback + WebRTC-APM AEC so the brain runs off-Mac.",
+    )
+    parser.add_argument(
+        "--playback",
+        dest="playback_backend",
+        choices=("auto", "sounddevice", "aplay", "afplay"),
+        help="Audio playback sink (G8): auto | sounddevice | aplay (Linux) | afplay (macOS).",
+    )
+    parser.add_argument(
         "--no-tts-streaming",
         dest="tts_streaming",
         action="store_false",
@@ -283,6 +296,8 @@ _CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("denoiser", "denoiser"),
     ("stt_backend", "stt_backend"),
     ("tts_backend", "tts_backend"),
+    ("platform", "platform"),
+    ("playback_backend", "playback_backend"),
 )
 
 

@@ -79,11 +79,18 @@ def _sd() -> Any:  # noqa: ANN401 — thin lazy accessor
     return sd
 
 
-def play(samples: np.ndarray, sample_rate: int) -> None:
-    """Play a float32 mono array and block until done."""
-    sd = _sd()
-    sd.play(samples, samplerate=sample_rate)
-    sd.wait()
+def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
+    """Play a float32 mono array and block until done (cross-platform, G8).
+
+    Delegates to :func:`my_stt_tts.platform.play_array`, which prefers
+    ``sounddevice`` (macOS/Linux/Windows) and falls back to a Linux CLI player
+    (``aplay`` / ``paplay``) on a host without PortAudio. ``cfg`` (optional) lets a
+    Linux brain pin a specific playback backend; without it the macOS behaviour is
+    unchanged.
+    """
+    from .platform import play_array
+
+    play_array(samples, sample_rate, cfg)
 
 
 def record_push_to_talk(
