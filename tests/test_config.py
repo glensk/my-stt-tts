@@ -1,5 +1,5 @@
 """Tests for configuration loading and fail-fast validation."""
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-function-docstring,import-outside-toplevel,protected-access
 
 import pytest
 
@@ -44,3 +44,63 @@ def test_from_env(monkeypatch):
     assert cfg.llm_provider == "openai"
     assert cfg.llm_model == "gpt-4o-mini"
     cfg.validate()
+
+
+# --- location + units (wave-g) -------------------------------------------------
+
+
+def test_location_units_defaults():
+    cfg = Config(anthropic_api_key="x")
+    assert cfg.location == "Lausanne, Switzerland"
+    assert cfg.units == "metric"
+    cfg.validate()  # defaults are valid
+
+
+def test_units_validation_rejects_unknown():
+    with pytest.raises(ConfigError):
+        Config(anthropic_api_key="x", units="kelvin").validate()
+    Config(anthropic_api_key="x", units="imperial").validate()
+
+
+def test_empty_location_rejected():
+    with pytest.raises(ConfigError):
+        Config(anthropic_api_key="x", location="   ").validate()
+
+
+def test_location_units_from_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("LOCATION", "Tokyo, Japan")
+    monkeypatch.setenv("UNITS", "imperial")
+    cfg = Config.from_env()
+    assert cfg.location == "Tokyo, Japan"
+    assert cfg.units == "imperial"
+    cfg.validate()
+
+
+# --- system-prompt locale injection (wave-g) -----------------------------------
+
+
+def test_locale_prompt_line_appends_location_and_units():
+    from my_stt_tts.config import locale_prompt_line
+
+    out = locale_prompt_line("BASE PROMPT.", "Lausanne, Switzerland", "metric")
+    assert out.startswith("BASE PROMPT.")
+    assert "Lausanne, Switzerland" in out
+    assert "metric units" in out
+
+
+def test_locale_prompt_line_blank_location_is_noop():
+    from my_stt_tts.config import locale_prompt_line
+
+    assert locale_prompt_line("BASE", "   ", "metric") == "BASE"
+
+
+def test_brain_system_prompt_contains_locale_line():
+    from my_stt_tts.brain import Brain
+
+    cfg = Config(anthropic_api_key="x", location="Geneva, Switzerland", units="imperial")
+    brain = Brain(cfg)
+    prompt = brain._system_prompt()  # noqa: SLF001 — assert the injection point
+    assert cfg.system_prompt in prompt  # editable base preserved
+    assert "Geneva, Switzerland" in prompt
+    assert "imperial units" in prompt

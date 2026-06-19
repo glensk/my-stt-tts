@@ -11,6 +11,46 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave G: locale awareness + one-command quickstart
+
+Goal: make the assistant generally **location- and units-aware**, ship a **real
+weather tool**, and get a brand-new user **talking to the LLM in one command**. All
+wired + tested; no regression to the prior 326-test baseline (now 345).
+
+- **Location + units settings** (`config.py`): new `location` (default
+  `"Lausanne, Switzerland"`) and `units` (`metric` | `imperial`, default `metric`)
+  fields with env overrides (`LOCATION`, `UNITS`), fail-fast validation (units in
+  the set; location non-empty), CLI flags (`--location` / `--units`), a `locale`
+  row in `--settings`, and the **web-UI settings** (`settings_dict` + `apply_settings`,
+  plus a `units_modes` choice list).
+- **System-prompt locale injection** (`config.locale_prompt_line` +
+  `Brain._system_prompt`): the editable base prompt (`prompts/system_prompt.md`,
+  `cfg.system_prompt`) is kept verbatim and a single line —
+  "The user is in {location} and uses {units} units; answer measurements…
+  accordingly." — is appended at the backend boundary for **every** provider path
+  (claude-cli, anthropic, openai, both tool-call loops). The base prompt is never
+  mutated, so the UI/`--settings` still show the editable text.
+- **Real `get_weather` tool** (`tools.py`): uses **Open-Meteo (NO API KEY)** —
+  geocodes the place via the geocoding endpoint, fetches current conditions from the
+  forecast endpoint, and returns a concise units-aware summary (°C/km·h for metric,
+  °F/mph for imperial; WMO code → phrase). Defaults to `cfg.location`/`cfg.units` but
+  accepts an explicit `location` arg. Registered in `default_tools` alongside
+  get_time/calculator/home_control (built with the config's location+units in
+  `Brain.__init__`). Dependency-light `urllib`; network/parse failures return a clear
+  "weather unavailable" message and never crash the turn.
+- **One-command quickstart** (`quickstart.sh`): checks for `uv` (prints an install
+  hint if missing), runs `uv sync --extra all`, then launches `./mstt --browser
+  --type` — the web control room in typed mode (no mic, and the default `claude-cli`
+  brain needs no API key), so a new user is typing to a real LLM in seconds. `-h`/
+  `--help` print purpose/usage and exit 0; executable bit set in the git index.
+- **Tests** (`tests/test_weather.py` new, `tests/test_config.py` extended): weather
+  metric vs imperial formatting + the unit params sent, default-vs-explicit location,
+  graceful network/unknown-place/empty failures, WMO mapping, the full `urllib`
+  wiring (only `urlopen` faked) hitting the documented endpoints, plus location/units
+  config defaults + env override + validation and the system-prompt injection line.
+  **Open-Meteo is never hit live** — every HTTP boundary is mocked.
+- **`.env.example`**: documents `LOCATION` + `UNITS`.
+
 ## Build status (2026-06-19) — Wave E: multi-user / household maturity (G1/G2/G4/G7/G8)
 
 Reframed goal: be the best choice for a **household** (different people) talking to a
