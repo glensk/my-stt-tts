@@ -22,9 +22,9 @@ the orchestrator before re-checking.
 
 - [x] 1. **pipecat** — https://github.com/pipecat-ai/pipecat — ✅ **WON** (round 5, reframed: multi-user-on-Mac, maturity excluded)
 - [x] 2. **livekit/agents** — https://github.com/livekit/agents — ✅ **WON** (round 1, first pass)
-- [ ] 3. **huggingface/speech-to-speech** — https://github.com/huggingface/speech-to-speech — *checker running*
-- [ ] 4. **dnhkng/GLaDOS** — https://github.com/dnhkng/GLaDOS — *checker running*
-- [ ] 5. **KoljaB/RealtimeSTT** (+ RealtimeTTS) — https://github.com/KoljaB/RealtimeSTT — *checker running*
+- [x] 3. **huggingface/speech-to-speech** — https://github.com/huggingface/speech-to-speech — ✅ **WON** (first pass)
+- [x] 4. **dnhkng/GLaDOS** — https://github.com/dnhkng/GLaDOS — ✅ **WON** (first pass)
+- [x] 5. **KoljaB/RealtimeSTT** (+ RealtimeTTS) — https://github.com/KoljaB/RealtimeSTT — ✅ **WON** (first pass)
 - [ ] … remaining survey repos appended as reached
 
 ## Round log
@@ -205,9 +205,22 @@ no per-person memory), full on-device privacy + no-API-key, on-device open-speak
 in-home satellite path (ESP32). LiveKit's only edge is cloud-integration breadth — the axis least aligned
 with a private household-on-a-Mac assistant, and my-stt-tts covers it opt-in via the registry anyway. No gaps.
 
-### Repos 3–5 · Round 1 (reframed) — CHECKERS RUNNING IN PARALLEL
+### Repos 3–5 · Round 1 (reframed) → 🏆 ALL WON (first pass)
 
-Since my-stt-tts now wins outright and these are narrower projects, running their checkers concurrently:
-**#3 huggingface/speech-to-speech**, **#4 dnhkng/GLaDOS**, **#5 KoljaB/RealtimeSTT(+RealtimeTTS)** — each
-a fresh indifferent judge vs my-stt-tts on the standing criteria. Any that picks the reference repo →
-implement its cited capability gaps + re-check; wins stand.
+All three fresh indifferent judges picked **my-stt-tts** on the standing criteria — each decided by the
+same axis: per-speaker voice ID wired to per-person memory + on-device AEC/barge-in + the home-hardware
+satellite path, none of which the references have. **#3 HF speech-to-speech**, **#4 GLaDOS**, **#5
+RealtimeSTT/TTS** — all won, no gaps.
+
+**🏁 Every ranked repo (1–5) is won.** But repo #3's judge flagged — and I confirmed — a real
+correctness gap: the multi-user pieces (ECAPA `EcapaEmbedder`, `SpeakerIdentifier.identify`,
+`Brain.set_speaker`) are implemented + unit-tested but **never invoked in the live turn/wake/transport
+loop** (`set_speaker` has zero callers; the embedder is never run per-utterance). The wins lean on
+multi-user being real, so this must work end-to-end, not just in tests.
+
+### Post-win correctness fix — wire speaker-ID into the live loop (IN PROGRESS)
+
+Embed the captured utterance → `identify` → `brain.set_speaker(name)` before generation, in `run_turn`
+(PTT), `run_wake_loop`, the barge-in re-capture, and `net_loop` (transport) — gated + graceful when no
+enrolled profiles / speechbrain unavailable. Then a test that the live path actually calls
+identify→set_speaker. After that, the multi-user claim is genuinely runtime-true.
