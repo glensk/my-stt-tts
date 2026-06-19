@@ -477,6 +477,12 @@ class Config:
     # auto (ON under ``--browser``); an explicit ``DEBUG_AUDIO`` env var overrides.
     debug_audio: bool | None = None
 
+    # Skip the startup audio preflight HARD STOP (the broken-audio gate that refuses
+    # to open the GUI / start a mic loop when capture can't deliver 16 kHz or the mic
+    # queue persistently overflows). Power-user escape hatch — also ``--skip-audio-
+    # preflight`` and the ``SKIP_AUDIO_PREFLIGHT`` env var.
+    skip_audio_preflight: bool = False
+
     @classmethod
     def from_env(cls, dotenv_path: str | os.PathLike[str] | None = None) -> Config:
         """Build a Config from environment variables (loading ``.env`` first)."""
@@ -557,6 +563,7 @@ class Config:
             debug=_env_bool("DEBUG", default=False),
             # None => auto (the browser loop turns it on); an explicit env wins.
             debug_audio=(_env_bool("DEBUG_AUDIO", default=False) if "DEBUG_AUDIO" in env else None),
+            skip_audio_preflight=_env_bool("SKIP_AUDIO_PREFLIGHT", default=False),
         )
         if env.get("TELEPHONY_PORT"):
             cfg.telephony_port = int(env["TELEPHONY_PORT"])

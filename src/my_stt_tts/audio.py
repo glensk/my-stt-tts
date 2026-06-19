@@ -391,6 +391,217 @@ def capture_stats(samples: np.ndarray, sample_rate: int) -> dict[str, Any]:
     }
 
 
+# A preflight is considered failed when this fraction (or more) of capture frames
+# were dropped/overflowed over the short test window — a persistently-overflowing
+# mic queue means capture can't keep up and the pipeline would record nothing. A
+# single transient overflow on stream warm-up is tolerated below this floor.
+_OVERFLOW_DROP_RATIO = 0.25
+
+
+@dataclass(slots=True)
+class PreflightResult:
+    """Outcome of the startup audio preflight (the HARD STOP gate).
+
+    Run BEFORE opening the GUI / starting any mic loop so a broken-audio host
+    refuses to run with a clear error instead of presenting a control room that
+    silently records nothing. ``ok`` is True only when a usable 16 kHz-resolvable
+    capture path exists AND frames are consumed without persistent overflow.
+    ``reason`` is a machine tag (``ok`` / ``no_device`` / ``rate_unresolvable`` /
+    ``overflow`` / ``permission_denied`` / ``error``); ``message`` is the clear,
+    actionable line shown to the user. ``device_rate`` is the rate the input device
+    actually delivered, ``drop_ratio`` the measured overflow/drop fraction, and
+    ``permission`` the OS mic-permission tag.
+    """
+
+    ok: bool
+    reason: str
+    message: str
+    device_rate: int = 0
+    drop_ratio: float = 0.0
+    permission: str = "unknown"
+
+
+def _preflight_message(reason: str, *, device_rate: int, sample_rate: int, drop_pct: int) -> str:
+    """The clear, actionable hard-stop line for a failed preflight ``reason`` (pure)."""
+    bypass = " (or --skip-audio-preflight to bypass)"
+    if reason == "no_device":
+        return (
+            "Audio preflight failed (no_device): no usable microphone/input device was found "
+            "— wake word & speech-to-text need a 16 kHz-capable mic. Connect an input device "
+            f"and grant mic access, then retry{bypass}."
+        )
+    if reason == "permission_denied":
+        return (
+            "Audio preflight failed (permission_denied): microphone permission is DENIED for "
+            "this app — enable your terminal/app in System Settings › Privacy & Security › "
+            f"Microphone, then quit & reopen it and retry{bypass}."
+        )
+    if reason == "rate_unresolvable":
+        return (
+            f"Audio preflight failed (rate_unresolvable): input device runs at {device_rate} Hz "
+            f"and couldn't be resampled to {sample_rate} Hz — wake word & speech-to-text need "
+            f"{sample_rate // 1000} kHz. Fix the input device or rate, then retry{bypass}."
+        )
+    if reason == "overflow":
+        return (
+            f"Audio preflight failed (overflow): the mic queue is overflowing ({drop_pct}% of "
+            "frames dropped) — capture can't keep up; the pipeline would record nothing. Close "
+            f"other audio apps or raise the device latency/blocksize, then retry{bypass}."
+        )
+    return (
+        "Audio preflight failed (error): the microphone could not be opened for the startup "
+        f"check — see the message above. Fix the input device, then retry{bypass}."
+    )
+
+
+def audio_preflight(sample_rate: int = 16000, *, seconds: float = 0.5) -> PreflightResult:
+    """Short real capture that HARD-STOPS a broken-audio host before the mic loop.
+
+    Opens a ~``seconds`` input capture and verifies three things, in order, BEFORE
+    any GUI / wake loop / push-to-talk starts: (a) a usable input device exists;
+    (b) the device delivers audio at a rate that can be resampled to ``sample_rate``
+    (16 kHz mono) — recorded as ``device_rate``; (c) frames are consumed without
+    *persistent* overflow — it counts PortAudio ``input_overflow`` (the
+    ``Input overflowed`` condition) plus any queue-full drops over the window and
+    computes a ``drop_ratio``. A drop ratio at/above :data:`_OVERFLOW_DROP_RATIO`
+    fails as ``overflow`` (a single warm-up glitch below it is tolerated).
+
+    NEVER raises: a missing ``sounddevice`` / PortAudio, no device, a denied
+    permission, an unresolvable rate, or any capture error all resolve to a failing
+    :class:`PreflightResult` with a machine ``reason`` + an actionable ``message`` —
+    so the caller can print it and exit non-zero rather than crash. Reuses
+    :func:`mic_permission_status`: a conclusively ``denied`` permission wins
+    immediately (no capture can succeed without it).
+    """
+    permission = mic_permission_status()
+    if permission == "denied":
+        return PreflightResult(
+            ok=False,
+            reason="permission_denied",
+            message=_preflight_message(
+                "permission_denied", device_rate=0, sample_rate=sample_rate, drop_pct=0
+            ),
+            permission=permission,
+        )
+    try:
+        sd = _sd()
+    except Exception as exc:  # noqa: BLE001 — no audio extra / no PortAudio
+        return PreflightResult(
+            ok=False,
+            reason="error",
+            message=f"Audio preflight failed (error): audio capture unavailable: {exc}",
+            permission=permission,
+        )
+    if not mic_available():
+        return PreflightResult(
+            ok=False,
+            reason="no_device",
+            message=_preflight_message(
+                "no_device", device_rate=0, sample_rate=sample_rate, drop_pct=0
+            ),
+            permission=permission,
+        )
+
+    device_rate = _supported_capture_rate(sd, sample_rate)
+    if device_rate <= 0:
+        # No positive rate could be established for the device, so there is no path
+        # to resample its stream up/down to the 16 kHz the models require.
+        return PreflightResult(
+            ok=False,
+            reason="rate_unresolvable",
+            message=_preflight_message(
+                "rate_unresolvable", device_rate=device_rate, sample_rate=sample_rate, drop_pct=0
+            ),
+            device_rate=device_rate,
+            permission=permission,
+        )
+
+    total = 0
+    dropped = 0
+    frame_samples = 1280
+    frames_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=8)
+
+    def _callback(indata, _frames, _time, status) -> None:  # noqa: ANN001
+        nonlocal total, dropped
+        total += 1
+        # PortAudio signals it discarded buffered input (the "Input overflowed"
+        # condition) via the status' input_overflow flag.
+        if getattr(status, "input_overflow", False):
+            dropped += 1
+        try:
+            frames_q.put_nowait(indata[:, 0].copy())
+        except queue.Full:
+            # The inbound queue is saturated — capture is outpacing the consumer,
+            # exactly the "inbound mic queue full; dropping a frame" condition.
+            dropped += 1
+
+    try:
+        with sd.InputStream(
+            samplerate=device_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=frame_samples,
+            callback=_callback,
+        ):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    frames_q.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+    except Exception as exc:  # noqa: BLE001 — device opened/failed mid-capture
+        return PreflightResult(
+            ok=False,
+            reason="error",
+            message=f"Audio preflight failed (error): microphone error: {exc}",
+            device_rate=device_rate,
+            permission=permission,
+        )
+
+    # Verify a usable rate path actually exists: resampling the captured rate to the
+    # pipeline rate must yield real samples. A device that delivered NOTHING (and did
+    # not overflow/error) has no establishable 16 kHz path — treat as unresolvable.
+    probe = resample_to(
+        np.ones(max(1, device_rate // 100), dtype=np.float32), device_rate, sample_rate
+    )
+    if total == 0 or probe.size == 0:
+        return PreflightResult(
+            ok=False,
+            reason="rate_unresolvable",
+            message=_preflight_message(
+                "rate_unresolvable", device_rate=device_rate, sample_rate=sample_rate, drop_pct=0
+            ),
+            device_rate=device_rate,
+            permission=permission,
+        )
+
+    drop_ratio = dropped / total if total else 0.0
+    drop_pct = int(round(drop_ratio * 100))
+    if drop_ratio >= _OVERFLOW_DROP_RATIO:
+        return PreflightResult(
+            ok=False,
+            reason="overflow",
+            message=_preflight_message(
+                "overflow", device_rate=device_rate, sample_rate=sample_rate, drop_pct=drop_pct
+            ),
+            device_rate=device_rate,
+            drop_ratio=round(drop_ratio, 3),
+            permission=permission,
+        )
+
+    return PreflightResult(
+        ok=True,
+        reason="ok",
+        message=(
+            f"Audio preflight OK — device {device_rate} Hz → {sample_rate} Hz, "
+            f"{drop_pct}% frames dropped."
+        ),
+        device_rate=device_rate,
+        drop_ratio=round(drop_ratio, 3),
+        permission=permission,
+    )
+
+
 def record_until_silence(
     sample_rate: int,
     vad: Any,

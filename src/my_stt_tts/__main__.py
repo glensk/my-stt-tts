@@ -195,6 +195,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8765, help="Web GUI port (default 8765).")
     parser.add_argument("--debug", action="store_true", help="Speak stage cues + verbose logs.")
     parser.add_argument(
+        "--skip-audio-preflight",
+        dest="skip_audio_preflight",
+        action="store_true",
+        default=None,
+        help="Bypass the startup audio preflight HARD STOP for mic modes (power users): "
+        "run even when capture can't deliver 16 kHz or the mic queue overflows.",
+    )
+    parser.add_argument(
         "--brain",
         choices=sorted(BRAIN_PRESETS),
         help="One-word provider+model preset (e.g. haiku-sub, opus-api). Overrides --provider/--model.",
@@ -413,6 +421,8 @@ def _build_config(args: argparse.Namespace) -> Config:
         cfg.telemetry = True
     if args.debug:
         cfg.debug = True
+    if args.skip_audio_preflight:
+        cfg.skip_audio_preflight = True
     return cfg
 
 
@@ -1434,6 +1444,56 @@ def _run_webrtc_server(
     return _run_browser(cfg, brain, tts, gate, stt, wake=False, port=port, speaker_id=speaker_id)
 
 
+def _uses_local_mic(args: argparse.Namespace, cfg: Config) -> bool:
+    """Whether THIS run opens the local microphone (so the preflight gate applies).
+
+    The mic-using modes are: ``--wake`` (terminal or GUI), ``--browser --browser-audio``
+    (server-side capture for the browser-audio session), and the default terminal
+    push-to-talk loop. The mic-LESS modes are skipped: ``--type`` / ``--text`` (typed,
+    no STT), ``--browser`` without ``--wake``/``--browser-audio`` (state/transcript
+    only), and the network/telephony servers whose mic lives on a remote client (not
+    this host's sound card). Pure over the parsed args + resolved config.
+    """
+    if cfg.telephony or cfg.transport in ("websocket", "webrtc"):
+        return False  # the device boundary is on the wire, not this host's mic
+    if args.text is not None or args.type_mode:
+        return False  # typed: no capture at all
+    if args.browser:
+        return bool(args.wake or args.browser_audio)  # GUI is mic-less unless these
+    return True  # default terminal push-to-talk loop opens the local mic
+
+
+def _audio_preflight_gate(cfg: Config, args: argparse.Namespace) -> int | None:
+    """HARD STOP: run the startup audio preflight for mic modes; gate the launch.
+
+    Returns ``None`` when it is safe to proceed (mic-less mode, the preflight passed,
+    or it was explicitly skipped) and a NON-ZERO exit code when the preflight failed —
+    so :func:`main` returns it WITHOUT opening the GUI or starting any capture, rather
+    than presenting a control room that silently records nothing. A passing-but-marginal
+    preflight still wires its device-rate / drop-ratio / reason into the debug
+    instrument so the numbers are visible.
+    """
+    if not _uses_local_mic(args, cfg):
+        return None  # mic-less mode: nothing to capture, nothing to gate
+    if cfg.skip_audio_preflight:
+        bus.log("audio preflight skipped (--skip-audio-preflight / SKIP_AUDIO_PREFLIGHT)", "info")
+        return None
+    result = audio.audio_preflight(cfg.sample_rate)
+    if not result.ok:
+        print(result.message, file=sys.stderr)
+        bus.log(result.message, "error")
+        return 3
+    # Passed (possibly marginal): surface the numbers via the audio debug instrument.
+    _AudioDebug(debug_audio_enabled(cfg, browser=args.browser)).action(
+        "preflight",
+        reason=result.reason,
+        device_rate=result.device_rate,
+        drop_ratio=result.drop_ratio,
+        permission=result.permission,
+    )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Validate config, build components, run the chosen loop. Returns exit code."""
     args = _parse_args(argv)
@@ -1455,6 +1515,14 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2
+
+    # HARD STOP (broken-audio gate): for the mic-using modes, confirm a usable 16 kHz
+    # capture path BEFORE loading the heavy STT model, opening the GUI, or starting any
+    # capture — so a broken-audio host refuses to run with a clear error instead of a
+    # control room that silently records nothing. Mic-less modes pass through.
+    gate_rc = _audio_preflight_gate(cfg, args)
+    if gate_rc is not None:
+        return gate_rc
 
     brain = Brain(cfg)
     tts = TTSRouter(cfg)
