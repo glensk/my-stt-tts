@@ -11,6 +11,16 @@ is deliberately STRIPPED and ISOLATED from your general Claude use
 disables tools, runs in a non-git scratch dir) — ~8x faster, ~280x cheaper, and
 unable to touch this repo.
 
+The ``codex-cli`` provider is the OpenAI equivalent: it shells out to the OpenAI
+``codex`` CLI in non-interactive ``codex exec`` mode (uses your logged-in codex
+auth, so no API key). It is likewise ISOLATED — a ``read-only`` sandbox,
+``--skip-git-repo-check`` + a scratch cwd so it touches nothing, and
+``--ignore-user-config`` so your personal ``$CODEX_HOME/config.toml`` is skipped.
+The command is overridable via ``CODEX_CLI_CMD`` (default ``codex exec``); the
+system prompt is prepended to the user text since ``codex exec`` takes one prompt
+argument. ``codex exec`` is stateless per call, so unlike claude-cli it keeps no
+resume session id.
+
 When the utterance starts with the agent trigger ("agent, <task>"), the request
 is instead delegated to a FULL, MCP-capable Claude agent (see :mod:`.agent`).
 """
@@ -19,6 +29,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -191,6 +203,8 @@ class Brain:
                 deltas = self._dispatch_agent(agent_task)
             elif self.cfg.llm_provider == "claude-cli":
                 deltas = self._stream_claude_cli(model, user_text)
+            elif self.cfg.llm_provider == "codex-cli":
+                deltas = self._stream_codex_cli(model, user_text)
             elif self.cfg.llm_provider == "anthropic":
                 deltas = (
                     self._stream_anthropic_tools(model)
@@ -320,6 +334,60 @@ class Brain:
         if data.get("is_error"):
             raise LLMError(str(data.get("result") or "claude CLI error"))
         yield str(data.get("result", ""))
+
+    @staticmethod
+    def _codex_base_cmd() -> list[str]:
+        """Resolve the codex base command (``CODEX_CLI_CMD``, default ``codex exec``).
+
+        Overridable so a wrapper / alternate binary can be substituted in tests or by
+        a user whose codex is invoked differently. Parsed with ``shlex`` so the env
+        value may carry extra args (e.g. ``CODEX_CLI_CMD="codex exec --profile fast"``).
+        """
+        raw = os.environ.get("CODEX_CLI_CMD", "").strip()
+        return shlex.split(raw) if raw else ["codex", "exec"]
+
+    def _stream_codex_cli(self, model: str, user_text: str) -> Iterator[str]:
+        """Non-interactive OpenAI codex turn (``codex exec``), isolated + key-free.
+
+        ``codex exec`` prints only the final assistant message to stdout, so we
+        capture stdout as the reply. The run is sandboxed read-only, skips the git
+        check (we run in a scratch cwd), and ignores the user's codex config so it is
+        decoupled from general codex use. The system prompt is prepended to the user
+        text because ``codex exec`` accepts a single prompt argument.
+
+        NOTE (assumption): the exact ``codex exec`` flags below are taken from the
+        documented OpenAI Codex CLI reference (``--model``, ``--sandbox read-only``,
+        ``--skip-git-repo-check``, ``--ignore-user-config``); they were not verified
+        against a live binary in this environment. Override with ``CODEX_CLI_CMD`` if
+        your codex build differs.
+        """
+        base = self._codex_base_cmd()
+        if not shutil.which(base[0]):
+            raise LLMError(f"`{base[0]}` CLI not found on PATH")
+        prompt = f"{self._system_prompt()}\n\n{user_text}"
+        cmd = [
+            *base,
+            "--model",
+            model,
+            "--sandbox",
+            "read-only",  # touch nothing: read-only sandbox keeps it project-isolated
+            "--skip-git-repo-check",  # we run in a scratch cwd, not a repo
+            "--ignore-user-config",  # skip $CODEX_HOME/config.toml: decoupled from your codex
+            prompt,
+        ]
+        proc = subprocess.run(  # noqa: S603
+            cmd, cwd=self._codex_cwd(), capture_output=True, text=True, check=False, timeout=180
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()[:200]
+            raise LLMError(f"codex CLI failed (rc={proc.returncode}): {detail}")
+        yield proc.stdout.strip()
+
+    @staticmethod
+    def _codex_cwd() -> str:
+        scratch = Path(tempfile.gettempdir()) / "my-stt-tts-codex-cwd"
+        scratch.mkdir(parents=True, exist_ok=True)
+        return str(scratch)
 
     def _stream_anthropic(self, model: str) -> Iterator[str]:
         client = self._ensure_client()

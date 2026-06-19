@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
+PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli", "codex-cli")
 LANGUAGES = ("de", "fr", "en")
 
 # Measurement systems the assistant can answer in (see Config.units). Injected into
@@ -92,6 +92,7 @@ SMART_TURN_MODEL_SHA256 = "07a133aba31e2d0b523f17f8c2e4e65efe6d8f685efd12ca4fe21
 # "-sub" uses your Claude subscription via the Claude Code CLI (no API key); the
 # bare aliases haiku/sonnet/opus resolve to the latest version automatically.
 # "-api" uses the Anthropic API (needs ANTHROPIC_API_KEY) pinned to latest ids.
+# "codex" uses your logged-in OpenAI codex CLI (no API key, `codex exec`).
 BRAIN_PRESETS: dict[str, tuple[str, str]] = {
     "haiku-sub": ("claude-cli", "haiku"),
     "sonnet-sub": ("claude-cli", "sonnet"),
@@ -100,6 +101,7 @@ BRAIN_PRESETS: dict[str, tuple[str, str]] = {
     "sonnet-api": ("anthropic", "claude-sonnet-4-6"),
     "opus-api": ("anthropic", "claude-opus-4-8"),
     "ollama": ("ollama", "llama3.1"),  # also set LLM_BASE_URL=http://localhost:11434/v1
+    "codex": ("codex-cli", "gpt-5-codex"),  # OpenAI codex CLI (no API key, `codex exec`)
 }
 
 # Fallback if the editable repo's prompts/system_prompt.md can't be found.
@@ -508,13 +510,20 @@ class Config:
         if self.llm_provider not in PROVIDERS:
             errors.append(f"LLM_PROVIDER must be one of {PROVIDERS}; got {self.llm_provider!r}")
         if self.llm_provider == "anthropic" and not self.anthropic_api_key:
-            errors.append("ANTHROPIC_API_KEY is required for provider 'anthropic'")
+            errors.append(
+                "ANTHROPIC_API_KEY is required for provider 'anthropic'. No API key? "
+                "Run ./quickstart.sh to auto-pick a key-free brain, or use "
+                "--brain haiku-sub (Claude CLI), or set LLM_PROVIDER=ollama "
+                "(with a local model), or --brain codex (OpenAI codex CLI)."
+            )
         if self.llm_provider == "openai" and not self.openai_api_key:
             errors.append("OPENAI_API_KEY is required for provider 'openai'")
         if self.llm_provider in {"openai-compatible", "ollama"} and not self.llm_base_url:
             errors.append(f"LLM_BASE_URL is required for provider {self.llm_provider!r}")
         if self.llm_provider == "claude-cli" and not shutil.which("claude"):
             errors.append("provider 'claude-cli' needs the `claude` CLI on PATH")
+        if self.llm_provider == "codex-cli" and not shutil.which("codex"):
+            errors.append("provider 'codex-cli' needs the `codex` CLI on PATH")
         if self.units not in UNITS:
             errors.append(f"units must be one of {UNITS}; got {self.units!r}")
         if not self.location.strip():
