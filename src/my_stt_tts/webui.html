@@ -244,6 +244,29 @@ kbd{font-size:9px; padding:1px 5px; border:1px solid var(--line2); border-radius
 .field label{display:flex; align-items:center; gap:6px; font-size:10px; letter-spacing:1.5px;
   text-transform:uppercase; color:var(--ink-dim); margin-bottom:5px}
 .field label .v{margin-left:auto; color:var(--cyan); letter-spacing:1px}
+/* info "ⓘ" tooltip — shows on hover AND on click (CSP-safe, inline only, no libs).
+   The popover is a sibling span toggled by :hover or an .open class (set by JS click). */
+.info{position:relative; display:inline-flex; align-items:center; margin-left:1px}
+.info-dot{display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
+  border-radius:50%; border:1px solid var(--line2); background:#060c12; color:var(--cyan-dim);
+  font-size:9px; line-height:1; cursor:help; letter-spacing:0; transition:.15s; user-select:none;
+  -webkit-user-select:none; padding:0}
+.info-dot:hover, .info.open .info-dot{color:var(--cyan); border-color:var(--cyan);
+  box-shadow:0 0 10px -3px var(--cyan)}
+.info-pop{position:absolute; z-index:50; top:calc(100% + 7px); left:50%; transform:translateX(-50%);
+  width:230px; max-width:62vw; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
+  background:linear-gradient(180deg,#0c1622,#070d14); color:var(--ink); font-size:11px;
+  line-height:1.5; letter-spacing:.2px; text-transform:none; font-weight:400;
+  box-shadow:0 12px 30px rgba(0,0,0,.55), 0 0 0 1px rgba(34,231,255,.05) inset;
+  opacity:0; visibility:hidden; transition:opacity .14s, visibility .14s; pointer-events:none}
+.info-pop::before{content:""; position:absolute; bottom:100%; left:50%; transform:translateX(-50%);
+  border:6px solid transparent; border-bottom-color:var(--line2)}
+.info-pop code{font-size:10px; padding:1px 4px; border:1px solid var(--line2); border-radius:4px;
+  background:#060c12; color:var(--cyan)}
+.info:hover .info-pop, .info.open .info-pop{opacity:1; visibility:visible}
+/* keep a right-edge popover on-screen */
+.info.edge .info-pop{left:auto; right:0; transform:none}
+.info.edge .info-pop::before{left:auto; right:9px; transform:none}
 .ctrl{width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
   background:#050a10; color:var(--ink); transition:.18s}
 .ctrl:focus{border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,231,255,.12)}
@@ -262,6 +285,13 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
   border:2px solid var(--cyan); box-shadow:0 0 10px var(--cyan); cursor:pointer}
 .saved-flash{font-size:9px; color:var(--green); letter-spacing:1px; opacity:0; transition:.2s}
 .saved-flash.show{opacity:1}
+/* voice selector + inline TEST button */
+.voice-row{display:flex; gap:8px; align-items:stretch}
+.voice-row .ctrl{flex:1 1 auto; min-width:0}
+.btn.voice-test{flex:0 0 auto; padding:0 12px}
+.btn.voice-test.playing{border-color:var(--mag); color:var(--mag);
+  box-shadow:0 0 16px -4px var(--mag)}
+.btn.voice-test.playing svg{animation:blink .9s steps(2) infinite}
 
 /* ---------- event log ---------- */
 .log-card .body{padding:0}
@@ -274,7 +304,27 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
 .log .ln.error .m{color:var(--red)}
 .log .ln.sys .m{color:var(--cyan)}
 .log .ln.evt .m{color:var(--violet)}
+.log .ln.debug .m{color:var(--ink-faint); font-style:italic}
+.log .ln.debug .m::before{content:"⋯ "; color:var(--amber); font-style:normal}
+/* debug lines are hidden unless the EVENT LOG "debug" toggle is on */
+.log:not(.show-debug) .ln.debug{display:none}
 .log:empty::after{content:"// log idle"; color:var(--ink-faint)}
+/* debug toggle in the log header — a tiny switch pushed to the right */
+.log-toggle{margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+  background:none; border:1px solid var(--line2); border-radius:999px; padding:3px 9px 3px 5px;
+  cursor:pointer; color:var(--ink-faint); font-size:9.5px; letter-spacing:1.5px;
+  text-transform:uppercase; transition:.16s}
+.log-toggle:hover{border-color:var(--cyan); color:var(--ink)}
+.log-toggle .sw{width:20px; height:11px; border-radius:999px; background:#0a141d;
+  border:1px solid var(--line2); position:relative; transition:.16s; flex:0 0 auto}
+.log-toggle .sw::after{content:""; position:absolute; top:1px; left:1px; width:7px; height:7px;
+  border-radius:50%; background:var(--ink-faint); transition:.16s}
+.log-toggle[aria-checked="true"]{color:var(--amber); border-color:rgba(255,182,72,.5)}
+.log-toggle[aria-checked="true"] .sw{background:rgba(255,182,72,.25); border-color:var(--amber)}
+.log-toggle[aria-checked="true"] .sw::after{left:10px; background:var(--amber);
+  box-shadow:var(--glow) var(--amber)}
+/* with the toggle owning margin-left:auto, the clear button sits flush after it */
+.log-card .head .tag{margin-left:0}
 
 /* scrollbars */
 *::-webkit-scrollbar{width:9px;height:9px}
@@ -437,26 +487,45 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
         </div>
         <div class="body">
           <div class="field">
-            <label for="brain">Brain preset</label>
+            <label for="brain">Brain preset
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About brain preset"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">One-click bundle that sets Provider + Model + mode together (e.g. <code>haiku-sub</code> = Claude CLI + Haiku). Pick a preset, or set the fields below manually.</span></span>
+            </label>
             <select class="ctrl" id="brain"></select>
           </div>
           <div class="two">
             <div class="field">
-              <label for="provider">Provider</label>
+              <label for="provider">Provider
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About provider"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Which LLM backend runs the brain: <code>claude-cli</code> (no API key, uses your Claude CLI), <code>anthropic</code>, <code>openai</code>, <code>openai-compatible</code>, or <code>ollama</code> (local).</span></span>
+              </label>
               <select class="ctrl" id="provider" data-key="provider"></select>
             </div>
             <div class="field">
-              <label for="model">Model</label>
+              <label for="model">Model
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">The fast model id used for normal turns.</span></span>
+              </label>
               <input class="ctrl" id="model" data-key="model" autocomplete="off">
             </div>
           </div>
           <div class="field">
-            <label for="modelDeep">Model (deep)</label>
+            <label for="modelDeep">Model (deep)
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model (deep)"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Optional stronger model used for harder/"deep" turns; leave as-is if unsure.</span></span>
+            </label>
             <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
           </div>
           <div class="field">
             <label for="voice">Voice <span class="v" id="voiceNote"></span></label>
-            <select class="ctrl" id="voice" data-key="voice_en"></select>
+            <div class="voice-row">
+              <select class="ctrl" id="voice" data-key="voice_en"></select>
+              <button class="btn voice-test" id="voiceTestBtn" type="button"
+                      title="Speak a one-line sample in the selected voice">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14l11-7-11-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                <span id="voiceTestLabel">Test</span>
+              </button>
+            </div>
           </div>
           <div class="field">
             <label for="length">Length scale <span class="v" id="lengthVal">1.00</span></label>
@@ -493,6 +562,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
         <div class="head">
           <svg viewBox="0 0 24 24" fill="none"><path d="M5 4h14v16H5zM8 9h8M8 13h8M8 17h5" stroke="#22e7ff" stroke-width="1.4" stroke-linejoin="round"/></svg>
           event log
+          <button class="log-toggle" id="debugToggle" type="button" role="switch" aria-checked="false"
+                  title="Show verbose backend diagnostics (button presses, capture details)">
+            <span class="sw" aria-hidden="true"></span>debug
+          </button>
           <button class="tag" id="clearLog" type="button" style="background:none;border:none;cursor:pointer;color:var(--ink-faint)">clear ✕</button>
         </div>
         <div class="body">
@@ -730,19 +803,70 @@ const thread = $("#thread");
 let turns = 0, stream = null;   // stream = {el, content, text}
 function bump(){ $("#turnCount").textContent = turns + (turns===1?" turn":" turns"); }
 
-function addUser(text){
+/* ---------- active brain model (for the ASSISTANT label) ----------
+   Sourced from whichever the backend supplies, updated live:
+     • the `state` event for `llm_request`, whose detail is "<provider> / <model>"
+       (e.g. "claude-cli / haiku") — emitted as `bus.state("llm_request", …)`;
+     • a `model` field added to the `response` event (when the backend carries it).
+   Falls back to settings.model. The label reads "ASSISTANT · <model>". */
+let activeModel = "";
+function assistantWho(){ const m = (activeModel||"").trim(); return m ? "assistant · " + m : "assistant"; }
+function setActiveModel(m){
+  m = (m==null ? "" : String(m)).trim();
+  if(!m || m === activeModel) return;
+  activeModel = m;
+  // Re-label any assistant bubbles already on screen (incl. an open stream).
+  thread.querySelectorAll(".msg.assistant > .who").forEach(w=>{ w.textContent = assistantWho(); });
+}
+
+/* ---------- user turns: render EXACTLY ONCE ----------
+   A typed turn appends an OPTIMISTIC bubble immediately (so the user sees it
+   echoed without waiting for the round-trip). The backend then emits a
+   `transcript` event for the same turn. To avoid the double "YOU" bubble we
+   RECONCILE: the optimistic bubble is parked in `pendingUser`; the next
+   `transcript` event updates its text in place instead of appending a second.
+   A voice turn has no optimistic echo, so its `transcript` appends normally. */
+let pendingUser = null;          // the last optimistic user bubble awaiting a transcript
+function makeUserBubble(text){
   stream = null;                       // a new user turn closes any open assistant bubble
   const el = document.createElement("div");
   el.className = "msg user";
   el.innerHTML = `<div class="who">you</div>`;
   el.appendChild(document.createTextNode(text==null?"":String(text)));
   thread.appendChild(el); turns++; bump(); scrollThread();
+  return el;
+}
+// Optimistic echo for a TYPED turn — parked for reconciliation by `transcript`.
+function addUserOptimistic(text){
+  pendingUser = makeUserBubble(text);
+  return pendingUser;
+}
+// A `transcript` event. If an optimistic bubble is waiting, RECONCILE it (update
+// text, don't add a second). Otherwise (a voice turn) append a fresh bubble.
+function addUserFromTranscript(text){
+  const t = text==null ? "" : String(text);
+  if(pendingUser){
+    stream = null;
+    pendingUser.replaceChildren(
+      Object.assign(document.createElement("div"), {className:"who", textContent:"you"}),
+      document.createTextNode(t)
+    );
+    scrollThread();
+    pendingUser = null;
+    return;
+  }
+  makeUserBubble(t);
 }
 function ensureStream(){
   if(stream) return stream;
+  // The assistant is replying → the current user turn is committed; stop treating
+  // any optimistic bubble as a reconciliation target (defends against a turn whose
+  // `transcript` event never lands, so the NEXT turn isn't merged into this one).
+  pendingUser = null;
   const el = document.createElement("div");
   el.className = "msg assistant streaming";
-  el.innerHTML = `<div class="who">assistant</div>`;
+  el.innerHTML = `<div class="who"></div>`;
+  el.querySelector(".who").textContent = assistantWho();
   const content = document.createElement("span");
   content.className = "content";
   el.appendChild(content);
@@ -765,18 +889,39 @@ function scrollThread(){ thread.scrollTop = thread.scrollHeight; }
    EVENT LOG
    ============================================================ */
 const logEl = $("#log");
-function log(message, level){
+// Render a log line. `level` is the colour class (info/sys/evt/error/debug);
+// when `isDebug` is set the line ALSO gets the `debug` class so it's hidden
+// unless the EVENT LOG "debug" toggle is on (keeps the default log clean).
+function logLine(message, level, isDebug){
   const ln = document.createElement("div");
-  ln.className = "ln " + (level||"info");
+  let cls = "ln " + (level||"info");
+  if(isDebug || level==="debug") cls += " debug";
+  ln.className = cls;
   const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
   ln.innerHTML = `<span class="t">${ts}</span>`;
   const m = document.createElement("span"); m.className="m"; m.textContent = message;
   ln.appendChild(m);
+  const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
   logEl.appendChild(ln);
   if(logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
-  logEl.scrollTop = logEl.scrollHeight;
+  if(atBottom) logEl.scrollTop = logEl.scrollHeight;
 }
+function log(message, level){ logLine(message, level, false); }
+// A line that may be a verbose diagnostic: hidden behind the debug toggle when
+// `isDebug` is true (or when `level==="debug"`).
+function logDebug(message, level, isDebug){ logLine(message, level, !!isDebug); }
 $("#clearLog").addEventListener("click", ()=>{ logEl.innerHTML=""; });
+
+/* ---------- EVENT LOG debug toggle (off by default) ---------- */
+const debugToggle = $("#debugToggle");
+let showDebug = false;
+function setShowDebug(on){
+  showDebug = !!on;
+  logEl.classList.toggle("show-debug", showDebug);
+  debugToggle.setAttribute("aria-checked", String(showDebug));
+}
+debugToggle.addEventListener("click", ()=> setShowDebug(!showDebug));
+setShowDebug(false);
 
 /* ============================================================
    BACKEND HELPERS  (same-origin; demo mode intercepts when offline)
@@ -796,7 +941,7 @@ async function postAction(action){
   catch(e){ log("action failed: "+e.message,"error"); }
 }
 async function sendTurn(text){
-  addUser(text);
+  addUserOptimistic(text);             // optimistic echo; reconciled by the `transcript` event
   log("» turn: "+text, "sys");
   if(DEMO){ demoTurn(text); return; }
   try{ await api("/api/turn",{method:"POST",body:JSON.stringify({text})}); }
@@ -844,6 +989,11 @@ function populate(s){
   const v = (settings.voices||[]).find(x=>x.id===settings.voice_en);
   $("#roVoice").textContent = (v && v.name) || settings.voice_en || "—";
   $("#roBrain").textContent = settings.model || settings.provider || "—";
+  // Seed/refresh the ASSISTANT label from config; the next live llm_request /
+  // response event overrides it with the model actually used for that turn.
+  // Match the live "<provider> / <model>" shape so it's stable across sources.
+  const cfgModel = [settings.provider, settings.model].filter(Boolean).join(" / ");
+  if(cfgModel) setActiveModel(cfgModel);
 }
 function updateVoiceNote(){
   const sel = $("#voice");
@@ -952,6 +1102,42 @@ async function applyPatch(patch){
   }catch(e){ log("save failed: "+e.message, "error"); }
 }
 
+/* ---------- info "ⓘ" tooltips ----------
+   Hover is pure CSS; click / Enter / Space toggle a sticky `.open` (touch + a11y).
+   One open at a time; clicking elsewhere or Escape closes. The popover flips to
+   the right edge when it would overflow the viewport. */
+function closeInfos(except){
+  document.querySelectorAll(".info.open").forEach(i=>{
+    if(i===except) return;
+    i.classList.remove("open");
+    const dot = i.querySelector(".info-dot");
+    if(dot) dot.setAttribute("aria-expanded","false");
+  });
+}
+function toggleInfo(info){
+  const open = !info.classList.contains("open");
+  closeInfos(open ? info : null);
+  info.classList.toggle("open", open);
+  const dot = info.querySelector(".info-dot");
+  if(dot) dot.setAttribute("aria-expanded", String(open));
+  if(open){
+    // Reposition near the right edge so the 230px popover stays on screen.
+    info.classList.remove("edge");
+    const pop = info.querySelector(".info-pop");
+    if(pop && pop.getBoundingClientRect().right > innerWidth - 6) info.classList.add("edge");
+  }
+}
+document.querySelectorAll(".info .info-dot").forEach(dot=>{
+  const info = dot.closest(".info");
+  dot.addEventListener("click", e=>{ e.preventDefault(); e.stopPropagation(); toggleInfo(info); });
+  dot.addEventListener("keydown", e=>{
+    if(e.key==="Enter" || e.key===" "){ e.preventDefault(); toggleInfo(info); }
+    else if(e.key==="Escape"){ closeInfos(null); }
+  });
+});
+document.addEventListener("click", e=>{ if(!e.target.closest(".info")) closeInfos(null); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeInfos(null); });
+
 // Brain preset → POST {brain_preset: <value>}
 $("#brain").addEventListener("change", e=> applyPatch({brain_preset: e.target.value}));
 
@@ -1017,6 +1203,27 @@ $("#resetBtn").addEventListener("click", ()=>{
   setState("idle","conversation buffer cleared.");
 });
 $("#listVoicesBtn").addEventListener("click", ()=> postAction("list_voices"));
+
+/* ---------- voice TEST: synthesize + play a one-line sample in the selected voice ----------
+   POSTs {action:"voice_test"} to /api/action (the backend synthesizes + plays it),
+   briefly showing a "playing sample…" state, then reverting. */
+const voiceTestBtn = $("#voiceTestBtn"), voiceTestLabel = $("#voiceTestLabel");
+let voiceTestTimer = null;
+function voiceTestBusy(on){
+  voiceTestBtn.classList.toggle("playing", on);
+  voiceTestBtn.setAttribute("aria-disabled", String(on));
+  voiceTestBtn.disabled = on;
+  voiceTestLabel.textContent = on ? "playing sample…" : "Test";
+}
+voiceTestBtn.addEventListener("click", ()=>{
+  if(voiceTestBtn.disabled) return;
+  voiceTestBusy(true);
+  postAction("voice_test");
+  // Revert after a short window (the backend plays a one-liner; the real `state`
+  // → speaking → idle events also flow, but this guarantees the button resets).
+  clearTimeout(voiceTestTimer);
+  voiceTestTimer = setTimeout(()=> voiceTestBusy(false), 3500);
+});
 
 /* ============================================================
    MIC TEST  (server mic) — capture ~1.5s server-side, show a
@@ -1151,15 +1358,19 @@ function handleEvent(raw){
   switch(d.type){
     case "state":
       setState(d.state, d.detail);
-      log(`state → ${d.state}${d.detail? " ("+d.detail+")":""}`, "evt");
+      // The llm_request detail is "<provider> / <model>" — take the model side
+      // for the ASSISTANT label (keep the full "provider / model" if no slash).
+      if(d.state === "llm_request" && d.detail) setActiveModel(modelFromDetail(d.detail));
+      logDebug(`state → ${d.state}${d.detail? " ("+d.detail+")":""}`, "evt", !!d.debug);
       break;
     case "wake":
       if(d.fired){ log("⚡ wake fired","evt"); }
       break;
     case "transcript":
-      addUser(d.text); log("transcript: "+(d.text==null?"":d.text), "evt");
+      addUserFromTranscript(d.text); log("transcript: "+(d.text==null?"":d.text), "evt");
       break;
     case "response": {
+      if(d.model) setActiveModel(d.model);   // backend may tag the active model on the response
       addAssistant(d.text, !!d.final);
       const txt = d.text==null ? "" : String(d.text);
       log(`response${d.final?" (final)":" (stream)"}: ${txt.slice(0,60)}${txt.length>60?"…":""}`,"evt");
@@ -1167,12 +1378,19 @@ function handleEvent(raw){
     }
     case "mic_result":
       showMicResult(d); break;
+    case "debug":
+      // Verbose backend diagnostics (button presses, capture diagnostics). Hidden
+      // unless the Debug toggle is on, so the log stays clean by default.
+      logDebug(d.message!=null ? String(d.message) : raw, "debug", true); break;
     case "log":
-      log(d.message, d.level==="error" ? "error" : "info"); break;
+      logDebug(d.message, d.level==="error" ? "error" : (d.debug ? "debug" : "info"), !!d.debug); break;
     default:
       log("event: "+raw, "evt");
   }
 }
+// "claude-cli / haiku" → "claude-cli / haiku" (whole label is the readable model
+// banner the user expects, e.g. "ASSISTANT · claude-cli / haiku").
+function modelFromDetail(detail){ return String(detail||"").trim(); }
 
 /* ============================================================
    LIVE AUDIO  (R2-5) — real mic PCM out / TTS PCM in over a
@@ -1374,7 +1592,7 @@ function runDemoStep(){
   const ev = DEMO_SCRIPT[demoStep++];
 
   if(ev.wake){ log("⚡ wake fired (demo)","evt"); demoTimer = setTimeout(runDemoStep, 250); return; }
-  if(ev.transcript){ addUser(ev.transcript); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
+  if(ev.transcript){ addUserFromTranscript(ev.transcript); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
 
   if(ev.state){ setState(ev.state, ev.detail); log("state → "+ev.state+" (demo)","evt"); }
 
@@ -1401,6 +1619,7 @@ function runDemoStep(){
 // In demo mode a typed turn cuts in with a canned reply, then resumes the loop.
 function demoTurn(text){
   clearTimeout(demoTimer); clearTimeout(demoStreamTimer);
+  pendingUser = null;     // demo has no real `transcript` event to reconcile against
   const reply = ["You ","said: ","“",text,"”. ","In ","demo ","mode ","I ","just ","echo ","you ","— ","connect ","the ","backend ","for ","real ","answers."];
   setState("stt","transcribing your text…");
   setTimeout(()=>{
@@ -1427,6 +1646,10 @@ function demoAction(action){
   }else if(action==="mic_test"){
     // No real server in demo mode — simulate a clean OK so the chip is exercised.
     setTimeout(()=> showMicResult({ok:true, verdict:"ok", message:"Microphone OK — level 62% (demo)", level:62}), 900);
+  }else if(action==="voice_test"){
+    // No TTS engine in demo — log a sample line so the button still gives feedback.
+    const vn = (settings.voices||[]).find(x=>x.id===settings.voice_en);
+    log("🔊 voice sample (demo): \"This is "+((vn&&vn.name)||"the selected voice")+", testing one two three.\"","evt");
   }
   // wake_start / wake_stop / ptt are already visualized by the running loop
 }
