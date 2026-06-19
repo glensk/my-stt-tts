@@ -29,6 +29,7 @@ from typing import Any
 
 from .agent import AgentError, dispatch_to_agent
 from .config import Config
+from .memory import ContextAggregator, make_memory_store
 from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
 
@@ -47,9 +48,26 @@ def should_use_deep(cfg: Config, text: str) -> bool:
 class Brain:
     """Streaming chat with short conversation memory, fast/deep + agent routing."""
 
-    def __init__(self, cfg: Config, *, tools: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        tools: ToolRegistry | None = None,
+        context: ContextAggregator | None = None,
+    ) -> None:
         self.cfg = cfg
-        self.history: list[dict[str, str]] = []
+        # Per-speaker persistent memory + provider-agnostic context assembly (G7).
+        # ``history`` is aliased to the aggregator's LIVE session (back-compat: the
+        # backends and commit_spoken still read/repair ``self.history``); the
+        # aggregator additionally folds in cross-session per-speaker recall when a
+        # ``memory_store`` is configured. Injectable for tests.
+        if context is None:
+            context = ContextAggregator(
+                store=make_memory_store(cfg), max_turns=getattr(cfg, "memory_max_turns", 20)
+            )
+        self.context = context
+        self.history: list[dict[str, str]] = self.context.live
+        self.speaker: str | None = None  # set per turn from speaker_id (G7)
         self._client: object | None = None
         self._rate = RateLimiter(cfg.requests_per_minute)
         self._session_id: str | None = None  # claude-cli chat session
@@ -57,12 +75,22 @@ class Brain:
         # Index of the assistant turn just appended by stream(); commit_spoken()
         # uses it to repair history after a barge-in (G5).
         self._pending_assistant_index: int | None = None
+        self._pending_user_text: str = ""  # user turn awaiting persistence (G7)
+        self._persisted_assistant: bool = False  # whether stream() persisted a reply (G7)
         # In-conversation tool calling (R2-7). The registry exposes get_time, a
         # calculator, and home_control (routed to the existing agent / HA dispatch).
         # Injectable so tests can supply fakes; built from config when omitted.
         if tools is None and cfg.tools_enabled:
             tools = ToolRegistry(default_tools(home_dispatch=self._home_dispatch))
         self.tools = tools
+
+    def set_speaker(self, name: str | None) -> None:
+        """Set the current speaker (from speaker_id) so memory + recall are per-person (G7)."""
+        self.speaker = name
+
+    def _assembled(self) -> list[dict[str, str]]:
+        """Provider-agnostic message list: per-speaker recall + the live session (G7)."""
+        return self.context.assemble(self.speaker)
 
     def _home_dispatch(self, command: str) -> str:
         """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).
@@ -88,15 +116,21 @@ class Brain:
         return result.text or "done"
 
     def reset(self) -> None:
-        """Forget the conversation (e.g. after an idle timeout)."""
-        self.history.clear()
+        """Forget the LIVE conversation (e.g. after an idle timeout).
+
+        Persistent per-speaker memory (G7) is NOT cleared — cross-session recall is
+        the point. Use ``self.context.store.forget(speaker)`` to erase a person.
+        """
+        self.context.reset_live()  # clears in place -> the self.history alias stays valid
         self._session_id = None
         self._agent_session_id = None
 
     def _trim(self) -> None:
+        # Trim the live session IN PLACE so the ``self.history`` alias to
+        # ``self.context.live`` stays valid (G7).
         max_msgs = self.cfg.max_history_turns * 2
         if len(self.history) > max_msgs:
-            self.history = self.history[-max_msgs:]
+            del self.history[:-max_msgs]
 
     def _ensure_client(self) -> object:
         if self._client is not None:
@@ -133,6 +167,7 @@ class Brain:
         self._trim()
         reply: list[str] = []
         self._pending_assistant_index = None
+        self._pending_user_text = user_text  # for per-speaker persistence (G7)
         try:
             agent_task = self._agent_task(user_text)
             use_tools = self.tools is not None and len(self.tools) > 0
@@ -159,8 +194,13 @@ class Brain:
             raise LLMError(str(exc)) from exc
         finally:
             if reply:
-                self.history.append({"role": "assistant", "content": "".join(reply)})
+                full = "".join(reply)
+                self.history.append({"role": "assistant", "content": full})
                 self._pending_assistant_index = len(self.history) - 1
+                # Persist the completed exchange per-speaker (G7). commit_spoken()
+                # amends the assistant turn afterwards if a barge-in truncated it.
+                self.context.persist(self.speaker, self._pending_user_text, full)
+                self._persisted_assistant = bool(full)
 
     def commit_spoken(self, spoken_text: str) -> None:
         """Repair the just-streamed assistant turn to only what was voiced (G5).
@@ -179,6 +219,11 @@ class Brain:
             self.history[index]["content"] = spoken
         else:
             del self.history[index]
+        # Keep persistent per-speaker memory honest too (G7): amend / drop the
+        # assistant turn we already persisted in stream()'s finally.
+        if getattr(self, "_persisted_assistant", False):
+            self.context.amend_last_assistant(self.speaker, spoken)
+            self._persisted_assistant = False
         self._pending_assistant_index = None
 
     # --- Agent dispatch ("agent, <task>" -> full MCP-capable Claude) ---
@@ -266,13 +311,13 @@ class Brain:
             model=model,
             max_tokens=1024,
             system=self.cfg.system_prompt,
-            messages=self.history,
+            messages=self._assembled(),
         ) as stream:
             yield from stream.text_stream
 
     def _stream_openai(self, model: str) -> Iterator[str]:
         client = self._ensure_client()
-        messages = [{"role": "system", "content": self.cfg.system_prompt}, *self.history]
+        messages = [{"role": "system", "content": self.cfg.system_prompt}, *self._assembled()]
         stream = client.chat.completions.create(  # type: ignore[attr-defined]
             model=model, messages=messages, stream=True
         )
@@ -295,7 +340,7 @@ class Brain:
         """
         assert self.tools is not None
         client = self._ensure_client()
-        messages: list[dict[str, Any]] = [dict(m) for m in self.history]
+        messages: list[dict[str, Any]] = [dict(m) for m in self._assembled()]
         tool_schemas = self.tools.anthropic_tools()
         for _ in range(self.cfg.tools_max_iterations):
             msg = client.messages.create(  # type: ignore[attr-defined]
@@ -344,7 +389,7 @@ class Brain:
         client = self._ensure_client()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.cfg.system_prompt},
-            *(dict(m) for m in self.history),
+            *(dict(m) for m in self._assembled()),
         ]
         tool_schemas = self.tools.openai_tools()
         for _ in range(self.cfg.tools_max_iterations):

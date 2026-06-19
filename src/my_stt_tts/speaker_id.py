@@ -96,6 +96,48 @@ def calibrate_threshold(
     return best[0], rows
 
 
+class SpeakerIdentifier:
+    """Embedding -> enrolled-name bridge that ties speaker ID into memory (G7).
+
+    Holds the per-person enrollment centroids and the rejection thresholds and
+    turns a fresh utterance embedding into a speaker name (or ``unknown`` /
+    ``ambiguous``). The name is exactly what :func:`my_stt_tts.memory.speaker_key`
+    consumes, so the loop can call ``brain.set_speaker(identifier.identify(emb))``
+    to make conversation memory per-person. Pure (no model load) so it is
+    unit-tested with synthetic centroids/embeddings; the heavy ECAPA embedder is
+    separate (:class:`EcapaEmbedder`).
+    """
+
+    def __init__(
+        self,
+        centroids: dict[str, np.ndarray] | None = None,
+        *,
+        threshold: float = 0.45,
+        margin: float = 0.06,
+    ) -> None:
+        self.centroids = dict(centroids or {})
+        self.threshold = threshold
+        self.margin = margin
+
+    @classmethod
+    def from_config(
+        cls, cfg: Any, centroids: dict[str, np.ndarray] | None = None
+    ) -> SpeakerIdentifier:
+        """Build from a :class:`~my_stt_tts.config.Config` (thresholds) + centroids."""
+        return cls(
+            centroids,
+            threshold=getattr(cfg, "speaker_threshold", 0.45),
+            margin=getattr(cfg, "speaker_margin", 0.06),
+        )
+
+    def identify(self, embedding: np.ndarray) -> str:
+        """Return the matched speaker name (or ``unknown`` / ``ambiguous``)."""
+        name, _ = match_speaker(
+            embedding, self.centroids, threshold=self.threshold, margin=self.margin
+        )
+        return name
+
+
 class EcapaEmbedder:
     """Lazy wrapper around SpeechBrain's ECAPA-TDNN speaker embedder."""
 

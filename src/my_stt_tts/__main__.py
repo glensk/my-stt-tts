@@ -83,7 +83,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
     agent_ws = cfg.agent_workspace or "(disabled — set AGENT_WORKSPACE)"
     rows = [
         "current settings (override via .env or flags):",
-        f"  brain      {blue}{cfg.llm_provider} / {cfg.llm_model}{reset}  (deep: {cfg.llm_model_deep})",
+        f"  brain      {blue}{cfg.llm_provider} / {cfg.llm_model}{reset}  (deep: {cfg.llm_model_deep})"
+        f"  memory {blue}{cfg.memory_store or 'in-memory'}{reset}",
         f"  voice      en={blue}{cfg.tts_voices.get('en')}{reset}"
         f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
         f"  length-scale {cfg.tts_length_scale}",
@@ -218,6 +219,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Cloud is key-gated (falls back to local Piper / say).",
     )
     parser.add_argument(
+        "--memory-store",
+        dest="memory_store",
+        help="Per-speaker persistent memory store path (G7): a .json file (JSON backend) "
+        "or any other path (SQLite). Cross-session recall keyed by enrolled speaker. "
+        "Unset = in-memory only.",
+    )
+    parser.add_argument(
         "--platform",
         dest="platform",
         choices=("auto", "macos", "linux"),
@@ -298,6 +306,7 @@ _CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("tts_backend", "tts_backend"),
     ("platform", "platform"),
     ("playback_backend", "playback_backend"),
+    ("memory_store", "memory_store"),
 )
 
 
