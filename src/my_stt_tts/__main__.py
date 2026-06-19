@@ -41,6 +41,7 @@ from .config import (
     UNITS,
     Config,
     ConfigError,
+    available_wake_words,
 )
 from .events import bus
 from .interrupt import InterruptGate, make_interrupt_predictor
@@ -103,7 +104,9 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  brain-mode {blue}{cfg.brain_mode}{reset}"
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
-        f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
+        f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}"
+        f"  exists {os.path.isfile(cfg.wake_model_path)}"
+        f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
         f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
@@ -166,6 +169,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--voice", choices=sorted(VOICE_PRESETS), help="English TTS voice (see --list-voices)."
+    )
+    parser.add_argument(
+        "--wake-word",
+        dest="wake_word",
+        help="Pick a pre-shipped wake word by NAME (see --settings for the choices). "
+        "Sets the wake phrase and auto-derives the model path wakewords/<name>.onnx.",
+    )
+    parser.add_argument(
+        "--wake-model-path",
+        dest="wake_model_path",
+        help="Explicit path to a custom-trained wake-word .onnx (overrides --wake-word "
+        "/ WAKE_PHRASE derivation; same as WAKE_MODEL_PATH).",
     )
     parser.add_argument(
         "--barge-in",
@@ -331,6 +346,12 @@ def _build_config(args: argparse.Namespace) -> Config:
         cfg.apply_brain_preset(args.brain)
     if args.voice:
         cfg.tts_voices["en"] = VOICE_PRESETS[args.voice]
+    # Wake-word selection: --wake-word NAME sets the phrase + derives the path; an
+    # explicit --wake-model-path then wins (custom model anywhere on disk).
+    if args.wake_word:
+        cfg.select_wake_word(args.wake_word)
+    if args.wake_model_path:
+        cfg.wake_model_path = args.wake_model_path
     for arg_name, field_name in _CONFIG_OVERRIDES:
         value = getattr(args, arg_name)
         if value is not None and value != "":

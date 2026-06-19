@@ -29,6 +29,7 @@ from .config import (
     TURN_ANALYZERS,
     UNITS,
     Config,
+    available_wake_words,
 )
 from .events import bus
 from .tts import _VOICE_NOTES, VOICE_PRESETS
@@ -73,6 +74,9 @@ def settings_dict(
         "voice_en": cfg.tts_voices.get("en"),
         "length_scale": cfg.tts_length_scale,
         "wake_phrase": cfg.wake_phrase,
+        # The pre-shipped wake words present on disk, so the UI offers the real
+        # choices as a dropdown (empty list -> the page falls back to free text).
+        "wake_words": available_wake_words(),
         "agent_workspace": cfg.agent_workspace or "",
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
@@ -125,7 +129,9 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
     if "length_scale" in data:
         cfg.tts_length_scale = float(data["length_scale"])
     if "wake_phrase" in data:
-        cfg.wake_phrase = str(data["wake_phrase"])
+        # Picking a wake word in the UI re-derives the model path
+        # (wakewords/<phrase>.onnx) so the selection takes effect live.
+        cfg.select_wake_word(str(data["wake_phrase"]))
     if "agent_workspace" in data:
         cfg.agent_workspace = str(data["agent_workspace"]) or None
     if "agent_model" in data:

@@ -11,6 +11,44 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave H: pre-shipped wake-word selector
+
+Goal: ship several trained wake-word models in `wakewords/` (e.g. `maziko.onnx`,
+`nexus.onnx`, `jarvis.onnx`, `computer.onnx`) and let a user **pick one by name**
+(UI dropdown / CLI / env) without editing paths. Built generically — it discovers
+whatever `.onnx` models are present, never depending on specific files. No
+regression to the 371-test baseline (now 385).
+
+- **Discovery + name→path convention** (`config.py`): `available_wake_words(dir)`
+  lists the stems of the `*.onnx` models on disk (sorted; `[]` when the dir is
+  missing/empty). `wake_model_for(phrase, dir)` is the one path convention
+  (`<dir>/<phrase>.onnx`), and `WAKEWORDS_DIR` names the default folder.
+- **Selecting = setting the phrase** (`config.py`): `Config.from_env` now reads
+  `WAKE_PHRASE` and **auto-derives** `wake_model_path` as `wakewords/<phrase>.onnx`
+  when `WAKE_MODEL_PATH` isn't set; an explicit `WAKE_MODEL_PATH` still wins.
+  `Config.select_wake_word(name)` sets the phrase + re-derives the path in one call.
+- **CLI** (`__main__.py`): new `--wake-word NAME` (alias that selects by name) and
+  `--wake-model-path PATH` (explicit override, wins over `--wake-word`). `--settings`
+  now shows the selected wake word, its model path, whether the file **exists**, and
+  the `[available]` wake words discovered on disk.
+- **Web UI** (`webui.py` + `webui.html`): `settings_dict` adds `wake_words: [...]`;
+  `apply_settings` accepts `wake_phrase` and re-derives the path via
+  `select_wake_word`. The **Wake phrase** control renders as a **dropdown** of
+  `wake_words` (with a *custom…* entry that reveals a free-text box), and falls back
+  to free text when the list is empty. Selecting one POSTs `{wake_phrase: NAME}`.
+- **Docs** (`wakewords/WAKEWORD.md`): new "Pre-shipped wake words" section — the repo
+  ships several, how to select (UI / `--wake-word` / `WAKE_PHRASE`), and that custom
+  ones can still be trained. Notes "alexa"/"jarvis" are third-party trademarks
+  (community models, personal use).
+- **Tests** (`tests/test_wakeword_select.py`, +14): `available_wake_words` over a
+  **temp dir** of fake `.onnx` (sorted, ignores non-onnx, empty/missing dir), the
+  `wake_phrase → path` derivation (default + explicit-override precedence),
+  `select_wake_word`, the `--wake-word` flag + `--wake-model-path` override,
+  `settings_text` surfacing, the `settings_dict` `wake_words` list, and
+  `apply_settings` re-derivation. Never touches the real `wakewords/`.
+- **Caveats:** the `.onnx` model files are committed separately by the orchestrator
+  (gitignored binaries); the JS was `node --check`ed; not exercised in a real browser.
+
 ## Build status (2026-06-19) — Wave G++: GUI voice controls actually work
 
 Goal: fix a misleading-UI bug in the browser control room. The **Start Wake**,

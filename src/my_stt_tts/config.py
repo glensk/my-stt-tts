@@ -12,6 +12,37 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli", "codex-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Where pre-shipped wake-word ONNX models live. The repo ships several trained
+# models here (e.g. maziko.onnx, jarvis.onnx, computer.onnx); a user PICKS one by
+# name via ``wake_phrase`` and the model path auto-derives (see wake_model_for /
+# Config.from_env). The actual .onnx files are committed by the orchestrator.
+WAKEWORDS_DIR = "wakewords"
+
+
+def wake_model_for(phrase: str, wakewords_dir: str = WAKEWORDS_DIR) -> str:
+    """The conventional wake-model path for a wake-word ``phrase``.
+
+    Selecting a pre-shipped wake word is just setting ``wake_phrase``: the model is
+    found at ``<wakewords_dir>/<phrase>.onnx``. Keeps the path convention in one
+    place so the CLI, env, and web UI all derive it identically.
+    """
+    return f"{wakewords_dir.rstrip('/')}/{phrase}.onnx"
+
+
+def available_wake_words(wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR) -> list[str]:
+    """Names of the pre-shipped wake-word models present in ``wakewords_dir``.
+
+    Discovers whatever ``*.onnx`` models are committed (the stem of each file),
+    sorted, so the UI / CLI / ``--settings`` can offer the real choices without
+    hard-coding filenames. Returns ``[]`` when the directory is missing or empty
+    — callers must not assume any specific model exists.
+    """
+    directory = Path(wakewords_dir)
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.onnx") if p.is_file())
+
+
 # Measurement systems the assistant can answer in (see Config.units). Injected into
 # the system prompt so temperatures/distances/etc. come back in the right system,
 # and consumed by the get_weather tool to pick °C/km·h vs °F/mph.
@@ -400,7 +431,12 @@ class Config:
             agent_trigger=env.get("AGENT_TRIGGER", "agent"),
             agent_workspace=env.get("AGENT_WORKSPACE") or None,
             agent_model=env.get("AGENT_MODEL", "sonnet"),
-            wake_model_path=env.get("WAKE_MODEL_PATH", "wakewords/maziko.onnx"),
+            # Selecting a pre-shipped wake word = setting WAKE_PHRASE: the model path
+            # auto-derives as wakewords/<phrase>.onnx. WAKE_MODEL_PATH is an explicit
+            # override (a custom-trained model elsewhere) and wins when set.
+            wake_phrase=env.get("WAKE_PHRASE", "maziko"),
+            wake_model_path=env.get("WAKE_MODEL_PATH")
+            or wake_model_for(env.get("WAKE_PHRASE", "maziko")),
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             barge_in=env.get("BARGE_IN", "off"),
@@ -503,6 +539,17 @@ class Config:
         if name not in BRAIN_PRESETS:
             raise ConfigError(f"unknown brain preset {name!r}; choose from {tuple(BRAIN_PRESETS)}")
         self.llm_provider, self.llm_model = BRAIN_PRESETS[name]
+
+    def select_wake_word(self, phrase: str) -> None:
+        """Pick a pre-shipped wake word by name: set the phrase + derive the path.
+
+        This is the one-call "choose a wake word" used by ``--wake-word`` and the
+        web UI dropdown — it both sets ``wake_phrase`` and re-derives
+        ``wake_model_path`` to ``wakewords/<phrase>.onnx`` so the selection takes
+        effect without touching paths.
+        """
+        self.wake_phrase = phrase
+        self.wake_model_path = wake_model_for(phrase)
 
     def validate(self) -> None:
         """Raise :class:`ConfigError` listing every problem (fail-fast)."""

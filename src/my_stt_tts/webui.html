@@ -420,8 +420,12 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
           </div>
           <div class="two">
             <div class="field">
-              <label for="wake">Wake phrase</label>
-              <input class="ctrl" id="wake" data-key="wake_phrase" autocomplete="off">
+              <label for="wakeSelect">Wake phrase</label>
+              <!-- Pre-shipped wake words → dropdown (settings.wake_words). When the
+                   list is empty, or "custom…" is chosen, the free-text input shows. -->
+              <select class="ctrl" id="wakeSelect" hidden aria-label="Wake phrase"></select>
+              <input class="ctrl" id="wake" autocomplete="off"
+                     aria-label="Custom wake phrase" placeholder="wake phrase">
             </div>
             <div class="field">
               <label for="agentModel">Agent model</label>
@@ -780,7 +784,7 @@ function populate(s){
   fillSelect($("#voice"), settings.voices||[], v=>v.id, v=> v.note ? `${v.name} — ${v.note}` : v.name, settings.voice_en);
   $("#model").value      = settings.model ?? "";
   $("#modelDeep").value  = settings.model_deep ?? "";
-  $("#wake").value       = settings.wake_phrase ?? "";
+  setWakeControls(settings);
   $("#agentModel").value = settings.agent_model ?? "";
   $("#workspace").value  = settings.agent_workspace ?? "";
   $("#sysPrompt").value  = settings.system_prompt ?? "";
@@ -801,6 +805,57 @@ function updateVoiceNote(){
   const v = (settings.voices||[]).find(x=>x.id===sel.value);
   $("#voiceNote").textContent = v && v.note ? v.note : "";
 }
+
+/* ----------------------------------------------------------------
+   WAKE-PHRASE CONTROL
+   Pre-shipped wake words (settings.wake_words) render as a dropdown so a
+   user PICKS one by name; the model path is derived server-side. The free-
+   text input is the fallback: shown when no models are present, or when
+   "custom…" is chosen / the current phrase isn't one of the shipped models.
+   Both commit {wake_phrase: <name>} via applyPatch — the same POST contract.
+   ---------------------------------------------------------------- */
+const WAKE_CUSTOM = " custom";  // sentinel value for the "custom…" option
+function setWakeControls(s){
+  const words = Array.isArray(s.wake_words) ? s.wake_words : [];
+  const phrase = s.wake_phrase ?? "";
+  const sel = $("#wakeSelect"), input = $("#wake");
+  input.value = phrase;
+  if(!words.length){
+    // No pre-shipped models discovered → free text only.
+    sel.hidden = true; input.hidden = false;
+    return;
+  }
+  sel.innerHTML = "";
+  words.forEach(w=>{
+    const o = document.createElement("option");
+    o.value = w; o.textContent = w;
+    sel.appendChild(o);
+  });
+  const custom = document.createElement("option");
+  custom.value = WAKE_CUSTOM; custom.textContent = "custom…";
+  sel.appendChild(custom);
+  const known = words.includes(phrase);
+  sel.value = known ? phrase : WAKE_CUSTOM;
+  sel.hidden = false;
+  // Reveal the text box only for a custom (non-shipped) phrase.
+  input.hidden = known;
+}
+$("#wakeSelect").addEventListener("change", e=>{
+  const v = e.target.value;
+  if(v === WAKE_CUSTOM){
+    $("#wake").hidden = false;
+    $("#wake").focus();
+    return;  // wait for the user to type a custom phrase
+  }
+  $("#wake").hidden = true;
+  $("#wake").value = v;
+  applyPatch({wake_phrase: v});
+});
+$("#wake").addEventListener("change", ()=>{
+  const v = $("#wake").value.trim();
+  if(v) applyPatch({wake_phrase: v});
+});
+$("#wake").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("#wake").blur(); } });
 
 /* ----------------------------------------------------------------
    VOICE CONTROLS GATING
@@ -1131,6 +1186,7 @@ if(liveAudioBtn){
 const DEMO_SETTINGS = {
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko",
+  wake_words:["alexa","computer","jarvis","maziko","nexus"],
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
   system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
   brain_preset:"haiku-sub",

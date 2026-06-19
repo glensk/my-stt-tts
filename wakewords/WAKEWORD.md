@@ -1,7 +1,43 @@
-# Training the "maziko" wake word
+# Wake words
 
-`my-stt-tts --wake` needs a custom wake-word model at `wakewords/maziko.onnx`.
-openWakeWord trains one from **synthetic speech (no recordings needed)** in about
+`my-stt-tts --wake` listens for a wake word and then records your request. The
+repo can **ship several pre-trained wake-word models** in `wakewords/` so you just
+**pick one** — no path editing, no training. You can still train your own (below).
+
+## Pre-shipped wake words
+
+Several trained models are shipped in this folder as `wakewords/<name>.onnx`
+(e.g. `maziko.onnx`, `nexus.onnx`, `alexa.onnx`, `jarvis.onnx`, `computer.onnx`).
+**Selecting a wake word is just choosing its name** — the model path is derived
+automatically as `wakewords/<name>.onnx`. Discovery is generic: whatever `.onnx`
+models are actually present are offered (run `--settings` to see the live list).
+
+Three equivalent ways to select one:
+
+- **Web UI** — open `--browser`; the **Wake phrase** field is a **dropdown** of the
+  available wake words. Choosing one applies it live (pick *custom…* to type your own).
+- **CLI flag** — `./mstt --wake --wake-word jarvis` (sets the phrase + derives the path).
+- **Env var** — `WAKE_PHRASE=jarvis ./mstt --wake` (same derivation).
+
+Check what is selected and present:
+
+```commands
+./mstt --settings        # shows: phrase, model path, whether the file exists,
+                         #        and the [available] wake words discovered on disk
+```
+
+To use a custom-trained model anywhere on disk, set an explicit path — it overrides
+the name-based derivation: `WAKE_MODEL_PATH=/path/model.onnx` (or `--wake-model-path`).
+
+> "alexa" and "jarvis" are third-party trademarks; any such models are provided as
+> community-trained wake words for personal use only, not affiliated with their owners.
+
+The `.onnx`/`.tflite` files are gitignored (large, machine-generated) and committed
+separately; if none are present yet, train one as below.
+
+## Training a wake word (e.g. "maziko")
+
+openWakeWord trains a model from **synthetic speech (no recordings needed)** in about
 an hour on a free Colab GPU.
 
 ## Steps
