@@ -72,6 +72,11 @@ wakewords/*.tflite
 !wakewords/alexa.onnx
 !wakewords/jarvis.onnx
 !wakewords/computer.onnx
+!wakewords/athena.onnx
+!wakewords/nova.onnx
+!wakewords/luna.onnx
+!wakewords/sage.onnx
+!wakewords/orion.onnx
 
 # Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run)
 models/

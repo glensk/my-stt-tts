@@ -6,11 +6,33 @@ repo can **ship several pre-trained wake-word models** in `wakewords/` so you ju
 
 ## Pre-shipped wake words
 
-Several trained models are shipped in this folder as `wakewords/<name>.onnx`
-(e.g. `maziko.onnx`, `nexus.onnx`, `alexa.onnx`, `jarvis.onnx`, `computer.onnx`).
-**Selecting a wake word is just choosing its name** — the model path is derived
-automatically as `wakewords/<name>.onnx`. Discovery is generic: whatever `.onnx`
-models are actually present are offered (run `--settings` to see the live list).
+Ten models ship in this folder as `wakewords/<name>.onnx` — **maziko, nexus, alexa,
+jarvis, computer, athena, nova, luna, sage, orion** (self-trained on a GPU via
+openWakeWord, so they carry no third-party model licence). **Selecting a wake word is
+just choosing its name** — the model path is derived automatically as
+`wakewords/<name>.onnx`. Discovery is generic: whatever `.onnx` models are present are
+offered (run `--settings` to see the live list).
+
+Training metrics (accuracy / recall / false-positives-per-hour; openWakeWord targets
+are accuracy ≥ 0.7 and recall ≥ 0.5):
+
+| Wake word  | Accuracy | Recall | FP/hr |
+|:-----------|:---------|:-------|:------|
+| `maziko`   | 0.88     | 0.76   | 0.0   |
+| `nova`     | 0.85     | 0.71   | 0.0   |
+| `athena`   | 0.85     | 0.71   | 0.0   |
+| `orion`    | 0.85     | 0.70   | 0.0   |
+| `computer` | 0.82     | 0.64   | 0.0   |
+| `luna`     | 0.75     | 0.52   | 0.0   |
+| `sage`     | 0.72     | 0.45   | 0.0   |
+| `nexus`    | n/a      | n/a    | 0.0   |
+| `alexa`    | n/a      | n/a    | 0.0   |
+| `jarvis`   | n/a      | n/a    | 0.0   |
+
+`sage` (recall 0.45) and `luna` (0.52) are short words that are harder to discriminate,
+so they may miss more activations — lower `WAKE_THRESHOLD` if so. (`nexus`/`alexa`/`jarvis`
+metrics weren't captured at train time.) `alexa` and `jarvis` are third-party trademarks,
+shipped as community models for personal use only.
 
 Three equivalent ways to select one:
 
