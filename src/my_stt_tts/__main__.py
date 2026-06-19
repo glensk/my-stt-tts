@@ -97,14 +97,18 @@ class _AudioDebug:
 
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
-        self._vad_n = 0
+        self._frame_n = 0
 
     def __call__(self, stage: str, **fields: Any) -> None:
         if not self.enabled:
             return
-        if stage == "vad_frame":
-            self._vad_n += 1
-            if self._vad_n % 25 != 1:  # sample 1-in-25 so a turn isn't a wall of lines
+        if stage in ("vad_frame", "wake_score"):
+            self._frame_n += 1
+            # These fire every ~80 ms audio frame — heartbeat 1-in-50 so the log isn't a
+            # wall of lines, but ALWAYS surface a wake score climbing toward detection
+            # (>= 0.3) so a near-miss stays visible.
+            notable = stage == "wake_score" and float(fields.get("score") or 0.0) >= 0.3
+            if not notable and self._frame_n % 50 != 1:
                 return
         kv = " ".join(f"{k}={v}" for k, v in fields.items())
         msg = f"[audio:{stage}] {kv}".rstrip()
