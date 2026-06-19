@@ -20,8 +20,8 @@ the orchestrator before re-checking.
 
 ## Repo queue (ranked, voice↔LLM suitability)
 
-- [ ] 1. **pipecat** — https://github.com/pipecat-ai/pipecat — *in progress (round 1)*
-- [ ] 2. livekit/agents — https://github.com/livekit/agents
+- [x] 1. **pipecat** — https://github.com/pipecat-ai/pipecat — ✅ **WON** (round 5, reframed: multi-user-on-Mac, maturity excluded)
+- [ ] 2. **livekit/agents** — https://github.com/livekit/agents — *in progress (reframed criteria)*
 - [ ] 3. huggingface/speech-to-speech — https://github.com/huggingface/speech-to-speech
 - [ ] 4. dnhkng/GLaDOS — https://github.com/dnhkng/GLaDOS
 - [ ] 5. KoljaB/RealtimeSTT (+ RealtimeTTS) — https://github.com/KoljaB/RealtimeSTT
@@ -182,5 +182,22 @@ typed non-droppable event model, per-speaker SQLite memory + provider-agnostic c
 Smart-Turn latency bench. Wave F (`a383d86`): M5Stack-Atom ESP32 firmware (PlatformIO build passes),
 web/JS client, mobile guide, `clients/PROTOCOL.md`. (Fixed one host-dependent bench test → hermetic.)
 
-**Round-5 reframed checker running** — judges *"different people in a household talking to a Mac"*
-and is told to IGNORE stars/contributors/company/production-track-record (STT/TTS breadth stays fair).
+### Repo 1 — pipecat · Round 5 (reframed) → 🏆 WINNER: my-stt-tts — REPO #1 WON
+
+Reframed judge (*"different people in a household talking to a Mac"*; maturity metrics ignored) picked
+**my-stt-tts**, on three capability axes: (1) **multi-user is first-class** — ECAPA speaker-ID wired
+into per-speaker persistent memory + guest bucketing + provider-agnostic context (pipecat only exposes
+per-call diarization, no built-in per-speaker memory); (2) **out-of-the-box on-device open-speaker AEC**
+(pipecat delegates echo cancellation to paid Krisp cloud / the client); (3) **local-first/private,
+Mac-centered topology** with real ESP32/web/mobile satellites shipped, vs pipecat's cloud/WebRTC center
+of gravity. Honest caveats noted (narrower premium STT/TTS breadth; prototype/not-all-verified-live;
+Atom Echo half-duplex).
+
+**Standing criteria for ALL remaining repos:** this same reframed basis — household/multi-user on a
+Mac; capability only; **ignore ecosystem-maturity/popularity** (stars, contributors, company, track
+record); STT/TTS *integration breadth* stays a fair axis.
+
+### Repo 2 — livekit/agents · Round 1 (reframed) — IN PROGRESS
+
+Fresh indifferent checker comparing **livekit/agents vs my-stt-tts** on the standing criteria. If it
+picks livekit, implement the cited capability gaps until a fresh checker picks my-stt-tts, then repo #3.
