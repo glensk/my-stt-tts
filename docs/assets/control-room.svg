@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-label="my-stt-tts control room — live pipeline: listening, transcribing, thinking, speaking">
+  <defs>
+    <linearGradient id="cr-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070b12"/>
+      <stop offset="0.55" stop-color="#0c1320"/>
+      <stop offset="1" stop-color="#080d15"/>
+    </linearGradient>
+    <linearGradient id="cr-accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e7ff"/>
+      <stop offset="1" stop-color="#ff5cc8"/>
+    </linearGradient>
+    <linearGradient id="cr-scope" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22e7ff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#22e7ff"/>
+      <stop offset="1" stop-color="#ff5cc8" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="cr-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#22e7ff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#22e7ff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="cr-scopeclip">
+      <rect x="40" y="118" width="1200" height="150" rx="12"/>
+    </clipPath>
+    <clipPath id="cr-transcriptclip">
+      <rect x="60" y="372" width="940" height="40"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1280" height="520" fill="url(#cr-bg)"/>
+  <ellipse cx="640" cy="170" rx="640" ry="220" fill="url(#cr-glow)"/>
+
+  <!-- ===== title bar ===== -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <circle cx="44" cy="44" r="7" fill="#ff5f57"/>
+    <circle cx="68" cy="44" r="7" fill="#febc2e"/>
+    <circle cx="92" cy="44" r="7" fill="#28c840"/>
+    <text x="124" y="50" font-size="20" font-weight="700" fill="#cfe6ff">my-stt-tts &#183; control room</text>
+    <!-- live REC indicator -->
+    <circle cx="1140" cy="44" r="6" fill="#ff5cc8">
+      <animate attributeName="opacity" values="1;0.2;1" dur="1.1s" repeatCount="indefinite"/>
+    </circle>
+    <text x="1156" y="50" font-size="16" font-weight="700" fill="#ff8fdc" letter-spacing="2">LIVE</text>
+  </g>
+  <line x1="40" y1="74" x2="1240" y2="74" stroke="#1c2940" stroke-width="1.5"/>
+
+  <!-- ===== oscilloscope ===== -->
+  <text x="40" y="106" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5f76a0" letter-spacing="1">OSCILLOSCOPE &#183; 16 kHz mono</text>
+  <rect x="40" y="118" width="1200" height="150" rx="12" fill="#0a121f" stroke="#16243c" stroke-width="1.5"/>
+  <g clip-path="url(#cr-scopeclip)">
+    <!-- grid -->
+    <g stroke="#16314f" stroke-width="1" stroke-opacity="0.5">
+      <line x1="40" y1="155" x2="1240" y2="155"/>
+      <line x1="40" y1="193" x2="1240" y2="193"/>
+      <line x1="40" y1="231" x2="1240" y2="231"/>
+      <line x1="200" y1="118" x2="200" y2="268"/>
+      <line x1="440" y1="118" x2="440" y2="268"/>
+      <line x1="680" y1="118" x2="680" y2="268"/>
+      <line x1="920" y1="118" x2="920" y2="268"/>
+      <line x1="1160" y1="118" x2="1160" y2="268"/>
+    </g>
+    <!-- breathing waveform trace -->
+    <path fill="none" stroke="url(#cr-scope)" stroke-width="2.5" stroke-linecap="round"
+      d="M40,193 Q100,150 160,193 T280,193 T400,193 T520,193 T640,193 T760,193 T880,193 T1000,193 T1120,193 T1240,193">
+      <animate attributeName="d" dur="3.2s" repeatCount="indefinite"
+        values="M40,193 Q100,150 160,193 T280,193 T400,193 T520,193 T640,193 T760,193 T880,193 T1000,193 T1120,193 T1240,193;
+                M40,193 Q100,236 160,193 Q220,138 280,193 Q340,240 400,193 Q460,150 520,193 Q580,232 640,193 Q700,148 760,193 Q820,238 880,193 Q940,152 1000,193 Q1060,234 1120,193 Q1180,160 1240,193;
+                M40,193 Q100,150 160,193 T280,193 T400,193 T520,193 T640,193 T760,193 T880,193 T1000,193 T1120,193 T1240,193"/>
+    </path>
+    <!-- sweeping scan beam -->
+    <g>
+      <rect x="0" y="118" width="3" height="150" fill="#22e7ff" fill-opacity="0.9"/>
+      <rect x="-60" y="118" width="60" height="150" fill="url(#cr-scope)" fill-opacity="0.25"/>
+      <animateTransform attributeName="transform" type="translate" from="40,0" to="1240,0" dur="2.6s" repeatCount="indefinite"/>
+    </g>
+  </g>
+
+  <!-- ===== state chips: idle -> listening -> recording -> stt -> thinking -> speaking ===== -->
+  <text x="40" y="306" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5f76a0" letter-spacing="1">PIPELINE STATE</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" text-anchor="middle">
+    <!-- each chip lights up for 2s of a 12s loop; begin offsets stagger the active window -->
+
+    <!-- idle : 0-2s -->
+    <g transform="translate(40,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#22e7ff" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;1;1;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#103244;#103244;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#22e7ff">
+        <animate attributeName="opacity" values="0.3;1;1;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#cfe6ff">idle</text>
+    </g>
+
+    <!-- listening : 2-4s -->
+    <g transform="translate(228,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#22e7ff" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;0.25;0.25;1;1;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#0e1a2c;#0e1a2c;#103244;#103244;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#22e7ff">
+        <animate attributeName="opacity" values="0.3;0.3;0.3;1;1;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#cfe6ff">listening</text>
+    </g>
+
+    <!-- recording : 4-6s -->
+    <g transform="translate(416,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#ff5cc8" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;0.25;0.25;0.25;0.25;1;1;0.25;0.25;0.25;0.25;0.25;0.25;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#2a1230;#2a1230;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#ff5cc8">
+        <animate attributeName="opacity" values="0.3;0.3;0.3;0.3;0.3;1;1;0.3;0.3;0.3;0.3;0.3;0.3;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#ffd0ef">recording</text>
+    </g>
+
+    <!-- stt : 6-8s -->
+    <g transform="translate(604,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#22e7ff" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;0.25;0.25;0.25;0.25;0.25;0.25;1;1;0.25;0.25;0.25;0.25;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#103244;#103244;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#22e7ff">
+        <animate attributeName="opacity" values="0.3;0.3;0.3;0.3;0.3;0.3;0.3;1;1;0.3;0.3;0.3;0.3;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#cfe6ff">transcribe</text>
+    </g>
+
+    <!-- thinking : 8-10s -->
+    <g transform="translate(792,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#a98bff" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;1;1;0.25;0.25;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#1d1840;#1d1840;#0e1a2c;#0e1a2c;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#a98bff">
+        <animate attributeName="opacity" values="0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;1;1;0.3;0.3;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#d9ccff">thinking</text>
+    </g>
+
+    <!-- speaking : 10-12s -->
+    <g transform="translate(980,322)">
+      <rect width="172" height="38" rx="19" fill="#0e1a2c" stroke="#3dffa6" stroke-width="1.5" stroke-opacity="0.25">
+        <animate attributeName="stroke-opacity" values="0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;0.25;1;1;0.25" dur="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0e1a2c;#0d3324;#0d3324;#0e1a2c" dur="12s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="26" cy="19" r="5" fill="#3dffa6">
+        <animate attributeName="opacity" values="0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;0.3;1;1;0.3" dur="12s" repeatCount="indefinite"/>
+      </circle>
+      <text x="100" y="25" fill="#c5ffe5">speaking</text>
+    </g>
+  </g>
+
+  <!-- ===== transcript line ===== -->
+  <rect x="40" y="360" width="1200" height="64" rx="12" fill="#0a121f" stroke="#16243c" stroke-width="1.5"/>
+  <text x="60" y="386" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5f76a0">&#9656; transcript</text>
+  <g clip-path="url(#cr-transcriptclip)">
+    <text x="60" y="403" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#e6f2ff">
+      <tspan fill="#7fd6ff">you:</tspan> maziko, what&#8217;s the weather and add milk to my list
+      <animate attributeName="opacity" values="0;0;0;1;1;1;1;1;1;1;1;1;1;1" keyTimes="0;0.16;0.25;0.33;0.42;0.5;0.58;0.66;0.75;0.83;0.91;0.95;0.99;1" dur="12s" repeatCount="indefinite"/>
+    </text>
+  </g>
+  <!-- typing caret on transcript -->
+  <rect x="60" y="392" width="9" height="20" fill="#22e7ff">
+    <animate attributeName="x"
+      values="60;60;60;180;360;540;700;860;1000;1000;1000;1000;60;60"
+      keyTimes="0;0.16;0.25;0.30;0.35;0.40;0.45;0.50;0.55;0.66;0.80;0.92;0.99;1"
+      dur="12s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="1;0;1;0;1;0;1;0;1;0;1" dur="1s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- ===== live reply waveform (right of transcript activity) ===== -->
+  <text x="1020" y="386" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5f76a0">reply</text>
+  <g transform="translate(1020,408)" fill="url(#cr-accent)" fill-opacity="0.9">
+    <rect x="0"   y="-6"  width="5" height="12" rx="2.5"><animate attributeName="height" values="12;30;8;22;12" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="-6;-15;-4;-11;-6" dur="0.7s" repeatCount="indefinite"/></rect>
+    <rect x="11"  y="-12" width="5" height="24" rx="2.5"><animate attributeName="height" values="24;8;32;14;24" dur="0.82s" repeatCount="indefinite"/><animate attributeName="y" values="-12;-4;-16;-7;-12" dur="0.82s" repeatCount="indefinite"/></rect>
+    <rect x="22"  y="-9"  width="5" height="18" rx="2.5"><animate attributeName="height" values="18;32;10;26;18" dur="0.66s" repeatCount="indefinite"/><animate attributeName="y" values="-9;-16;-5;-13;-9" dur="0.66s" repeatCount="indefinite"/></rect>
+    <rect x="33"  y="-15" width="5" height="30" rx="2.5"><animate attributeName="height" values="30;12;26;16;30" dur="0.76s" repeatCount="indefinite"/><animate attributeName="y" values="-15;-6;-13;-8;-15" dur="0.76s" repeatCount="indefinite"/></rect>
+    <rect x="44"  y="-7"  width="5" height="14" rx="2.5"><animate attributeName="height" values="14;30;8;24;14" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="-7;-15;-4;-12;-7" dur="0.7s" repeatCount="indefinite"/></rect>
+    <rect x="55"  y="-11" width="5" height="22" rx="2.5"><animate attributeName="height" values="22;10;32;14;22" dur="0.84s" repeatCount="indefinite"/><animate attributeName="y" values="-11;-5;-16;-7;-11" dur="0.84s" repeatCount="indefinite"/></rect>
+    <rect x="66"  y="-9"  width="5" height="18" rx="2.5"><animate attributeName="height" values="18;28;10;24;18" dur="0.68s" repeatCount="indefinite"/><animate attributeName="y" values="-9;-14;-5;-12;-9" dur="0.68s" repeatCount="indefinite"/></rect>
+    <rect x="77"  y="-13" width="5" height="26" rx="2.5"><animate attributeName="height" values="26;10;30;14;26" dur="0.78s" repeatCount="indefinite"/><animate attributeName="y" values="-13;-5;-15;-7;-13" dur="0.78s" repeatCount="indefinite"/></rect>
+    <rect x="88"  y="-7"  width="5" height="14" rx="2.5"><animate attributeName="height" values="14;26;8;20;14" dur="0.72s" repeatCount="indefinite"/><animate attributeName="y" values="-7;-13;-4;-10;-7" dur="0.72s" repeatCount="indefinite"/></rect>
+    <rect x="99"  y="-10" width="5" height="20" rx="2.5"><animate attributeName="height" values="20;30;10;24;20" dur="0.8s" repeatCount="indefinite"/><animate attributeName="y" values="-10;-15;-5;-12;-10" dur="0.8s" repeatCount="indefinite"/></rect>
+  </g>
+
+  <!-- ===== footer caption ===== -->
+  <text x="640" y="466" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16" fill="#7d92b4">
+    wake word &#8594; speech-to-text &#8594; LLM (streaming) &#8594; text-to-speech &#8212; one warm process, on your Mac
+  </text>
+  <!-- footer accent rule -->
+  <rect x="40" y="490" width="1200" height="3" rx="1.5" fill="url(#cr-accent)" opacity="0.85"/>
+</svg>
