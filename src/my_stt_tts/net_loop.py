@@ -1,4 +1,4 @@
-"""Transport-driven turn loop (R2-5): run the pipeline over an :class:`AudioTransport`.
+"""Transport-driven turn loop (R2-5/R3-2): run the pipeline over an :class:`AudioTransport`.
 
 The local loop in :mod:`__main__` owns :mod:`sounddevice` directly. This module
 drives the *same* pipeline stages — VAD-gated capture, end-of-turn analysis,
@@ -7,6 +7,14 @@ sources mic frames from a :class:`~my_stt_tts.transport.AudioTransport` and sink
 synthesized TTS PCM back through it. So a WebSocket satellite or the browser GUI
 runs the exact production pipeline, just with the device boundary moved onto the
 wire.
+
+R3-2 makes the reply **full-duplex over the wire**: while TTS is being synthesized
+and sunk to the transport, the inbound mic queue stays live and the same barge-in
+machinery as the local loop (VAD + :class:`~my_stt_tts.interrupt.InterruptGate` +
+AEC + :class:`~my_stt_tts.interrupt.InterruptPredictor`) runs on every mic frame.
+On a confirmed interruption the outbound TTS frames AND the in-flight LLM stream
+are cancelled and the captured audio is handed to the next turn — so a satellite /
+browser user can interrupt, exactly like a local user.
 
 The capture/transcribe/respond functions take an injectable VAD + analyzer +
 transcriber so the whole loop is unit-testable with fakes (no mic, no model, no
@@ -17,20 +25,81 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import queue
+import threading
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
+from .aec import make_echo_canceller
 from .brain import Brain, LLMError
 from .config import Config
+from .denoise import make_denoiser
 from .events import bus
+from .interrupt import InterruptGate, frame_energy, make_interrupt_predictor
 from .stt import StreamingTranscriber, Transcriber
 from .text import SentenceChunker, strip_non_spoken
 from .transport import AudioTransport
 from .tts import TTSRouter
 
 log = logging.getLogger("my_stt_tts.net_loop")
+
+
+@dataclass
+class TransportResult:
+    """Outcome of one transport-side reply (R3-2).
+
+    ``interrupted`` is True if the remote user barged in; ``captured`` holds the
+    echo-cancelled/denoised audio from the barge-in onward, ``spoken`` the text
+    actually voiced before the interruption (to keep history honest)."""
+
+    interrupted: bool = False
+    captured: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    spoken: str = ""
+
+
+class _MicSource:
+    """A single, shared, non-blocking mic-frame reader over a transport (R3-2).
+
+    Both the capture phase and the barge-in monitor during playout must read from
+    the *same* inbound mic stream — but a transport exposes only one
+    ``mic_frames()`` generator. This wraps that generator in a background thread
+    feeding a small queue, so either phase can pull frames with a timeout (and the
+    monitor can poll without blocking the playout). ``closed`` once the underlying
+    source is exhausted (the client disconnected)."""
+
+    def __init__(self, transport: AudioTransport) -> None:
+        self._frames = transport.mic_frames()
+        self._q: queue.Queue[Any] = queue.Queue(maxsize=1024)
+        self._eof = object()
+        self._done = threading.Event()
+        self._reader = threading.Thread(target=self._run, daemon=True)
+        self._reader.start()
+
+    def _run(self) -> None:
+        try:
+            for frame in self._frames:
+                self._q.put(np.asarray(frame, dtype=np.float32).ravel())
+        finally:
+            self._q.put(self._eof)
+            self._done.set()
+
+    def get(self, timeout: float = 0.1) -> np.ndarray | None:
+        """Next mic frame, ``None`` on timeout, or marks closed on EOF."""
+        try:
+            item = self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if item is self._eof:
+            self._done.set()
+            return None
+        return item  # type: ignore[no-any-return]
+
+    @property
+    def closed(self) -> bool:
+        return self._done.is_set() and self._q.empty()
 
 
 def capture_turn(
@@ -41,6 +110,8 @@ def capture_turn(
     transcriber: Transcriber,
     *,
     max_frames: int | None = None,
+    source: _MicSource | None = None,
+    denoiser: Any = None,
 ) -> str:
     """Pull mic frames from ``transport`` until end-of-turn, then transcribe.
 
@@ -48,7 +119,9 @@ def capture_turn(
     the local capture loop and feeds a :class:`StreamingTranscriber` so partial
     transcripts are published to the bus during the turn (and the final at the
     end). ``max_frames`` bounds the loop for tests; in production the analyzer
-    ends the turn. Returns the final transcript (possibly empty on silence).
+    ends the turn. ``source`` shares one mic reader across capture + barge-in
+    monitoring (R3-2); ``denoiser`` (R3-6) cleans each frame before VAD/STT.
+    Returns the final transcript (possibly empty on silence).
     """
     streamer = StreamingTranscriber(
         transcriber,
@@ -56,11 +129,15 @@ def capture_turn(
         partial_interval_ms=cfg.stt_partial_interval_ms,
         window_s=cfg.stt_window_s,
     )
+    if denoiser is not None:
+        denoiser.reset()
     analyzer.reset()
     spoke = False
     bus.state("recording")
-    for seen, frame in enumerate(transport.mic_frames(), start=1):
+    for seen, frame in enumerate(_iter_source(transport, source), start=1):
         arr = np.asarray(frame, dtype=np.float32).ravel()
+        if denoiser is not None:
+            arr = denoiser.process(arr)
         is_speech = vad.is_speech(arr)
         spoke = spoke or is_speech
         partial = streamer.feed(arr)
@@ -77,23 +154,46 @@ def capture_turn(
     return str(streamer.final().text).strip()
 
 
+def _iter_source(transport: AudioTransport, source: _MicSource | None) -> Iterator[np.ndarray]:
+    """Yield mic frames from a shared :class:`_MicSource` or directly from ``transport``."""
+    if source is None:
+        yield from transport.mic_frames()
+        return
+    while not source.closed:
+        frame = source.get(timeout=0.1)
+        if frame is not None:
+            yield frame
+
+
 def respond_over_transport(
     transport: AudioTransport,
     cfg: Config,
     brain: Brain,
     tts: TTSRouter,
     text: str,
-) -> str:
+    *,
+    source: _MicSource | None = None,
+    vad: Any | None = None,
+    denoiser: Any = None,
+) -> TransportResult:
     """Stream the LLM reply for ``text``, synthesize each sentence, sink it to ``transport``.
 
-    Half-duplex over the wire: the reply is chunked into sentences, each sentence
-    is synthesized to PCM and forwarded via :meth:`AudioTransport.send_tts`, and
-    the streamed text is also published to the bus for the GUI. Returns the full
-    spoken text (so the caller can keep history honest). On an LLM error it sends a
-    short spoken apology, mirroring the local loop.
+    **Full-duplex (R3-2)** when ``cfg.barge_in`` is on and a live mic ``source`` +
+    ``vad`` are supplied: the inbound mic stays live during TTS playout and a
+    confirmed interruption (VAD + gate + AEC + predictor) cancels the outbound TTS
+    and the in-flight LLM stream, returning the captured audio for the next turn.
+    Otherwise it is half-duplex over the wire (the original R2-5 behaviour). The
+    streamed text is also published to the bus for the GUI. On an LLM error it
+    sends a short spoken apology, mirroring the local loop.
     """
     bus.transcript(text)
     chunker = SentenceChunker()
+    barge = (
+        _TransportBargeIn.build(cfg, source, vad, denoiser)
+        if (cfg.barge_in != "off" and source is not None and vad is not None)
+        else None
+    )
+    result = TransportResult()
     spoken: list[str] = []
     stream = brain.stream(text)
     try:
@@ -101,32 +201,184 @@ def respond_over_transport(
         for delta in stream:
             bus.response(delta, final=False)
             for sentence in chunker.feed(delta):
-                spoken.append(_voice_to_transport(transport, tts, sentence))
-        tail = chunker.flush()
-        if tail:
-            spoken.append(_voice_to_transport(transport, tts, tail))
+                spoken.append(_voice_to_transport(transport, tts, sentence, barge))
+                if barge is not None and barge.interrupted:
+                    break
+            if barge is not None and barge.interrupted:
+                break
+        else:
+            tail = chunker.flush()
+            if tail:
+                spoken.append(_voice_to_transport(transport, tts, tail, barge))
         bus.response("", final=True)
     except LLMError as exc:
         log.error("LLM error over transport: %s", exc)
         bus.log(str(exc), "error")
-        _voice_to_transport(transport, tts, "Sorry, I had a problem.")
+        _voice_to_transport(transport, tts, "Sorry, I had a problem.", None)
     finally:
         with contextlib.suppress(Exception):  # best-effort cancel of in-flight tokens
             stream.close()
+        if barge is not None and barge.interrupted:
+            result.interrupted = True
+            result.captured = barge.captured
+            voiced = "".join(spoken)
+            result.spoken = voiced
+            brain.commit_spoken(voiced)
+            bus.interrupted(len(voiced))
+            bus.interrupt_start()
+    result.spoken = result.spoken or "".join(spoken)
     bus.state("idle")
-    return "".join(spoken)
+    return result
 
 
-def _voice_to_transport(transport: AudioTransport, tts: TTSRouter, sentence: str) -> str:
-    """Synthesize one sentence to PCM and forward it; return the chars voiced."""
+def _voice_to_transport(
+    transport: AudioTransport,
+    tts: TTSRouter,
+    sentence: str,
+    barge: _TransportBargeIn | None,
+) -> str:
+    """Synthesize one sentence to PCM, forward it, and monitor for barge-in (R3-2).
+
+    With streamed TTS the sentence is synthesized clause-by-clause; each PCM chunk
+    is sunk to the transport and — when a barge-in monitor is supplied — the live
+    mic is polled between chunks so a confirmed interruption stops the send mid-
+    sentence. Returns the chars voiced (empty if blank or cut off before audio)."""
     text = strip_non_spoken(sentence)
     if not text:
         return ""
     bus.state("speaking")
-    pcm, sr = tts.synth_pcm(text)
-    if pcm.size:
-        transport.send_tts(pcm, sr)
+    if barge is None:
+        pcm, sr = tts.synth_pcm(text)
+        if pcm.size:
+            transport.send_tts(pcm, sr)
+        return sentence
+    if barge.interrupted:
+        return ""
+    sent_any = False
+    for pcm, sr in tts.synth_pcm_stream(text):
+        if barge.poll():  # confirmed interruption -> stop sinking this sentence
+            return sentence if sent_any else ""
+        if pcm.size:
+            transport.send_tts(pcm, sr)
+            barge.note_reference(pcm, sr)
+            sent_any = True
+        # Drain a slice of mic frames per chunk so playout stays full-duplex.
+        if barge.monitor_window():
+            return sentence
     return sentence
+
+
+@dataclass
+class _TransportBargeIn:
+    """Barge-in monitor for the wire (R3-2): VAD + gate + AEC + predictor on the mic.
+
+    Mirrors :func:`~my_stt_tts.audio.monitor_during_playback` but over a transport's
+    shared :class:`_MicSource` instead of a local ``InputStream``. :meth:`poll`
+    /:meth:`monitor_window` consume buffered mic frames, run the echo canceller +
+    VAD + the false-interrupt gate + the acoustic predictor, and latch
+    :attr:`interrupted` (with the captured speech) the moment an interruption is
+    confirmed. Reference TTS PCM is fed via :meth:`note_reference` so the AEC can
+    subtract the assistant's own voice."""
+
+    source: _MicSource
+    vad: Any
+    gate: InterruptGate
+    sample_rate: int
+    energy_floor: float
+    aec: Any = None
+    predictor: Any = None
+    denoiser: Any = None
+    interrupted: bool = field(default=False, init=False)
+    captured: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32), init=False)
+    _buf: list[np.ndarray] = field(default_factory=list, init=False)
+
+    @classmethod
+    def build(cls, cfg: Config, source: Any, vad: Any, denoiser: Any) -> _TransportBargeIn:
+        """Construct the monitor with config-derived gate/AEC/predictor (R3-2)."""
+        frame_ms = 512 / cfg.sample_rate * 1000.0
+        gate = InterruptGate(
+            min_speech_ms=cfg.interrupt_min_speech_ms,
+            min_words=cfg.interrupt_min_words,
+            frame_ms=frame_ms,
+        )
+        monitor = cls(
+            source=source,
+            vad=vad,
+            gate=gate,
+            sample_rate=cfg.sample_rate,
+            energy_floor=cfg.barge_in_energy,
+            aec=make_echo_canceller(cfg),
+            predictor=make_interrupt_predictor(cfg, frame_ms),
+            denoiser=denoiser,
+        )
+        gate.reset()
+        if monitor.aec is not None:
+            monitor.aec.reset()
+        if monitor.predictor is not None:
+            monitor.predictor.reset()
+        return monitor
+
+    def note_reference(self, pcm: np.ndarray, sample_rate: int) -> None:
+        """Feed sunk TTS PCM to the AEC reference (resampled to capture rate)."""
+        if self.aec is None:
+            return
+        ref = np.asarray(pcm, dtype=np.float32).ravel()
+        if sample_rate != self.sample_rate and ref.size:
+            idx = (
+                np.arange(int(ref.size * self.sample_rate / sample_rate))
+                * sample_rate
+                / self.sample_rate
+            ).astype(int)
+            idx = idx[idx < ref.size]
+            ref = ref[idx]
+        with contextlib.suppress(Exception):
+            self.aec.push_reference(ref)
+
+    def _floor(self) -> float:
+        return (
+            0.0
+            if (self.aec is not None and getattr(self.aec, "active", False))
+            else (self.energy_floor)
+        )
+
+    def _consume(self, frame: np.ndarray) -> bool:
+        """Run one mic frame through the chain; latch + return True on interruption."""
+        clean = self.aec.process(frame) if self.aec is not None else frame
+        if self.denoiser is not None:
+            clean = self.denoiser.process(clean)
+        loud_enough = frame_energy(clean) >= self._floor()
+        is_speech = bool(loud_enough and self.vad.is_speech(clean))
+        if is_speech or self._buf:
+            self._buf.append(clean)
+        predicted = self.predictor.update(clean, is_speech) if self.predictor is not None else False
+        if self.gate.update(is_speech) or predicted:
+            self.interrupted = True
+            self.captured = (
+                np.concatenate(self._buf) if self._buf else np.zeros(0, dtype=np.float32)
+            )
+            return True
+        return False
+
+    def poll(self) -> bool:
+        """Drain one buffered mic frame (if any) without blocking; latch on interrupt."""
+        if self.interrupted:
+            return True
+        frame = self.source.get(timeout=0.0)
+        if frame is not None and self._consume(frame):
+            return True
+        return self.interrupted
+
+    def monitor_window(self, *, max_frames: int = 8) -> bool:
+        """Drain up to ``max_frames`` buffered mic frames; True if interrupted."""
+        if self.interrupted:
+            return True
+        for _ in range(max_frames):
+            frame = self.source.get(timeout=0.0)
+            if frame is None:
+                break
+            if self._consume(frame):
+                return True
+        return self.interrupted
 
 
 def run_transport_session(
@@ -141,9 +393,10 @@ def run_transport_session(
     """Run turns over ``transport`` until its mic source ends (one satellite session).
 
     Builds the VAD + turn analyzer from config (lazily, so tests can inject), then
-    loops: capture a turn, respond over the wire. Ends when ``mic_frames`` is
-    exhausted (the client disconnected). Used as the ``on_session`` callback by the
-    WebSocket server.
+    loops: capture a turn, respond over the wire. Full-duplex barge-in (R3-2) is
+    armed when ``cfg.barge_in`` is on — the reply is interruptible and the captured
+    audio seeds the next turn. Ends when ``mic_frames`` is exhausted (the client
+    disconnected). Used as the ``on_session`` callback by the WebSocket server.
     """
     if vad is None:
         from .vad import SileroVad
@@ -152,13 +405,57 @@ def run_transport_session(
     from .turn import make_turn_analyzer
 
     frame_seconds = 512 / cfg.sample_rate
+    barge_on = cfg.barge_in != "off"
+    source = _MicSource(transport)
+    denoiser = make_denoiser(cfg)
     bus.state("idle")
-    while not _transport_closed(transport):
+    while not _transport_closed(transport) and not source.closed:
         analyzer = make_turn_analyzer(cfg, frame_seconds)
-        text = capture_turn(transport, cfg, vad, analyzer, transcriber)
+        text = capture_turn(
+            transport, cfg, vad, analyzer, transcriber, source=source, denoiser=denoiser
+        )
         if not text:
             break  # silence / client gone
-        respond_over_transport(transport, cfg, brain, tts, text)
+        result = respond_over_transport(
+            transport,
+            cfg,
+            brain,
+            tts,
+            text,
+            source=source if barge_on else None,
+            vad=vad if barge_on else None,
+            denoiser=denoiser,
+        )
+        # Chain barge-in follow-ups: the captured audio becomes the next turn.
+        while result.interrupted and result.captured.size and not source.closed:
+            follow = _transcribe_captured(cfg, transcriber, result.captured)
+            bus.interrupt_stop()
+            if not follow:
+                break
+            result = respond_over_transport(
+                transport,
+                cfg,
+                brain,
+                tts,
+                follow,
+                source=source if barge_on else None,
+                vad=vad if barge_on else None,
+                denoiser=denoiser,
+            )
+
+
+def _transcribe_captured(cfg: Config, transcriber: Transcriber, clip: np.ndarray) -> str:
+    """Transcribe a barge-in clip as the next turn's text (no from-scratch re-record)."""
+    if clip.size == 0:
+        return ""
+    streamer = StreamingTranscriber(
+        transcriber,
+        cfg.sample_rate,
+        partial_interval_ms=cfg.stt_partial_interval_ms,
+        window_s=cfg.stt_window_s,
+    )
+    streamer.feed_clip(clip)
+    return str(streamer.final().text).strip()
 
 
 def _transport_closed(transport: AudioTransport) -> bool:
