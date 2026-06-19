@@ -11,6 +11,57 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave G++: GUI voice controls actually work
+
+Goal: fix a misleading-UI bug in the browser control room. The **Start Wake**,
+**Push-to-Talk**, and **Live Audio** buttons existed even in typed-only launches
+and, for wake/PTT, did nothing — `on_action` for `wake_start`/`wake_stop`/`ptt`
+just logged *"runs from the terminal in this build"*. Now those buttons drive the
+**server-side** pipeline when it is available, and are **honestly disabled** when
+it is not. No regression to the 356-test baseline (now 371).
+
+- **`run_wake_loop` is now cleanly stoppable** (`__main__.py`): accepts an optional
+  `stop: threading.Event`. It is checked at the top of both the outer wake-listen
+  loop and the inner record loop, and passed into `audio.listen_for_wake(...)` so a
+  GUI-driven loop tears down promptly even while idle waiting for the phrase.
+  `audio.listen_for_wake` grew a `stop` param and now returns `bool` (True = fired,
+  False = stopped). `None` keeps the classic run-forever terminal behaviour.
+- **GUI-controlled voice via `_WakeController`** (`__main__.py`): one lock-guarded
+  controller owns the three GUI voice actions. `wake_start` → starts the wake loop
+  in a daemon thread (idempotent; double-start is a no-op log); `wake_stop` → sets
+  the stop event and returns to idle; `ptt` → runs one `_capture_ptt` → `_respond`
+  in a worker thread (refused while the wake loop is listening, and while a prior
+  PTT is still capturing). A blank capture logs a macOS mic-permission hint instead
+  of failing silently. `_run_browser`'s `on_action` now dispatches to it; with no
+  pipeline it logs an honest `unavailable: <reason>` error.
+- **Launch flag that enables it:** `./mstt --browser --wake` (already loads STT via
+  `needs_stt`) now also makes the GUI buttons live, and `--wake` on launch starts
+  the loop immediately (still stoppable from the GUI). Plain `./mstt --browser
+  --type` stays typed-only (voice off). `--browser-audio` still gates Live Audio.
+- **Honest UI when voice is unavailable** (`webui.py` + `webui.html`): `settings_dict`
+  / the `/api/settings` payload gained `voice_available: bool` + `voice_hint: str`,
+  set true only when STT is loaded **and** the wake model exists **and** a mic is
+  usable (`audio.mic_available()` — a new defensive sounddevice probe). When false
+  the page **disables** Start Wake / Push-to-Talk (greyed, `aria-disabled`, guarded
+  click/keydown so they can't POST) and shows a one-line note
+  (*"Voice off — relaunch with `./mstt --browser --wake` and grant mic access"*).
+  Live Audio still keys off `audio_enabled` (R2-5).
+- **`quickstart.sh`** keeps typed mode as the instant, mic-free default but now
+  prints a clear hint after sync — `🎙️  To talk to it (wake word / mic), run:
+  ./mstt --browser --wake` — noting macOS asks for mic permission on first capture.
+  `shellcheck`-clean.
+- **Tests** (`tests/test_gui_voice.py`, +15): `_WakeController` wake_start/stop
+  toggling the loop (mock `run_wake_loop`/thread, assert the stop event fires),
+  double-start guard, PTT one-shot + blank-capture mic hint + PTT-blocked-while-wake,
+  `run_wake_loop` stop-event exit, `voice_available` true/false in `settings_dict`,
+  `_voice_status` capability resolution (no STT / no wake model / no mic / all
+  present), and `_run_browser`'s `on_action` dispatching to the controller (voice on)
+  vs logging honestly (voice off). All mic/model/network boundaries mocked.
+- **Caveats:** not exercised in a real browser or against a real mic in this env —
+  the JS was `node --check`ed, the settings payload smoke-tested over loopback, and
+  the Python paths unit-tested with the audio/wake/STT layers mocked. macOS will
+  prompt for Terminal mic permission on the first real server-side capture.
+
 ## Build status (2026-06-19) — Wave G+: seamless key-free quickstart
 
 Goal: make `./quickstart.sh` **genuinely seamless**. Before this, it launched the
