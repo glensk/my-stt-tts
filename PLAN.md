@@ -11,6 +11,59 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave I: wake-loop crash fix + GUI mic test
+
+Two real bugs the user hit: (1) the wake word never fired — the loop crashed on
+construction with `AudioFeatures.__init__() got an unexpected keyword argument
+'wakeword_models'`; (2) the user couldn't be heard, with no way to tell why
+(server mic vs. permission). Branch `fix-wake-mic`. 385 → 407 tests (+22), green
+both with `--extra all` and CI core-only (no extras).
+
+- **BUG 1 — version-tolerant openWakeWord construction** (`wake.py`): the installed
+  `openwakeword==0.4.0` `Model.__init__` takes `wakeword_model_paths=[...]` and has
+  **no** `inference_framework` arg; the modern `wakeword_models=`/`inference_framework=`
+  kwargs leak through `**kwargs` into `AudioFeatures` and raise `TypeError`.
+  `WakeWord._build_model` now **tries the modern API first, falls back to the 0.4.0
+  signature on `TypeError`** (0.4.0 infers ONNX from the `.onnx` extension). Verified
+  for real against the actual model: modern API raises the exact reported error;
+  0.4.0 API loads; `predict()` on a silent frame returns `{'maziko': 0.0}` — the score
+  key is the **model-file stem**, and `detect()` reads `.values()`, so the key naming
+  is irrelevant (confirmed correct, no change needed there).
+- **BUG 1 — fail-once, don't spin** (`wake.py` + `__main__.py`): a new
+  `WakeUnavailable` error is raised **once** on unrecoverable construction/predict
+  failure (sticky `_broken` flag — a second `detect()` re-raises without retrying).
+  `run_wake_loop` catches it, logs a single clear hint, sets state idle, and returns
+  `2` — instead of re-raising the same error on every audio frame forever.
+- **BUG 2 — server mic test** (`audio.py`): `mic_test(sample_rate)` captures ~1.5 s
+  from the input device and returns a `MicTestResult`; the pure `mic_test_verdict(...)`
+  maps it to **working** ("✓ Microphone OK — level NN%"), **silent** ("✗ No audio —
+  grant microphone permission … System Settings › Privacy & Security › Microphone …"),
+  **no_device**, or **error** (the exact sounddevice/PortAudio reason). Never raises.
+- **BUG 2 — action + event plumbing** (`__main__.py` + `events.py`): new `mic_test`
+  action on `/api/action`; `bus.mic_result(...)` event. Runs **regardless of wake
+  state** — with a controller it stops/joins the wake loop, captures, then restarts
+  it (the test owns the mic); without one (voice off — when you most need to diagnose)
+  it runs a standalone capture in a worker thread, never blocking the HTTP handler.
+- **BUG 2 — web GUI** (`webui.html`): a **"🎤 Test mic"** button in CONTROLS, a
+  prominent result chip that turns **green/red** with the verdict + a level meter; the
+  **MIC COLD/HOT** indicator now goes HOT during the real capture and back to COLD on
+  the verdict. A one-line macOS permission hint sits under the voice controls. BONUS:
+  a **browser-mic** getUserMedia level meter ("Test browser mic"), clearly labelled
+  distinct from the server "Test mic", with its own permission handling.
+- **Tests** (+22): `test_wake_model.py` — both Model API branches via a **fake
+  openwakeword module**, `detect()` reading score values, and `WakeUnavailable` raised
+  once + sticky. `test_mic_test.py` — the verdict mapping (loud/silent/no-device/error,
+  level clamp) and `mic_test` capture with a **faked sounddevice** (loud → ok, zero →
+  silent, raising stream → error, missing sounddevice → error, never raises).
+  `test_gui_voice.py` — `run_wake_loop` stops once on `WakeUnavailable`; `_run_mic_test`
+  - controller `mic_test` publish the verdict and pause/restore the wake loop.
+  `test_run_browser.py` — the `mic_test` action fires even with no voice controller.
+- **Caveats:** the verification model `wakewords/maziko.onnx` was a shipped
+  openwakeword model copied locally (uncommitted) — there is no committed maziko
+  model. Could not test a **real** microphone or a real macOS permission denial here;
+  the silent/permission path is asserted via mocked capture. JS `node --check`ed, not
+  exercised in a live browser.
+
 ## Build status (2026-06-19) — Wave H: pre-shipped wake-word selector
 
 Goal: ship several trained wake-word models in `wakewords/` (e.g. `maziko.onnx`,

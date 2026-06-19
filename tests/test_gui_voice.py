@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from my_stt_tts import __main__ as main_mod
 from my_stt_tts.config import Config
+from my_stt_tts.wake import WakeUnavailable
 from my_stt_tts.webui import settings_dict
 
 
@@ -130,6 +131,84 @@ def test_ptt_blocked_while_wake_loop_active() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# mic_test — capture + verdict event, works whether or not the loop is running #
+# --------------------------------------------------------------------------- #
+def test_run_mic_test_publishes_verdict_and_logs() -> None:
+    ok = main_mod.audio.MicTestResult(
+        ok=True, verdict="ok", message="Microphone OK — level 70%", level=70
+    )
+    with (
+        patch.object(main_mod.audio, "mic_test", return_value=ok) as cap,
+        patch.object(main_mod.bus, "mic_result") as micres,
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.bus, "state"),
+    ):
+        main_mod._run_mic_test(Config(sample_rate=16000))
+    cap.assert_called_once()
+    micres.assert_called_once()
+    kw = micres.call_args.kwargs
+    assert kw["ok"] is True and kw["verdict"] == "ok" and kw["level"] == 70
+
+
+def test_run_mic_test_never_raises_on_capture_error() -> None:
+    with (
+        patch.object(main_mod.audio, "mic_test", side_effect=RuntimeError("boom")),
+        patch.object(main_mod.bus, "mic_result") as micres,
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.bus, "state"),
+    ):
+        main_mod._run_mic_test(Config(sample_rate=16000))  # must not raise
+    assert micres.call_args.kwargs["verdict"] == "error"
+
+
+def test_controller_mic_test_runs_capture_when_idle() -> None:
+    ctrl = _controller()
+    done = threading.Event()
+    ok = main_mod.audio.MicTestResult(ok=True, verdict="ok", message="ok", level=50)
+    with (
+        patch.object(main_mod.audio, "mic_test", return_value=ok) as cap,
+        patch.object(main_mod.bus, "mic_result", side_effect=lambda **_k: done.set()),
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.bus, "state"),
+    ):
+        ctrl.mic_test()
+        assert done.wait(timeout=2), "mic_test verdict never published"
+    cap.assert_called_once()
+
+
+def test_controller_mic_test_pauses_and_restores_wake_loop() -> None:
+    """While the wake loop holds the device, a mic test stops it for the capture
+    then restarts it — so the test owns the mic and the user lands back listening."""
+    starts = []
+
+    def fake_loop(*_a, stop: threading.Event | None = None, **_k) -> int:
+        assert stop is not None
+        starts.append(stop)
+        stop.wait(timeout=5)
+        return 0
+
+    ctrl = _controller()
+    ok = main_mod.audio.MicTestResult(ok=True, verdict="ok", message="ok", level=50)
+    captured = threading.Event()
+    with (
+        patch.object(main_mod, "run_wake_loop", side_effect=fake_loop),
+        patch.object(main_mod.audio, "mic_test", return_value=ok, side_effect=None) as cap,
+        patch.object(main_mod.bus, "mic_result", side_effect=lambda **_k: captured.set()),
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.bus, "state"),
+    ):
+        cap.return_value = ok
+        ctrl.start_wake()
+        assert _wait_until(lambda: bool(starts))
+        ctrl.mic_test()
+        assert captured.wait(timeout=3), "mic test never captured"
+        # The loop was restarted after the test (a second stop event was created).
+        assert _wait_until(lambda: len(starts) == 2, timeout=3)
+        ctrl.stop_wake()
+    cap.assert_called()
+
+
+# --------------------------------------------------------------------------- #
 # run_wake_loop exits promptly when the stop event is set                     #
 # --------------------------------------------------------------------------- #
 def test_run_wake_loop_exits_on_stop_event() -> None:
@@ -157,6 +236,31 @@ def test_run_wake_loop_exits_on_stop_event() -> None:
             cfg, MagicMock(), MagicMock(), MagicMock(), MagicMock(), stop=stop
         )
     assert rc == 0  # clean exit, did not block forever
+
+
+def test_run_wake_loop_stops_once_on_wakeunavailable() -> None:
+    """A WakeUnavailable (e.g. openwakeword API/version mismatch) must stop the loop
+    after a SINGLE clear error log — never spin the same error every frame."""
+    cfg = Config(sample_rate=16000)
+    fake_wake = MagicMock()
+    fake_wake.available.return_value = True
+
+    def boom(*_a, **_k):  # noqa: ANN002,ANN003
+        raise WakeUnavailable("openwakeword could not load the model")
+
+    with (
+        patch("my_stt_tts.wake.WakeWord.from_config", return_value=fake_wake),
+        patch("my_stt_tts.vad.SileroVad", MagicMock()),
+        patch("my_stt_tts.aec.make_voiceprocessing_capture", return_value=None),
+        patch("my_stt_tts.denoise.make_denoiser", return_value=None),
+        patch.object(main_mod.audio, "listen_for_wake", side_effect=boom),
+        patch.object(main_mod.bus, "log") as buslog,
+    ):
+        rc = main_mod.run_wake_loop(cfg, MagicMock(), MagicMock(), MagicMock(), MagicMock())
+    assert rc == 2  # stopped, did not loop forever
+    errors = [c for c in buslog.call_args_list if c.args[1:2] == ("error",)]
+    assert len(errors) == 1  # logged exactly once
+    assert "wake word disabled" in errors[0].args[0]
 
 
 # --------------------------------------------------------------------------- #
