@@ -340,6 +340,48 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
     return mic_test_verdict(captured=True, rms=rms, peak=peak, permission=permission)
 
 
+def record_fixed(sample_rate: int, *, seconds: float = 3.0) -> tuple[np.ndarray, int]:
+    """Capture a fixed ``seconds`` of mic audio at ``sample_rate`` (float32 mono).
+
+    Returns ``(clip, device_rate)`` where ``clip`` is resampled to ``sample_rate``
+    (the device may open at its native rate, commonly 48 kHz, when 16 kHz isn't
+    honoured — see :func:`_supported_capture_rate`) and ``device_rate`` is the rate
+    the input device actually delivered. Unlike :func:`record_until_silence` there is
+    no VAD/endpointing — it records the full window, so the "record & replay" mic
+    test plays back exactly what the mic heard. Raises on a device/PortAudio failure;
+    the caller (a worker thread) is expected to guard it.
+    """
+    sd = _sd()
+    device_rate = _supported_capture_rate(sd, sample_rate)
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    collected: list[np.ndarray] = []
+    with sd.InputStream(
+        samplerate=device_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=1280,
+        callback=_callback,
+    ):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                collected.append(frames_q.get(timeout=0.1))
+            except queue.Empty:
+                continue
+    # Drain anything queued right at the deadline so the tail isn't lost.
+    while True:
+        try:
+            collected.append(frames_q.get_nowait())
+        except queue.Empty:
+            break
+    raw = np.concatenate(collected) if collected else np.zeros(0, dtype=np.float32)
+    return resample_to(raw, device_rate, sample_rate), device_rate
+
+
 def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
     """Play a float32 mono array and block until done (cross-platform, G8).
 
