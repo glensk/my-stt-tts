@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import AgentError, dispatch_to_agent
-from .config import Config, locale_prompt_line
+from .config import Config, current_time_line, locale_prompt_line
 from .memory import ContextAggregator, make_memory_store
 from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
@@ -111,14 +111,19 @@ class Brain:
         return self.context.assemble(self.speaker)
 
     def _system_prompt(self) -> str:
-        """System prompt for the backend: the editable base + a locale line.
+        """System prompt for the backend: the editable base + locale + current time.
 
         Keeps ``prompts/system_prompt.md`` (``cfg.system_prompt``) as the editable
-        base and appends a single line making the assistant location- and
-        units-aware, so weather/distance/temperature answers use the configured
-        place and measurement system without editing the prompt file.
+        base and appends (a) a locale line so weather/distance/temperature answers
+        use the configured place and measurement system, and (b) a fresh
+        'Current local time: …' line on EVERY turn so the assistant can tell the
+        time. The time line is in the prompt *text* (not behind a tool) precisely so
+        it works for ``claude-cli`` too, which has no tool access in this loop. The
+        timezone is derived from ``cfg.location`` (Lausanne → Europe/Zurich) via
+        stdlib ``zoneinfo``, falling back to the system local tz.
         """
-        return locale_prompt_line(self.cfg.system_prompt, self.cfg.location, self.cfg.units)
+        base = locale_prompt_line(self.cfg.system_prompt, self.cfg.location, self.cfg.units)
+        return f"{base.rstrip()}\n\n{current_time_line(self.cfg.location)}"
 
     def _home_dispatch(self, command: str) -> str:
         """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).

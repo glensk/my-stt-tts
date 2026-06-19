@@ -221,8 +221,8 @@ def test_run_turn_ptt_identifies_speaker_before_streaming(monkeypatch):
     tts = _SilentTTS()
     clip = np.full(16000, 0.3, dtype=np.float32)
 
-    # Stub the mic capture + chimes so no audio hardware is touched.
-    monkeypatch.setattr(cli.audio, "record_push_to_talk", lambda sr, secs: clip)
+    # Stub the (hands-free, VAD-driven) mic capture + chimes so no hardware is touched.
+    monkeypatch.setattr(cli.audio, "record_until_silence", lambda *a, **k: clip)
     monkeypatch.setattr(cli, "_play", lambda *a, **k: None)
     gate = cli.audio.MicGate(0.0)
     stt = _StubSTT("turn on the light")
@@ -265,7 +265,7 @@ def test_run_turn_graceful_skip_when_no_pipeline(monkeypatch):
     brain = _RecordingBrain()
     tts = _SilentTTS()
     clip = np.full(8000, 0.3, dtype=np.float32)
-    monkeypatch.setattr(cli.audio, "record_push_to_talk", lambda sr, secs: clip)
+    monkeypatch.setattr(cli.audio, "record_until_silence", lambda *a, **k: clip)
     monkeypatch.setattr(cli, "_play", lambda *a, **k: None)
     gate = cli.audio.MicGate(0.0)
     stt = _StubSTT("anyone there")

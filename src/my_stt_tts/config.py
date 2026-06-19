@@ -6,6 +6,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -187,6 +188,58 @@ def locale_prompt_line(base_prompt: str, location: str, units: str) -> str:
     return f"{base_prompt.rstrip()}\n\n{line}"
 
 
+# Map a free-text location to an IANA timezone. Lausanne and the rest of
+# Switzerland live in Europe/Zurich; extend as new default locations are added.
+# Anything unmatched falls back to the system local timezone.
+_LOCATION_TZ: dict[str, str] = {
+    "lausanne": "Europe/Zurich",
+    "geneva": "Europe/Zurich",
+    "zurich": "Europe/Zurich",
+    "bern": "Europe/Zurich",
+    "switzerland": "Europe/Zurich",
+}
+
+
+def timezone_for_location(location: str) -> Any:  # noqa: ANN401 — tzinfo | None
+    """Resolve a free-text ``location`` to a :class:`zoneinfo.ZoneInfo`, else None.
+
+    Matches a known place/country substring (Lausanne → ``Europe/Zurich``) using
+    stdlib ``zoneinfo``; returns ``None`` (caller uses the system local tz) when the
+    location is unknown or the tz database is unavailable. Pure + dependency-free.
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    place = location.strip().lower()
+    for key, tz in _LOCATION_TZ.items():
+        if key in place:
+            try:
+                return ZoneInfo(tz)
+            except ZoneInfoNotFoundError:
+                return None
+    return None
+
+
+def current_time_line(location: str, *, now: Any = None) -> str:
+    """A single 'current local time' sentence for the assembled system prompt.
+
+    Injected EVERY turn so the assistant can tell the time regardless of brain —
+    including ``claude-cli``, which has no tool access here, so the time must be in
+    the prompt text, not behind a tool. The timezone is derived from ``location``
+    (Lausanne → ``Europe/Zurich``) via stdlib ``zoneinfo``, falling back to the
+    system local tz. ``now`` is injectable for deterministic tests.
+    """
+    import datetime as _dt
+
+    tz = timezone_for_location(location)
+    moment = now if now is not None else _dt.datetime.now(tz=tz)
+    if moment.tzinfo is None:
+        moment = moment.astimezone(tz) if tz is not None else moment.astimezone()
+    elif tz is not None:
+        moment = moment.astimezone(tz)
+    label = str(moment.tzinfo) if moment.tzinfo is not None else "local time"
+    return f"Current local time: {moment.strftime('%Y-%m-%d %H:%M')} ({label})."
+
+
 @dataclass(slots=True)
 class Config:
     """All tunables for the voice loop, with sane defaults.
@@ -231,6 +284,10 @@ class Config:
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
     vad_silence_seconds: float = 0.7
+    # Silero-VAD speech probability above which a frame counts as speech. Kept low
+    # so a quiet-but-present voice (a ~10% mic level) is still captured — a high
+    # threshold was treating soft speech as silence and ending the turn empty.
+    vad_threshold: float = 0.3
     mic_gate_tail_seconds: float = 0.2
 
     # --- Barge-in / interruption (Phase 7) ---
@@ -412,6 +469,13 @@ class Config:
     telephony_port: int = 8771
 
     debug: bool = False
+    # Heavy audio-pipeline tracing (the GUI "debugger"): logs every GUI action and,
+    # for every capture, the sample_rate / #samples / duration / rms / peak, the
+    # VAD + endpoint decisions, the per-evaluation wake max-score, and the STT input
+    # length + transcript. Surfaced to stderr AND the event bus (``bus.debug``) so it
+    # shows in the GUI EVENT LOG, making *where* audio is lost obvious. ``None`` =
+    # auto (ON under ``--browser``); an explicit ``DEBUG_AUDIO`` env var overrides.
+    debug_audio: bool | None = None
 
     @classmethod
     def from_env(cls, dotenv_path: str | os.PathLike[str] | None = None) -> Config:
@@ -491,6 +555,8 @@ class Config:
             telephony=_env_bool("TELEPHONY", default=False),
             telephony_host=env.get("TELEPHONY_HOST", "0.0.0.0"),  # noqa: S104 — LAN bind
             debug=_env_bool("DEBUG", default=False),
+            # None => auto (the browser loop turns it on); an explicit env wins.
+            debug_audio=(_env_bool("DEBUG_AUDIO", default=False) if "DEBUG_AUDIO" in env else None),
         )
         if env.get("TELEPHONY_PORT"):
             cfg.telephony_port = int(env["TELEPHONY_PORT"])
@@ -508,6 +574,10 @@ class Config:
             cfg.interrupt_min_speech_ms = float(env["INTERRUPT_MIN_SPEECH_MS"])
         if env.get("SMART_TURN_THRESHOLD"):
             cfg.smart_turn_threshold = float(env["SMART_TURN_THRESHOLD"])
+        if env.get("VAD_THRESHOLD"):
+            cfg.vad_threshold = float(env["VAD_THRESHOLD"])
+        if env.get("VAD_SILENCE_SECONDS"):
+            cfg.vad_silence_seconds = float(env["VAD_SILENCE_SECONDS"])
         if env.get("AEC_NLMS_TAPS"):
             cfg.aec_nlms_taps = int(env["AEC_NLMS_TAPS"])
         if env.get("AEC_NLMS_MU"):
@@ -608,6 +678,8 @@ class Config:
             errors.append(
                 f"smart_turn_threshold must be in [0, 1]; got {self.smart_turn_threshold}"
             )
+        if not 0.0 <= self.vad_threshold <= 1.0:
+            errors.append(f"vad_threshold must be in [0, 1]; got {self.vad_threshold}")
         if self.interrupt_min_words < 0:
             errors.append(f"interrupt_min_words must be >= 0; got {self.interrupt_min_words}")
         if self.interrupt_min_speech_ms < 0:

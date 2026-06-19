@@ -72,6 +72,51 @@ def _session_sink(cfg: Config) -> Any:
     return _SESSION_SINK
 
 
+def debug_audio_enabled(cfg: Config, *, browser: bool = False) -> bool:
+    """Whether the heavy audio debug instrument is on for this run.
+
+    ``cfg.debug_audio`` is tri-state: an explicit ``DEBUG_AUDIO`` env (``True``/
+    ``False``) always wins; ``None`` (the default) means "auto" — ON under
+    ``--browser`` so the GUI EVENT LOG shows the trace out of the box, OFF otherwise.
+    """
+    if cfg.debug_audio is not None:
+        return cfg.debug_audio
+    return browser
+
+
+class _AudioDebug:
+    """The capture/VAD/wake/STT debug instrument (the GUI "debugger").
+
+    When enabled (:func:`debug_audio_enabled`) every event is logged to **stderr**
+    AND published as a ``bus.debug`` event so it appears in the GUI EVENT LOG —
+    making WHERE audio is lost (sample rate, #samples, rms/peak, VAD/endpoint
+    decisions, wake max-score, STT input length + transcript) obvious. A no-op when
+    disabled, so the loops can call it unconditionally. VAD-frame traces are
+    rate-limited to one line per ~25 frames (≈0.8 s) so the log isn't flooded.
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self._vad_n = 0
+
+    def __call__(self, stage: str, **fields: Any) -> None:
+        if not self.enabled:
+            return
+        if stage == "vad_frame":
+            self._vad_n += 1
+            if self._vad_n % 25 != 1:  # sample 1-in-25 so a turn isn't a wall of lines
+                return
+        kv = " ".join(f"{k}={v}" for k, v in fields.items())
+        msg = f"[audio:{stage}] {kv}".rstrip()
+        print(msg, file=sys.stderr)
+        with contextlib.suppress(Exception):
+            bus.debug(msg, stage=stage, **fields)
+
+    def action(self, name: str, **fields: Any) -> None:
+        """Log a GUI action received (wake_start/stop, ptt, mic_test, voice_test, turn)."""
+        self(f"action:{name}", **fields)
+
+
 def _use_color() -> bool:
     return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
@@ -420,6 +465,14 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
     gate.release()
 
 
+def _model_label(cfg: Config) -> str:
+    """Human label for the active model (e.g. ``claude-cli / haiku``) for the UI.
+
+    Carried on the ``llm_request`` state detail and the final ``response`` event so
+    the page can show an "ASSISTANT · <model>" label."""
+    return f"{cfg.llm_provider} / {cfg.llm_model}"
+
+
 def _set_speaker(brain: Brain, speaker_id: object | None, clip: np.ndarray | None) -> None:
     """Resolve a clip to an enrolled speaker and set it on the brain (G7).
 
@@ -491,10 +544,11 @@ def _respond(
         source=source if barge_in else None,
         denoiser=denoiser if barge_in else None,
     )
+    model_label = _model_label(cfg)
     stream = brain.stream(text)
     try:
         with metrics.stage("llm_tts"):
-            bus.state("llm_request", f"{cfg.llm_provider} / {cfg.llm_model}")
+            bus.state("llm_request", model_label)
             bus.state("llm_wait")
             first = True
             for delta in stream:
@@ -525,7 +579,9 @@ def _respond(
                     voiced_chars += spoken_n
                     if res is not None and res.interrupted:
                         result = res
-        bus.response("", final=True)
+        # Carry the active model on the end-of-turn response so the page can label
+        # the bubble "ASSISTANT · <model>" (the llm_request state detail has it too).
+        bus.response("", final=True, model=model_label)
     except LLMError as exc:
         log.error("LLM error: %s", exc)
         bus.log(str(exc), "error")
@@ -626,12 +682,41 @@ class _Captured:
     clip: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
 
-def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> _Captured:
+def _capture_ptt(
+    cfg: Config,
+    stt: object,
+    gate: audio.MicGate,
+    *,
+    stop: threading.Event | None = None,
+    debug: Any = None,
+) -> _Captured:
+    """Capture one push-to-talk turn, hands-free (VAD-driven, NO stdin).
+
+    Used by both the terminal PTT loop and the GUI's server-side PTT button. It
+    records until a natural pause via Silero VAD + the silence endpointer rather
+    than waiting on an Enter key — the old ``record_push_to_talk`` blocked on
+    ``input()``, which in the browser server worker has no interactive stdin and
+    returned an empty clip (the "push-to-talk records nothing" bug). The recorder
+    also pins the audio to 16 kHz mono (resampling a 48 kHz device) so STT gets a
+    valid clip. ``debug`` (the audio instrument) surfaces capture/VAD/STT telemetry.
+    """
+    from .vad import SilenceEndpointer, SileroVad
+
+    dbg = debug if debug is not None else (lambda *_a, **_k: None)
     gate.gate()
     _play(chimes.chime_listening())
     gate.release()
     bus.state("recording")
-    clip = audio.record_push_to_talk(cfg.sample_rate, cfg.max_record_seconds)
+    vad = SileroVad(cfg.sample_rate, cfg.vad_threshold)
+    endpointer = SilenceEndpointer(cfg.vad_silence_seconds, frame_seconds=512 / cfg.sample_rate)
+    clip = audio.record_until_silence(
+        cfg.sample_rate,
+        vad,
+        endpointer,
+        max_seconds=cfg.max_record_seconds,
+        stop=stop,
+        on_debug=dbg,
+    )
     gate.gate()
     _play(chimes.chime_done())
     gate.release()
@@ -639,7 +724,9 @@ def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> _Captured:
         bus.state("idle")
         return _Captured()
     bus.state("stt")
+    dbg("stt_input", **audio.capture_stats(clip, cfg.sample_rate))
     text = str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
+    dbg("stt_output", chars=len(text), transcript=text[:120])
     return _Captured(text=text, clip=clip)
 
 
@@ -730,6 +817,7 @@ def run_wake_loop(
     *,
     speaker_id: object | None = None,
     stop: threading.Event | None = None,
+    debug: Any = None,
 ) -> int:
     """Always-listen: on the wake phrase, capture (VAD), respond, then follow up.
 
@@ -739,13 +827,15 @@ def run_wake_loop(
     ``stop`` (optional) makes the loop cleanly tearable-down: it is checked between
     iterations and passed to :func:`audio.listen_for_wake` so a GUI-driven loop
     exits promptly while it sits idle waiting for the wake phrase. ``None`` keeps the
-    classic run-forever terminal behaviour (Ctrl-C to quit)."""
+    classic run-forever terminal behaviour (Ctrl-C to quit). ``debug`` (the audio
+    instrument) surfaces wake max-score + capture/VAD/STT telemetry."""
     from .aec import make_voiceprocessing_capture
     from .denoise import make_denoiser
     from .turn import make_turn_analyzer
     from .vad import SileroVad
     from .wake import WakeUnavailable, WakeWord
 
+    dbg = debug if debug is not None else _AudioDebug(False)
     wake = WakeWord.from_config(cfg)
     if not wake.available():
         msg = (
@@ -755,7 +845,7 @@ def run_wake_loop(
         print(msg, file=sys.stderr)
         bus.log(msg, "error")
         return 2
-    vad = SileroVad(cfg.sample_rate)
+    vad = SileroVad(cfg.sample_rate, cfg.vad_threshold)
     frame_seconds = 512 / cfg.sample_rate
     barge_vad = vad if cfg.barge_in != "off" else None
     # R3-4: capture through macOS VoiceProcessingIO (hardware AEC) when requested
@@ -769,7 +859,7 @@ def run_wake_loop(
             return 0
         bus.state("listening", cfg.wake_phrase)
         try:
-            fired = audio.listen_for_wake(wake, cfg.sample_rate, stop=stop)
+            fired = audio.listen_for_wake(wake, cfg.sample_rate, stop=stop, on_debug=dbg)
         except WakeUnavailable as exc:
             # Construction/predict failed (e.g. an openwakeword API/version
             # mismatch). Log ONCE with a clear hint and stop — never spin the
@@ -806,12 +896,15 @@ def run_wake_loop(
                 denoiser=denoiser,
             )
             if clip.size == 0:
+                dbg("no_speech", **audio.capture_stats(clip, cfg.sample_rate))
                 break  # silence -> back to listening for the wake word
+            dbg("stt_input", **audio.capture_stats(clip, cfg.sample_rate))
             text = (
                 str(streamer.final().text).strip()  # type: ignore[union-attr]
                 if streamer is not None
                 else _transcribe(cfg, stt, clip)
             )
+            dbg("stt_output", chars=len(text), transcript=text[:120])
             if not text:
                 break
             result = _respond(
@@ -882,6 +975,7 @@ class _WakeController:
         stt: object,
         *,
         speaker_id: object | None = None,
+        debug: Any = None,
     ) -> None:
         self._cfg = cfg
         self._brain = brain
@@ -889,6 +983,7 @@ class _WakeController:
         self._gate = gate
         self._stt = stt
         self._speaker_id = speaker_id
+        self._debug = debug if debug is not None else _AudioDebug(False)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop: threading.Event | None = None
@@ -963,6 +1058,7 @@ class _WakeController:
                 self._stt,
                 speaker_id=self._speaker_id,
                 stop=stop,
+                debug=self._debug,
             )
         except Exception as exc:  # never let a mic/model failure kill the thread silently
             log.error("wake loop error: %s", exc)
@@ -972,7 +1068,7 @@ class _WakeController:
 
     def _ptt_target(self) -> None:
         try:
-            captured = _capture_ptt(self._cfg, self._stt, self._gate)
+            captured = _capture_ptt(self._cfg, self._stt, self._gate, debug=self._debug)
             if not captured.text:
                 # macOS: a blank capture is most often an ungranted mic permission.
                 bus.log(
@@ -1023,6 +1119,37 @@ def _run_mic_test(cfg: Config) -> None:
     bus.state("idle")
 
 
+def _voice_preset_name(voice_id: str) -> str:
+    """Map a Piper voice id (``en_US-lessac-medium``) back to its friendly preset name."""
+    for name, vid in VOICE_PRESETS.items():
+        if vid == voice_id:
+            return name
+    return voice_id or "default"
+
+
+def _voice_test(cfg: Config, tts: TTSRouter, data: dict[str, Any]) -> None:
+    """Speak a short fixed sample line in the currently-selected voice (GUI play button).
+
+    Synthesizes "This is the <voice> voice." with the active English voice and plays
+    it server-side, so the GUI's voice-preview button produces audio. Honours a
+    per-request ``voice_en`` (the page can preview a voice before saving it) by
+    applying it to ``cfg`` first. Runs in a worker thread (the caller spawns it), so
+    it never blocks the HTTP handler; defensive — a TTS failure is logged, not raised.
+    """
+    if data.get("voice_en"):
+        cfg.tts_voices["en"] = str(data["voice_en"])
+    voice = _voice_preset_name(cfg.tts_voices.get("en", ""))
+    line = f"This is the {voice} voice."
+    bus.log(f"playing voice sample: {voice}")
+    try:
+        tts.speak(line, "en")
+    except Exception as exc:  # never let a TTS hiccup kill the worker
+        log.error("voice test error: %s", exc)
+        bus.log(f"voice test error: {exc}", "error")
+    finally:
+        bus.state("idle")
+
+
 def _voice_status(cfg: Config, stt: object | None) -> tuple[bool, str]:
     """Whether the server can actually do GUI wake / push-to-talk, and why not.
 
@@ -1064,23 +1191,33 @@ def _run_browser(
     the server-side loop; otherwise they are reported as disabled (honest UI)."""
     from .webui import WebUI
 
+    # The audio debug instrument defaults ON under --browser (so the GUI EVENT LOG
+    # shows the trace out of the box); an explicit DEBUG_AUDIO env overrides.
+    dbg = _AudioDebug(debug_audio_enabled(cfg, browser=True))
     voice_available, voice_hint = _voice_status(cfg, stt)
     controller = (
-        _WakeController(cfg, brain, tts, gate, stt, speaker_id=speaker_id)
+        _WakeController(cfg, brain, tts, gate, stt, speaker_id=speaker_id, debug=dbg)
         if voice_available and stt is not None
         else None
     )
 
     def on_turn(text: str) -> None:
         # Typed-only from the page in this build -> guest bucket (no clip to embed).
+        dbg.action("turn", chars=len(text))
         _respond(cfg, brain, tts, gate, text)
 
-    def on_action(name: str, _data: dict) -> None:
+    def on_action(name: str, data: dict) -> None:
+        dbg.action(name, **{k: v for k, v in data.items() if k != "action"})
         if name == "reset":
             brain.reset()
             bus.log("conversation reset")
         elif name == "list_voices":
             bus.log("voices: " + ", ".join(VOICE_PRESETS))
+        elif name == "voice_test":
+            # Play a short fixed sample line in the currently-selected voice so the
+            # GUI's "play voice" button works. Server-side TTS in a worker thread so
+            # the HTTP handler never blocks; honours a per-request "voice_en" override.
+            threading.Thread(target=lambda: _voice_test(cfg, tts, data), daemon=True).start()
         elif name == "mic_test":
             # Diagnostic: capture ~1.5s and report a clear verdict. Runs regardless
             # of voice/wake state — it's *most* useful when voice is off (to find
@@ -1400,8 +1537,8 @@ def _run_terminal_modes(
     if cfg.barge_in != "off":
         from .vad import SileroVad
 
-        ptt_vad = SileroVad(cfg.sample_rate)
-    print("Push-to-talk: Enter to start/stop each turn. Ctrl-C to quit.")
+        ptt_vad = SileroVad(cfg.sample_rate, cfg.vad_threshold)
+    print("Push-to-talk: start speaking; it stops on a natural pause. Ctrl-C to quit.")
     while True:
         run_turn(cfg, brain, tts, gate, stt=stt, vad=ptt_vad, speaker_id=speaker_id)
         if args.once:

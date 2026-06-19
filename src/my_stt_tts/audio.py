@@ -79,6 +79,45 @@ def _sd() -> Any:  # noqa: ANN401 — thin lazy accessor
     return sd
 
 
+def resample_to(arr: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Linear-resample float32 mono PCM from ``src_rate`` to ``dst_rate`` (pure).
+
+    Identity when the rates already match (or the input is empty). Dependency-free
+    (``np.interp``), which is good enough for VAD/STT framing — the wake word and
+    parakeet/Silero models expect **16 kHz mono**, and a 48 kHz device stream fed to
+    them un-resampled is heard as garbage (the wake never fires, STT returns
+    nothing). Used to guarantee the audio reaching the models is truly the pipeline
+    rate regardless of what the input device delivered.
+    """
+    arr = np.asarray(arr, dtype=np.float32).ravel()
+    if src_rate == dst_rate or arr.size == 0:
+        return arr
+    n_out = max(1, int(round(arr.size * dst_rate / src_rate)))
+    x_new = np.linspace(0.0, arr.size - 1, n_out)
+    return np.interp(x_new, np.arange(arr.size), arr).astype(np.float32)
+
+
+def reframe(arr: np.ndarray, frame_samples: int) -> list[np.ndarray]:
+    """Split a 1-D float32 array into fixed-size frames, zero-padding the last one.
+
+    Silero VAD accepts **only** an exact chunk size (512 samples at 16 kHz); a
+    differently-sized frame raises inside the TorchScript model. The capture
+    callbacks deliver device-blocksize chunks (often 1024/2048/4096), so this
+    re-chunks a captured block into model-sized frames before VAD. The trailing
+    partial frame is right-padded with zeros so no audio is silently dropped.
+    """
+    arr = np.asarray(arr, dtype=np.float32).ravel()
+    if frame_samples <= 0 or arr.size == 0:
+        return []
+    out: list[np.ndarray] = []
+    for start in range(0, arr.size, frame_samples):
+        chunk = arr[start : start + frame_samples]
+        if chunk.size < frame_samples:
+            chunk = np.concatenate([chunk, np.zeros(frame_samples - chunk.size, dtype=np.float32)])
+        out.append(chunk.astype(np.float32, copy=False))
+    return out
+
+
 def mic_available() -> bool:
     """True when an input (capture) device is usable for mic capture.
 
@@ -119,28 +158,21 @@ class MicTestResult:
     permission: str = "unknown"
 
 
-def mic_permission_status() -> str:
-    """The macOS microphone authorization for this app, WITHOUT capturing audio.
+def mic_permission_status(cfg: Any = None) -> str:
+    """Microphone permission status for this app, WITHOUT capturing audio (per-OS).
 
-    Queries ``AVCaptureDevice.authorizationStatus(for: .audio)`` via PyObjC and maps
-    it to ``authorized`` / ``denied`` / ``notDetermined`` / ``restricted``. The status
-    is per-app (the process inherits its terminal/launcher's grant), so this answers
-    "is System Settings › Privacy & Security › Microphone enabled for this app?".
-    Returns ``unavailable`` off macOS or when the AVFoundation binding (the ``aec``
-    extra) isn't installed — callers then fall back to the capture-based verdict.
+    Delegates to :func:`my_stt_tts.platform.mic_permission_status`, which branches
+    per OS: macOS returns the real TCC grant (``authorized`` / ``denied`` /
+    ``notDetermined`` / ``restricted``); Linux has no per-app permission model so it
+    reports ``n/a`` when a capture device exists (``unavailable`` when none does);
+    Windows reads the system microphone privacy toggle (``authorized`` / ``denied``)
+    or falls back to a device check. Never raises — failures read as ``unavailable``
+    so callers fall back to the capture-based verdict. ``cfg`` (optional) lets a
+    test / cross-host setup pin the platform.
     """
-    try:
-        from AVFoundation import (  # type: ignore[import-not-found]
-            AVCaptureDevice,
-            AVMediaTypeAudio,
-        )
+    from .platform import mic_permission_status as _status
 
-        status = int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
-    except Exception:  # noqa: BLE001 — non-macOS / no pyobjc-AVFoundation / API change
-        return "unavailable"
-    return {0: "notDetermined", 1: "restricted", 2: "denied", 3: "authorized"}.get(
-        status, "unavailable"
-    )
+    return _status(cfg)
 
 
 # Below this peak amplitude (of full-scale 1.0) a capture is treated as "no audio"
@@ -203,7 +235,10 @@ def mic_test_verdict(
                 "No audio yet — macOS hasn't granted mic access; it should prompt on the first "
                 f"capture. If no prompt appears, {_MIC_PERMISSION_HINT}."
             )
-        elif permission == "authorized":
+        elif permission in ("authorized", "n/a"):
+            # Either macOS granted it, or this OS has no per-app permission gate
+            # (Linux/Windows device present) — so a silent capture is a device/level
+            # issue, not a permission one.
             message = (
                 "Permission is granted but no audio — check the selected input device and that "
                 "the microphone isn't muted."
@@ -317,6 +352,134 @@ def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
     from .platform import play_array
 
     play_array(samples, sample_rate, cfg)
+
+
+def _supported_capture_rate(sd: Any, requested: int) -> int:
+    """Return a samplerate the input device will actually open at (≈ ``requested``).
+
+    PortAudio resamples to a requested rate on most backends, but not all — on a
+    host where 16 kHz isn't natively honoured the device opens at its native rate
+    (commonly 48 kHz) and the model gets garbage. This probes ``check_input_settings``
+    for the requested rate and, if that fails, returns the device's
+    ``default_samplerate`` so the caller can capture at the native rate and resample
+    in Python (guaranteeing true 16 kHz reaches the wake/VAD/STT models). Best-effort
+    — falls back to ``requested`` if the probe itself errors.
+    """
+    try:
+        sd.check_input_settings(samplerate=requested, channels=1, dtype="float32")
+        return requested
+    except Exception:  # noqa: BLE001 — device won't open at the requested rate
+        try:
+            dev = sd.query_devices(kind="input")
+            native = int(round(float(dev.get("default_samplerate", requested))))
+            return native or requested
+        except Exception:  # noqa: BLE001 — no device info -> just try the requested rate
+            return requested
+
+
+def capture_stats(samples: np.ndarray, sample_rate: int) -> dict[str, Any]:
+    """Summarise a captured clip for the debug instrument (#samples / dur / rms / peak)."""
+    arr = np.asarray(samples, dtype=np.float32).ravel()
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    rms = float(np.sqrt(np.mean(np.square(arr)))) if arr.size else 0.0
+    return {
+        "sample_rate": int(sample_rate),
+        "samples": int(arr.size),
+        "duration_s": round(arr.size / sample_rate, 3) if sample_rate else 0.0,
+        "rms": round(rms, 4),
+        "peak": round(peak, 4),
+    }
+
+
+def record_until_silence(
+    sample_rate: int,
+    vad: Any,
+    endpointer: Any,
+    *,
+    max_seconds: float,
+    preroll: PreRollBuffer | None = None,
+    frame_samples: int = 512,
+    stop: threading.Event | None = None,
+    on_debug: Any = None,
+) -> np.ndarray:
+    """VAD-driven capture with NO stdin — the server-side push-to-talk recorder.
+
+    The terminal :func:`record_push_to_talk` blocks on ``input()`` (Enter to
+    start/stop); driven from the browser's server-side PTT worker there is no
+    interactive stdin, so it returns an empty clip immediately (the "push-to-talk
+    records nothing" bug). This records hands-free instead: it opens the input
+    device (at the requested rate, or the device-native rate + resample when 16 kHz
+    isn't honoured), **reframes** each captured block to ``frame_samples`` (512 for
+    Silero), drives ``vad.is_speech`` + the ``endpointer`` to end on a natural pause,
+    and resamples the whole clip to ``sample_rate`` so the audio reaching STT is
+    truly 16 kHz mono. Returns an empty array if no speech was detected.
+
+    ``on_debug(stage, **fields)`` (optional) is called with capture/VAD telemetry so
+    the debug instrument can surface where audio is lost; ``stop`` aborts cleanly.
+    """
+    sd = _sd()
+    device_rate = _supported_capture_rate(sd, sample_rate)
+    frames_q: queue.Queue[np.ndarray] = queue.Queue()
+
+    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
+        frames_q.put(indata[:, 0].copy())
+
+    collected: list[np.ndarray] = []  # at sample_rate (post-resample)
+    pending = np.zeros(0, dtype=np.float32)  # buffered, not yet a full VAD frame
+    spoke = False
+    endpointer.reset()
+    if on_debug is not None:
+        on_debug("capture_start", sample_rate=sample_rate, device_rate=device_rate)
+    start = time.monotonic()
+    with sd.InputStream(
+        samplerate=device_rate,
+        channels=1,
+        dtype="float32",
+        blocksize=frame_samples,
+        callback=_callback,
+    ):
+        while time.monotonic() - start < max_seconds:
+            if stop is not None and stop.is_set():
+                break
+            try:
+                block = frames_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            block = resample_to(block, device_rate, sample_rate)
+            collected.append(block)
+            pending = np.concatenate([pending, block])
+            ended = False
+            while pending.size >= frame_samples:
+                frame, pending = pending[:frame_samples], pending[frame_samples:]
+                is_speech = vad.is_speech(frame)
+                spoke = spoke or is_speech
+                if on_debug is not None:
+                    on_debug(
+                        "vad_frame",
+                        is_speech=is_speech,
+                        prob=round(getattr(vad, "last_prob", 0.0), 3),
+                    )
+                if endpointer.update(is_speech):
+                    ended = True
+                    break
+            if ended:
+                break
+
+    if not spoke:
+        if on_debug is not None:
+            on_debug(
+                "no_speech",
+                **capture_stats(
+                    np.concatenate(collected) if collected else np.zeros(0), sample_rate
+                ),
+            )
+        return np.zeros(0, dtype=np.float32)
+    captured = np.concatenate(collected) if collected else np.zeros(0, dtype=np.float32)
+    if preroll is not None:
+        captured = np.concatenate([preroll.get(), captured])
+    if on_debug is not None:
+        on_debug("captured", **capture_stats(captured, sample_rate))
+    return captured
 
 
 def record_push_to_talk(
@@ -624,22 +787,30 @@ def listen_for_wake(
     frame_samples: int = 1280,
     poll_seconds: float = 0.1,
     stop: threading.Event | None = None,
+    on_debug: Any = None,
 ) -> bool:
     """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame.
 
-    Returns ``True`` when the wake word fired, or ``False`` if ``stop`` was set
-    before it fired (so a GUI-driven wake loop can be torn down between frames
-    while it sits idle waiting for the phrase).
+    openWakeWord expects 16 kHz mono, 1280-sample (80 ms) frames. The device may
+    capture at its native rate (commonly 48 kHz) when 16 kHz isn't honoured, so we
+    open at the supported rate, **resample** each block to ``sample_rate``, and
+    **reframe** to exactly ``frame_samples`` before scoring — otherwise the wake
+    model sees a wrong-rate / wrong-size frame and never fires (the reported
+    symptom). Returns ``True`` when the wake word fired, or ``False`` if ``stop`` was
+    set before it fired. ``on_debug`` (optional) is fed the per-evaluation wake
+    max-score + model so the instrument can show why it isn't firing.
     """
     sd = _sd()
+    device_rate = _supported_capture_rate(sd, sample_rate)
     frames_q: queue.Queue[np.ndarray] = queue.Queue()
 
     def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
         frames_q.put(indata[:, 0].copy())
 
     wake.reset()
+    pending = np.zeros(0, dtype=np.float32)
     with sd.InputStream(
-        samplerate=sample_rate,
+        samplerate=device_rate,
         channels=1,
         dtype="float32",
         blocksize=frame_samples,
@@ -649,8 +820,19 @@ def listen_for_wake(
             if stop is not None and stop.is_set():
                 return False
             try:
-                frame = frames_q.get(timeout=poll_seconds)
+                block = frames_q.get(timeout=poll_seconds)
             except queue.Empty:
                 continue
-            if wake.detect(frame):
-                return True
+            pending = np.concatenate([pending, resample_to(block, device_rate, sample_rate)])
+            while pending.size >= frame_samples:
+                frame, pending = pending[:frame_samples], pending[frame_samples:]
+                fired = wake.detect(frame)
+                if on_debug is not None:
+                    on_debug(
+                        "wake_score",
+                        score=round(getattr(wake, "last_score", 0.0), 3),
+                        threshold=getattr(wake, "threshold", 0.5),
+                        model=getattr(wake, "model_name", ""),
+                    )
+                if fired:
+                    return True

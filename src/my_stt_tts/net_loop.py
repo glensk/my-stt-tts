@@ -477,7 +477,7 @@ def run_transport_session(
     if vad is None:
         from .vad import SileroVad
 
-        vad = SileroVad(cfg.sample_rate)
+        vad = SileroVad(cfg.sample_rate, cfg.vad_threshold)
     from .turn import make_turn_analyzer
 
     frame_seconds = 512 / cfg.sample_rate

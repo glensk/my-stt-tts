@@ -242,8 +242,14 @@ class EventBus:
         transcript (G6); the UI can replace it when the final arrives."""
         self.publish({"type": "transcript", "text": text, "partial": partial})
 
-    def response(self, text: str, *, final: bool = False) -> None:
-        self.publish({"type": "response", "text": text, "final": final})
+    def response(self, text: str, *, final: bool = False, model: str = "") -> None:
+        """Publish a response delta. ``model`` (when set) names the active model that
+        produced the reply (e.g. ``"claude-cli / haiku"``) so the page can show an
+        "ASSISTANT · <model>" label; it also rides the ``llm_request`` state detail."""
+        event: dict[str, Any] = {"type": "response", "text": text, "final": final}
+        if model:
+            event["model"] = model
+        self.publish(event)
 
     def wake(self) -> None:
         self.publish({"type": "wake", "fired": True})
@@ -308,6 +314,17 @@ class EventBus:
 
     def log(self, message: str, level: str = "info") -> None:
         self.publish({"type": "log", "level": level, "message": message})
+
+    def debug(self, message: str, **fields: Any) -> None:
+        """Publish a verbose audio-pipeline debug trace (the GUI "debugger").
+
+        DATA priority — high-volume diagnostics the GUI EVENT LOG renders so it is
+        obvious WHERE audio is lost (sample rate / #samples / rms / peak per capture,
+        VAD + endpoint decisions, wake max-score, STT input length + transcript).
+        ``message`` is the human line; ``fields`` carry the structured numbers (e.g.
+        ``sample_rate=16000, samples=24000, rms=0.04``). Only emitted when audio
+        debugging is on (``cfg.debug_audio``), so it is a no-op in normal runs."""
+        self.publish({"type": "debug", "message": message, **fields})
 
 
 # Shared singleton used by the loop and the web UI.

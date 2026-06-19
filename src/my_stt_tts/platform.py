@@ -54,6 +54,107 @@ def is_macos(cfg: Any = None) -> bool:
     return detect_platform(cfg) == MACOS
 
 
+def mic_permission_status(cfg: Any = None) -> str:
+    """Per-OS microphone *permission* status, WITHOUT capturing audio (G8).
+
+    Returns one of ``authorized`` / ``denied`` / ``notDetermined`` / ``restricted``
+    / ``n/a`` / ``unavailable``:
+
+    * **macOS** — the real TCC grant via ``AVCaptureDevice`` (per-app), so the GUI
+      can say whether System Settings › Privacy & Security › Microphone is enabled.
+    * **Linux** — there is no per-app TCC permission model; report ``n/a`` when an
+      input device exists (the OS will let any process open it) and ``unavailable``
+      when no capture device is present at all (a real device check, not a guess).
+    * **Windows** — best-effort read of the system microphone privacy toggle from
+      the registry (``LetAppsAccessMicrophone`` / the per-capability consent value):
+      ``denied`` when the OS switch is off, ``authorized`` when on; falls back to a
+      device check (``n/a`` / ``unavailable``) when the key can't be read cheaply.
+
+    Never raises — any probe failure degrades to ``unavailable`` so the caller can
+    fall back to the capture-based verdict.
+    """
+    plat = detect_platform(cfg)
+    if plat == MACOS:
+        return _macos_mic_permission()
+    if plat == LINUX:
+        return "n/a" if _input_device_present() else "unavailable"
+    # Windows / other.
+    win = _windows_mic_privacy()
+    if win is not None:
+        return win
+    return "n/a" if _input_device_present() else "unavailable"
+
+
+def _macos_mic_permission() -> str:
+    """macOS TCC microphone authorization via AVCaptureDevice (no capture)."""
+    try:
+        from AVFoundation import (  # type: ignore[import-not-found]
+            AVCaptureDevice,
+            AVMediaTypeAudio,
+        )
+
+        status = int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception:  # noqa: BLE001 — non-macOS / no pyobjc-AVFoundation / API change
+        return "unavailable"
+    return {0: "notDetermined", 1: "restricted", 2: "denied", 3: "authorized"}.get(
+        status, "unavailable"
+    )
+
+
+def _input_device_present() -> bool:
+    """True when an input (capture) device is visible (sounddevice / PortAudio).
+
+    Probes ``sounddevice`` directly (not via :mod:`my_stt_tts.audio`) so this module
+    stays free of an import cycle with ``audio`` — the same check ``audio.mic_available``
+    performs: a usable default input, or any device exposing input channels.
+    """
+    try:
+        import sounddevice as sd  # noqa: PLC0415 — lazy, needs PortAudio
+
+        default_in = sd.default.device[0]
+        if default_in is not None and default_in >= 0:
+            return True
+        return any(int(dev.get("max_input_channels", 0)) > 0 for dev in sd.query_devices())
+    except Exception:  # noqa: BLE001 — no sounddevice / no PortAudio / no device
+        return False
+
+
+def _windows_mic_privacy() -> str | None:
+    """Read the Windows microphone privacy toggle, or None if not cheaply readable.
+
+    Checks the per-user consent store first, then the machine policy. ``Allow`` →
+    ``authorized``; ``Deny`` → ``denied``. Returns None on any other OS or when the
+    registry can't be read, so the caller falls back to a device-only check.
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import winreg  # type: ignore[import-not-found]  # Windows-only stdlib
+    except Exception:  # noqa: BLE001 — not Windows
+        return None
+    paths = (
+        (
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager"
+            r"\ConsentStore\microphone",
+        ),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager"
+            r"\ConsentStore\microphone",
+        ),
+    )
+    for root, sub in paths:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "Value")
+        except OSError:
+            continue
+        if isinstance(value, str):
+            return "authorized" if value.lower() == "allow" else "denied"
+    return None
+
+
 # Candidate WAV players per platform, in preference order. The first one found on
 # PATH is used. ``afplay`` is macOS-only; ``aplay`` (ALSA) / ``paplay`` (PulseAudio)
 # are the common Linux CLI players; ``ffplay`` is a cross-platform last resort.

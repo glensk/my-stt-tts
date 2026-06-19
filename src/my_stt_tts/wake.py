@@ -46,6 +46,11 @@ class WakeWord:
         self.threshold = threshold
         self._model: Any = None
         self._broken = False  # set once construction/predict fails unrecoverably
+        # Max wake score from the most recent ``detect`` — surfaced by the debug
+        # instrument so the log shows the per-frame score vs the threshold (so a
+        # never-firing wake word is diagnosable: too high a threshold? bad audio?).
+        self.last_score: float = 0.0
+        self.model_name: str = Path(model_path).stem
 
     @classmethod
     def from_config(cls, cfg: Config) -> WakeWord:
@@ -101,7 +106,9 @@ class WakeWord:
         except Exception as exc:  # noqa: BLE001 — a per-frame predict failure is terminal
             self._broken = True
             raise WakeUnavailable(f"wake model {self.model_path!r} failed to run: {exc}") from exc
-        return any(score >= self.threshold for score in scores.values())
+        values = list(scores.values())
+        self.last_score = float(max(values)) if values else 0.0
+        return self.last_score >= self.threshold
 
     def reset(self) -> None:
         """Clear the detector's internal state between activations."""

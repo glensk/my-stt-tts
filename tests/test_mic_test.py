@@ -102,9 +102,13 @@ def test_mic_test_reports_ok_on_loud_capture() -> None:
 
 def test_mic_test_reports_silent_on_zero_capture() -> None:
     silent = [np.zeros(1280, dtype=np.float32) for _ in range(3)]
+    # Pin the permission so the verdict message is deterministic across OSes: on an
+    # authorized Mac a silent capture reads "granted but no audio" (a device issue);
+    # with no conclusive permission it falls to the generic Privacy & Security hint.
     with (
         patch.object(audio, "_sd", return_value=_fake_sd(silent)),
         patch.object(audio, "mic_available", return_value=True),
+        patch.object(audio, "mic_permission_status", return_value="unavailable"),
     ):
         r = audio.mic_test(16000, seconds=0.0)
     assert r.ok is False
