@@ -1,0 +1,6 @@
+# git-secrets allow-list (regex per line). These are obvious FAKE mock values used
+# in the test suite to exercise the key-gated cloud adapters — never real keys.
+# See tests/test_registry.py (G1) and tests/test_memory.py (G7).
+api_key="(dg|dg-key|el|el-key|c|c-key|key|test|fake)[A-Za-z0-9-]*"
+api_key=None
+deepgram_api_key|elevenlabs_api_key|cartesia_api_key

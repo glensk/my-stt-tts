@@ -420,18 +420,12 @@ class TTSRouter:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self._cloud: CloudTTS | None = None
-        if getattr(cfg, "tts_backend", "local") == "cloud":
-            cloud = CloudTTS(
-                cfg.tts_cloud_model,
-                voice=cfg.tts_cloud_voice,
-                api_key=cfg.tts_cloud_api_key,
-                base_url=cfg.tts_cloud_base_url,
-            )
-            if cloud.available():
-                self._cloud = cloud
-            else:
-                log.info("cloud TTS requested but no API key set; using local Piper / say.")
+        # Cloud renderer (any backend exposing ``render(text) -> (pcm, sr)``):
+        # OpenAI/ElevenLabs/Cartesia, selected by ``cfg.tts_backend`` via the
+        # registry (G1). None => local Piper / ``say`` (key-gated graceful fallback).
+        from .registry import select_tts_backend
+
+        self._cloud: Any = select_tts_backend(cfg)
 
     def speak(self, text: str, lang: str | None = None) -> None:
         """Synthesize ``text`` and play it, blocking until done."""

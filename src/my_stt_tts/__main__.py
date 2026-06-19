@@ -34,7 +34,9 @@ from .config import (
     BARGE_IN_MODES,
     BRAIN_PRESETS,
     DENOISER_MODES,
+    STT_BACKENDS,
     TRANSPORT_MODES,
+    TTS_BACKENDS,
     TURN_ANALYZERS,
     Config,
     ConfigError,
@@ -86,7 +88,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
         f"  length-scale {cfg.tts_length_scale}",
         f"  stt        {blue}{cfg.stt_model}{reset}  streaming {cfg.stt_streaming}"
-        f"  window {cfg.stt_window_s}s  backend {cfg.stt_backend}",
+        f"  window {cfg.stt_window_s}s  backend {blue}{cfg.stt_backend}{reset}"
+        f"  platform {cfg.platform}  playback {cfg.playback_backend}",
         f"  transport  {blue}{cfg.transport}{reset}"
         f"  {cfg.transport_host}:{cfg.transport_port}"
         f"  tools {cfg.tools_enabled}  tts-backend {cfg.tts_backend}"
@@ -201,6 +204,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "default-safe) | rnnoise (needs the denoiser extra; falls back to spectral).",
     )
     parser.add_argument(
+        "--stt-backend",
+        dest="stt_backend",
+        choices=STT_BACKENDS,
+        help="STT backend (G1/G8): local (parakeet-mlx) | whispercpp | faster-whisper "
+        "(cross-platform) | cloud/openai | deepgram. Cloud is key-gated (falls back to local).",
+    )
+    parser.add_argument(
+        "--tts-backend",
+        dest="tts_backend",
+        choices=TTS_BACKENDS,
+        help="TTS backend (G1): local (Piper/say) | cloud/openai | elevenlabs | cartesia. "
+        "Cloud is key-gated (falls back to local Piper / say).",
+    )
+    parser.add_argument(
         "--no-tts-streaming",
         dest="tts_streaming",
         action="store_false",
@@ -264,6 +281,8 @@ _CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("transport_port", "transport_port"),
     ("transport_token", "transport_token"),
     ("denoiser", "denoiser"),
+    ("stt_backend", "stt_backend"),
+    ("tts_backend", "tts_backend"),
 )
 
 

@@ -35,16 +35,23 @@ TRANSPORT_MODES = ("local", "websocket", "webrtc")
 #   rnnoise   — RNNoise via an optional wheel; falls back to spectral if missing
 DENOISER_MODES = ("off", "spectral", "rnnoise")
 
-# STT backend selection (R2-7). Local-first; cloud is opt-in and needs an API key.
-#   local — on-device parakeet-mlx (default)
-#   cloud — an OpenAI-compatible transcription endpoint (OpenAI / Deepgram-compat)
-STT_BACKENDS = ("local", "cloud")
+# STT backend selection (R2-7 / G1). Local-first; cloud backends are opt-in and
+# key-gated (graceful fallback to local). Names are resolved by the backend
+# registry (registry.py); validation cross-checks against the registered set.
+#   local          — on-device parakeet-mlx (default, Apple Silicon)
+#   whispercpp     — whisper.cpp via pywhispercpp (cross-platform; G8 off-Mac brain)
+#   faster-whisper — faster-whisper / CTranslate2 (Linux CPU/GPU; G8 off-Mac brain)
+#   cloud / openai — an OpenAI-compatible transcription endpoint
+#   deepgram       — Deepgram streaming STT (real adapter; key-gated)
+STT_BACKENDS = ("local", "whispercpp", "faster-whisper", "cloud", "openai", "deepgram")
 
-# TTS backend selection (R2-7). Local-first; cloud is opt-in (e.g. a high-quality
-# cloud German voice, since local German TTS is the weak spot).
-#   local — Piper / macOS say (default)
-#   cloud — an OpenAI-compatible speech endpoint (e.g. OpenAI TTS)
-TTS_BACKENDS = ("local", "cloud")
+# TTS backend selection (R2-7 / G1). Local-first; cloud backends are opt-in and
+# key-gated (e.g. a high-quality cloud German voice, the local weak spot).
+#   local            — Piper / macOS say (default)
+#   cloud / openai   — an OpenAI-compatible speech endpoint (e.g. OpenAI TTS)
+#   elevenlabs       — ElevenLabs neural TTS (real adapter; key-gated)
+#   cartesia         — Cartesia Sonic neural TTS (real adapter; key-gated)
+TTS_BACKENDS = ("local", "cloud", "openai", "elevenlabs", "cartesia")
 
 # Barge-in safety modes (see Config.barge_in). Without acoustic echo cancellation
 # (AEC) an open speaker bleeds into the mic, so interruption is opt-in:
@@ -283,6 +290,33 @@ class Config:
     tts_cloud_base_url: str | None = None
     tts_cloud_api_key: str | None = None
 
+    # --- Real provider adapters (G1): Deepgram STT, ElevenLabs/Cartesia TTS.
+    # Each is key-gated and selected via stt_backend/tts_backend; a missing key
+    # degrades gracefully to the local backend (registry.py). ---
+    deepgram_model: str = "nova-3"
+    deepgram_api_key: str | None = None
+    deepgram_language: str | None = None  # None => Deepgram auto-detects
+    elevenlabs_model: str = "eleven_multilingual_v2"  # DE/FR/EN
+    elevenlabs_voice_id: str = "Rachel"
+    elevenlabs_api_key: str | None = None
+    cartesia_model: str = "sonic-2"
+    cartesia_voice_id: str = ""  # required for Cartesia (available() is false without it)
+    cartesia_api_key: str | None = None
+
+    # --- Cross-platform / off-Mac brain (G8): a Linux box can be the central brain
+    # with Mac/ESP32 satellites. ``platform`` auto-detects the OS; ``playback`` and
+    # ``aec`` seams pick a native path. macOS path is unchanged when auto-detected. ---
+    platform: str = "auto"  # auto | macos | linux
+    playback_backend: str = "auto"  # auto | sounddevice | aplay (Linux) | afplay (macOS)
+    # Non-MLX STT model id for the whispercpp / faster-whisper cross-platform backends.
+    whispercpp_model: str = "large-v3-turbo"
+    faster_whisper_compute: str = "int8"  # int8 | int8_float16 | float16 | float32
+
+    # --- Per-speaker persistent memory (G7): cross-session recall keyed by the
+    # enrolled speaker. Disabled (in-memory only) until a store path is set. ---
+    memory_store: str | None = None  # path to the SQLite/JSON store; None => off
+    memory_max_turns: int = 40  # per-speaker history cap loaded into context
+
     # --- Speech-to-speech / realtime LLM (R3-5): bypass the STT->LLM->TTS cascade.
     # ``brain=realtime`` streams mic audio to a realtime speech-to-speech endpoint
     # (OpenAI Realtime over WebSocket) and plays the returned audio back. Key-gated:
@@ -356,6 +390,20 @@ class Config:
             tts_cloud_voice=env.get("TTS_CLOUD_VOICE", "alloy"),
             tts_cloud_base_url=env.get("TTS_CLOUD_BASE_URL") or None,
             tts_cloud_api_key=env.get("TTS_CLOUD_API_KEY") or env.get("OPENAI_API_KEY") or None,
+            deepgram_model=env.get("DEEPGRAM_MODEL", "nova-3"),
+            deepgram_api_key=env.get("DEEPGRAM_API_KEY") or None,
+            deepgram_language=env.get("DEEPGRAM_LANGUAGE") or None,
+            elevenlabs_model=env.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"),
+            elevenlabs_voice_id=env.get("ELEVENLABS_VOICE_ID", "Rachel"),
+            elevenlabs_api_key=env.get("ELEVENLABS_API_KEY") or None,
+            cartesia_model=env.get("CARTESIA_MODEL", "sonic-2"),
+            cartesia_voice_id=env.get("CARTESIA_VOICE_ID", ""),
+            cartesia_api_key=env.get("CARTESIA_API_KEY") or None,
+            platform=env.get("PLATFORM", "auto"),
+            playback_backend=env.get("PLAYBACK_BACKEND", "auto"),
+            whispercpp_model=env.get("WHISPERCPP_MODEL", "large-v3-turbo"),
+            faster_whisper_compute=env.get("FASTER_WHISPER_COMPUTE", "int8"),
+            memory_store=env.get("MEMORY_STORE") or None,
             brain_mode=env.get("BRAIN_MODE", "cascade"),
             realtime_model=env.get("REALTIME_MODEL", "gpt-4o-realtime-preview"),
             realtime_url=env.get("REALTIME_URL", "wss://api.openai.com/v1/realtime"),
@@ -401,6 +449,8 @@ class Config:
             cfg.tts_stream_frame = int(env["TTS_STREAM_FRAME"])
         if env.get("DENOISER_STRENGTH"):
             cfg.denoiser_strength = float(env["DENOISER_STRENGTH"])
+        if env.get("MEMORY_MAX_TURNS"):
+            cfg.memory_max_turns = int(env["MEMORY_MAX_TURNS"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -467,10 +517,16 @@ class Config:
             errors.append(f"transport_port must be in (0, 65535]; got {self.transport_port}")
         if self.tools_max_iterations <= 0:
             errors.append(f"tools_max_iterations must be > 0; got {self.tools_max_iterations}")
-        if self.stt_backend not in STT_BACKENDS:
-            errors.append(f"stt_backend must be one of {STT_BACKENDS}; got {self.stt_backend!r}")
-        if self.tts_backend not in TTS_BACKENDS:
-            errors.append(f"tts_backend must be one of {TTS_BACKENDS}; got {self.tts_backend!r}")
+        self._validate_backends(errors)
+        if self.platform not in ("auto", "macos", "linux"):
+            errors.append(f"platform must be auto|macos|linux; got {self.platform!r}")
+        if self.playback_backend not in ("auto", "sounddevice", "aplay", "afplay"):
+            errors.append(
+                "playback_backend must be auto|sounddevice|aplay|afplay; "
+                f"got {self.playback_backend!r}"
+            )
+        if self.memory_max_turns <= 0:
+            errors.append(f"memory_max_turns must be > 0; got {self.memory_max_turns}")
         if self.denoiser not in DENOISER_MODES:
             errors.append(f"denoiser must be one of {DENOISER_MODES}; got {self.denoiser!r}")
         if self.denoiser_strength < 0:
@@ -490,3 +546,23 @@ class Config:
             errors.append(f"telephony_port must be in (0, 65535]; got {self.telephony_port}")
         if errors:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(errors))
+
+    def _validate_backends(self, errors: list[str]) -> None:
+        """Cross-check stt/tts backend names against the registered set (G1).
+
+        Prefers the live registry's registered names (so a newly registered backend
+        validates without a config edit); falls back to the static tuples if the
+        registry can't be imported (keeps validate() dependency-free in isolation).
+        """
+        try:
+            from .registry import globals_reg
+
+            reg = globals_reg()
+            stt_names: tuple[str, ...] = reg.names("stt")
+            tts_names: tuple[str, ...] = (*reg.names("tts"), "local")
+        except Exception:  # registry import problem -> use the documented tuples
+            stt_names, tts_names = STT_BACKENDS, TTS_BACKENDS
+        if self.stt_backend not in stt_names:
+            errors.append(f"stt_backend must be one of {stt_names}; got {self.stt_backend!r}")
+        if self.tts_backend not in tts_names:
+            errors.append(f"tts_backend must be one of {tts_names}; got {self.tts_backend!r}")

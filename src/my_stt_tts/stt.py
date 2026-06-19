@@ -320,28 +320,32 @@ class CloudTranscriber:
 
 
 def make_transcriber(cfg: Any) -> Transcriber:
-    """Select the STT engine from config (R2-7): local-first, cloud when usable.
+    """Select the STT engine from config via the backend registry (G1, local-first).
 
-    ``stt_backend=cloud`` selects :class:`CloudTranscriber` *only* when it has an
-    API key; otherwise (and by default) the on-device :class:`ParakeetSTT` is used.
+    ``cfg.stt_backend`` names a registered backend (``local`` / ``whispercpp`` /
+    ``faster-whisper`` / ``cloud`` / ``openai`` / ``deepgram`` …). Cloud backends
+    are key-gated: a selected-but-unusable cloud backend gracefully falls back to
+    the local on-device :class:`ParakeetSTT`, so a missing key never hard-fails.
     """
-    if getattr(cfg, "stt_backend", "local") == "cloud":
-        cloud = CloudTranscriber(
-            cfg.stt_cloud_model,
-            api_key=cfg.stt_cloud_api_key,
-            base_url=cfg.stt_cloud_base_url,
-        )
-        if cloud.available():
-            return cloud
-        log.info("cloud STT requested but no API key set; using local parakeet-mlx.")
-    return ParakeetSTT(cfg.stt_model)
+    from .registry import select_transcriber
+
+    return select_transcriber(cfg)
 
 
 class WhisperCppSTT:
-    """Alternate backend: whisper.cpp via ``pywhispercpp`` (Metal/CoreML)."""
+    """Cross-platform backend: whisper.cpp via ``pywhispercpp`` (G8).
 
-    def __init__(self, model: str = "large-v3-turbo") -> None:
+    ``pywhispercpp`` bundles whisper.cpp's C++ runtime as a wheel (Metal/CoreML on
+    Apple Silicon, CPU/CUDA elsewhere), so the central "brain" can run STT on a
+    Linux box without MLX — the cross-platform fallback for the parakeet-mlx
+    primary, which is Apple-Silicon-only. The model is lazy-loaded from the
+    ``whispercpp`` extra; multilingual whisper returns a detected language per
+    segment, surfaced as :attr:`STTResult.language`.
+    """
+
+    def __init__(self, model: str = "large-v3-turbo", *, language: str | None = None) -> None:
         self.model_id = model
+        self.language = language  # None => auto-detect (multilingual)
         self._model: Any = None
 
     def _ensure(self) -> None:
@@ -351,7 +355,57 @@ class WhisperCppSTT:
             self._model = Model(self.model_id)
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> STTResult:
+        """Transcribe a float32 mono clip; reads back a detected language if exposed."""
         self._ensure()
-        segments = self._model.transcribe(np.asarray(audio, dtype=np.float32))
-        text = " ".join(seg.text for seg in segments).strip()
-        return STTResult(text=text, language=None)
+        kwargs: dict[str, Any] = {}
+        if self.language:
+            kwargs["language"] = self.language
+        segments = self._model.transcribe(np.asarray(audio, dtype=np.float32), **kwargs)
+        seg_list = list(segments)
+        text = " ".join(getattr(seg, "text", "") for seg in seg_list).strip()
+        # whisper.cpp exposes the detected language on the model after a decode.
+        language = self.language or getattr(self._model, "detected_language", None)
+        return STTResult(text=text, language=language)
+
+
+class FasterWhisperSTT:
+    """Cross-platform backend: faster-whisper (CTranslate2) for Linux/CPU/CUDA (G8).
+
+    faster-whisper runs the Whisper models on the CTranslate2 engine — fast on a
+    Linux CPU or NVIDIA GPU, so a non-Mac brain host has a strong multilingual STT
+    without MLX. (On a Mac it is CPU-only and slower than parakeet-mlx, so it is an
+    *off-Mac* option, not the macOS default.) The model is lazy-loaded from the
+    ``faster-whisper`` wheel; it returns segments plus a detected language.
+    """
+
+    def __init__(
+        self,
+        model: str = "large-v3-turbo",
+        *,
+        device: str = "auto",
+        compute_type: str = "int8",
+        language: str | None = None,
+    ) -> None:
+        self.model_id = model
+        self.device = device
+        self.compute_type = compute_type
+        self.language = language
+        self._model: Any = None
+
+    def _ensure(self) -> None:
+        if self._model is None:
+            from faster_whisper import WhisperModel
+
+            self._model = WhisperModel(
+                self.model_id, device=self.device, compute_type=self.compute_type
+            )
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> STTResult:
+        """Transcribe a float32 mono clip; returns text + the detected language."""
+        self._ensure()
+        segments, info = self._model.transcribe(
+            np.asarray(audio, dtype=np.float32), language=self.language
+        )
+        text = " ".join(getattr(seg, "text", "") for seg in segments).strip()
+        language = self.language or getattr(info, "language", None)
+        return STTResult(text=text, language=language)
