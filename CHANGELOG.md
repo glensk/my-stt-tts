@@ -6,7 +6,27 @@ may still change.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wake word never fired (`score≈0.001` forever).** `WakeWord.detect` fed
+  openWakeWord float32 `[-1, 1]` samples, but `openwakeword==0.4.0` requires int16
+  PCM — its `AudioFeatures` re-casts the audio to `int16`, silently truncating a
+  float signal to zeros so the model only ever saw silence. The frame is now
+  converted to int16 PCM at the model boundary (`wake.to_int16_pcm`). Verified
+  against the real `wakewords/maziko.onnx`: "maziko" now scores ~0.8 (fires) while
+  silence/other words stay at the ~0.001 floor.
+
 ### Added
+
+- **Wake detection cues + diagnostics**: a distinct `chime_wake` earcon played on
+  detection (plus the existing `bus.wake()` GUI flash, once per detection);
+  per-turn **source tagging** on `bus.transcript(..., source=…)` (`typed` /
+  `push_to_talk` / `wake` / `live_audio`) threaded through the local + transport
+  loops so the GUI can label the user bubble; a **mic record-and-replay**
+  diagnostic (`mic_record_replay` action + `audio.record_fixed`) that records ~3 s
+  and plays it back so the user hears their own mic; and a **"mic confirmed
+  working"** signal (`mic_result(ok=True)` on any successful wake/PTT/replay
+  capture) so the GUI can hide the macOS permission hint once audio is confirmed.
 
 - **Network audio transport (R2-5)**: an `AudioTransport` seam (`transport.py`) —
   `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a `websockets`
