@@ -20,9 +20,12 @@ support. On-device STT/TTS; only transcribed text ever leaves the machine.
 > sliding-window streaming STT, and **acoustic echo cancellation** (`--aec`:
 > macOS hardware `VoiceProcessingIO`, or a software NLMS filter) so barge-in
 > works on open speakers, not just headphones. Now also **network audio transport**
-> (`--transport websocket`) for whole-house satellites + real browser audio, and
-> **in-conversation tool/function calling** (the model calls tools mid-reply) with
-> an **optional cloud STT/TTS backend** (local-first). Design + roadmap: **[`PLAN.md`](PLAN.md)**.
+> (`--transport websocket` / **`webrtc`**) for whole-house satellites + real browser
+> audio — with **full-duplex barge-in over the wire**, **streamed low-latency TTS**
+> (first audio in ~200–300 ms), **hardware-AEC capture** (macOS VoiceProcessingIO),
+> and an optional **pre-VAD denoiser** — plus **in-conversation tool/function calling**
+> (the model calls tools mid-reply) with an **optional cloud STT/TTS backend**
+> (local-first). Design + roadmap: **[`PLAN.md`](PLAN.md)**.
 
 **🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
 **🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)** — the live `--browser` GUI (in demo mode).
@@ -58,8 +61,8 @@ flowchart LR
 | Text-to-speech | Piper (DE/FR/EN) · Kokoro (EN) · `say` fallback | Only local engine strong in German *and* fast on M1 |
 | Confirmations  | short **chimes**, not spoken phrases          | Spoken stage cues add ~6 s/query; chimes are language-neutral |
 | Turn-taking    | push-to-talk → Silero VAD → Smart Turn v3     | Smart Turn v3 prosody is the **default** (`--turn-analyzer`, auto-downloaded on first run); falls back to a silence timer if the model/runtime is unavailable |
-| Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate **+ acoustic interruption predictor**; **AEC** (`--aec`) removes the bot's own voice so it works on open speakers |
-| Transport      | local sound card · **WebSocket** (`--transport`) | `AudioTransport` seam: mic/TTS PCM over the wire for whole-house satellites + real browser audio (R2-5) |
+| Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate **+ acoustic interruption predictor**; **AEC** (`--aec`) removes the bot's own voice (software NLMS **or macOS hardware-AEC capture**, R3-4); optional **pre-VAD denoiser** (`--denoiser`, R3-6) |
+| Transport      | local · **WebSocket** · **WebRTC** (`--transport`) | `AudioTransport` seam: PCM/Opus over the wire for satellites + browser, **full-duplex barge-in over the wire**, **streamed clause-level TTS** (R2-5/R3-1/R3-2/R3-3) |
 | Tools          | in-conversation **function calling** (`tools.py`) | Model calls tools mid-reply (get_time, calculator, home_control); Anthropic + OpenAI round-trip; legacy "agent, …" still works (R2-7) |
 
 ## LLM provider
@@ -93,12 +96,55 @@ python -m my_stt_tts.satellite ws://192.168.1.10:8770          # --token <secret
 ```
 
 **Browser audio.** With `--browser --browser-audio`, the GUI's *Live Audio* button
-captures your real mic via `getUserMedia`, streams 16 kHz PCM to a **same-origin**
-WebSocket (`/ws/audio`, so the page's strict CSP `connect-src 'self'` allows it),
-and plays the TTS PCM streamed back — the page now carries real audio, not just
-state. Without `--browser-audio` the GUI stays state/transcript only (and falls
-back to the scripted demo offline). The WebSocket framing is hand-rolled on the
-stdlib `http.server` (`ws_frame.py`) so the GUI keeps zero runtime web deps.
+first tries a **real WebRTC `RTCPeerConnection`** (R3-1) with
+`getUserMedia({audio:{echoCancellation:true}})` — Opus, a jitter buffer, and ICE NAT
+traversal, signaled by POSTing the SDP offer to a same-origin `/api/webrtc/offer`
+endpoint the server answers via **aiortc**. If WebRTC is unavailable (no `webrtc`
+extra, blocked ICE) it **falls back** to the original raw-PCM **same-origin
+WebSocket** (`/ws/audio`, so the page's strict CSP `connect-src 'self'` allows it,
+hand-rolled on the stdlib `http.server` via `ws_frame.py`). Without `--browser-audio`
+the GUI stays state/transcript only (and falls back to the scripted demo offline).
+
+**Round-3 transport/audio robustness:**
+
+- **WebRTC (`--transport webrtc`, R3-1)** — a third `AudioTransport` (`WebRtcTransport`)
+  backed by **aiortc**: real `RTCPeerConnection`, **Opus**, a jitter buffer, RTP/SRTP,
+  and **ICE (STUN/TURN) NAT traversal**, so a remote browser/satellite over the open
+  internet is robust where the raw-PCM WebSocket was fragile. Needs the `webrtc` extra
+  (`uv sync --extra webrtc`); the WS PCM path stays as a fallback.
+- **Full-duplex barge-in over the wire (R3-2)** — satellites and browser users can now
+  **interrupt the reply**, not just local users: the inbound mic stays live during TTS
+  playout and the same VAD + false-interrupt gate + AEC + acoustic-predictor machinery
+  runs on every frame; a confirmed interruption cancels the outbound TTS **and** the
+  in-flight LLM stream and hands the captured audio to the next turn.
+- **Streamed low-latency TTS (R3-3)** — the reply is synthesized + played **clause by
+  clause** (a `sounddevice` `OutputStream` locally, the transport sink on the wire), so
+  time-to-first-audio is the first clause (~200–300 ms) instead of the whole sentence.
+  Cancel semantics are preserved (it still aborts mid-utterance on barge-in).
+
+## Hardware AEC capture & noise suppression (R3-4 / R3-6)
+
+**Hardware-AEC capture (R3-4, closes G3).** With `--aec voiceprocessing` (or `auto`)
+and `AEC_HW_CAPTURE=true` (the default), the always-on **`--wake`** loop captures mic
+audio **through** the macOS `AVAudioEngine` **VoiceProcessingIO** input node via PyObjC
+— it enables voice processing, installs a tap on the input bus, and bridges the
+**already-echo-cancelled** float32 PCM (channel 0, resampled 48 kHz → 16 kHz) into
+Python, so the software NLMS filter is bypassed entirely (the OS HAL did the
+cancellation, the same path FaceTime uses). This is verified working on this arm64
+machine: the tap delivers OS-cancelled buffers to numpy. **What falls back:** if PyObjC
+/ VoiceProcessingIO is unavailable or the engine fails to start, capture reverts to
+`sounddevice` + the in-Python NLMS canceller (R2-1). The push-to-talk (Enter-driven)
+loop still uses `sounddevice`; HW capture is wired into the `--wake` capture + barge-in
+path (the home case). Needs the `aec` extra.
+
+**Pre-VAD denoiser (R3-6).** `--denoiser spectral` (or `DENOISER=spectral`) inserts a
+noise-suppression stage on mic frames **after** echo cancellation and **before** VAD/STT
+— a pure-numpy **spectral-gate** denoiser (no extra deps, always available) that lifts
+the signal-to-noise ratio of steady-state noise to raise STT accuracy and cut false
+barge-ins in noisy rooms. `--denoiser rnnoise` uses an **RNNoise** wheel when present
+and **falls back to spectral** otherwise (on this arm64 setup the RNNoise wheel's
+transitive deps conflict with the WebRTC `av` build, so spectral is the working
+default).
 
 ## In-conversation tools + cloud backends (R2-7)
 
@@ -130,9 +176,10 @@ export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .e
 ./mstt                              # push-to-talk loop (runs the venv directly; --debug for cues)
 
 # Natural conversation: interrupt the assistant mid-sentence on OPEN speakers
-# (AEC removes the bot's own voice), prosodic end-of-turn (default), and partial
-# transcripts as you speak:
-./mstt --wake --barge-in always --aec auto --stt-streaming
+# (AEC removes the bot's own voice — hardware VoiceProcessingIO capture when
+# available), prosodic end-of-turn (default), streamed low-latency TTS, a pre-VAD
+# denoiser for noisy rooms, and partial transcripts as you speak:
+./mstt --wake --barge-in always --aec auto --denoiser spectral --stt-streaming
 
 # No API key? Stripped + isolated Claude CLI (no API cost, keeps a session, ~2s/turn):
 ./mstt --brain haiku-sub --type     # typed input -> spoken replies

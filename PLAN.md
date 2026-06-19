@@ -11,6 +11,59 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — round-3 transport/audio robustness (R3-1/2/3/4/6)
+
+Closed the five gaps a round-3 judge ranked `pipecat` above us on (transport/audio
+robustness). All wired + tested; no regression to the 146 baseline.
+
+- **R3-2 — Full-duplex barge-in over the NETWORK transport** (`net_loop.py`):
+  `respond_over_transport` is now duplex when `barge_in` is on — a shared
+  `_MicSource` keeps the inbound mic live during TTS playout and a `_TransportBargeIn`
+  monitor runs the same VAD + `InterruptGate` + AEC + `InterruptPredictor` chain as
+  the local loop on every frame. A confirmed interruption cancels the outbound TTS
+  **and** the in-flight LLM stream (`stream.close()` + `commit_spoken`) and the
+  captured audio seeds the next turn (chained in `run_transport_session`). So
+  satellite/browser users can interrupt, not just the local user.
+- **R3-3 — Streamed, low-latency TTS playout** (`tts.py`, `text.py`): a `ClauseChunker`
+  - `TTSRouter.synth_pcm_stream` (per-clause synthesis) + `StreamingPlayback` that
+  pipes PCM into a `sounddevice` `OutputStream` as each clause renders, so first audio
+  is the first clause (~200–300 ms), not the whole sentence. `start_speaking_stream`
+  returns the same cancel surface as `Playback` so `monitor_during_playback` /
+  barge-in are unchanged. The network sink streams clause PCM too. `tts_streaming`
+  config + `--no-tts-streaming`.
+- **R3-4 — macOS hardware-AEC capture** (`aec.py` `VoiceProcessingCapture`): captures
+  THROUGH the `AVAudioEngine` VoiceProcessingIO node (PyObjC) — enables VP, installs a
+  tap on the input bus, bridges the already-echo-cancelled channel-0 float32 PCM
+  (48 kHz → pipeline rate) into Python. Wired into the `--wake` capture + barge-in
+  path via a `source=` arg on `audio.record_turn` / `monitor_during_playback`; the SW
+  NLMS is bypassed when HW capture is live. **Verified on arm64**: the tap delivers
+  OS-cancelled buffers to numpy. Falls back to sounddevice + NLMS if PyObjC/VP is
+  unavailable. `aec_hw_capture` config.
+- **R3-1 — True WebRTC transport** (`webrtc_transport.py`): a third `AudioTransport`
+  (`WebRtcTransport`) backed by **aiortc** — real `RTCPeerConnection`, **Opus**, jitter
+  buffer, RTP/SRTP, ICE NAT traversal. The queue bridge is pure (numpy + queues, tested
+  with fakes); the SDP signaling (`negotiate_answer`) is tested with a fake peer; the
+  aiortc media plumbing (`_make_pcm_track`, `run_webrtc_offer`) is isolated + lazy.
+  Verified end-to-end with two **real** aiortc peers (Opus negotiated, tone decoded to
+  16 kHz frames). Browser path uses a real `RTCPeerConnection` +
+  `getUserMedia({echoCancellation:true})`, signaled via `/api/webrtc/offer`; the WS PCM
+  path stays as a fallback (CSP/demo intact). `transport=webrtc` + `--transport webrtc`.
+- **R3-6 — Drop-in noise suppression** (`denoise.py`): a `Denoiser` seam +
+  `SpectralGateDenoiser` (pure-numpy spectral gate, always available, raises SNR on
+  steady noise) + `RnnoiseDenoiser` (optional wheel, graceful fallback) + null. Applied
+  to mic frames AFTER AEC and BEFORE VAD/STT in both loops. `denoiser` config +
+  `--denoiser`.
+
+**170 tests passing** (146 baseline + 24 in `tests/test_round3.py`); lint-clean
+(ruff/mypy/pylint at parity with the existing baseline). Optional extras added:
+`webrtc` → aiortc (installs + imports on arm64), `denoiser` → pyrnnoise (resolves in
+the lock but is **broken at runtime** on this arm64 setup — `audiolab`/`av.option`
+conflict — so the pure-numpy `spectral` denoiser is the working default and `rnnoise`
+falls back to it). Caveats: HW-AEC capture is wired into the `--wake` path only (PTT
+stays on sounddevice); WebRTC ICE/STUN, the mic, models, and providers are all faked in
+tests (no real network/GPU/device); WebRTC is browser-first (`--transport webrtc`
+reuses the GUI signaling server).
+
 ## Build status (2026-06-19) — round-2 conversation gaps (R2-1/2/3/4/6)
 
 **Phase 7 round 2 — closing the pipecat gaps (this session):**
@@ -328,7 +381,11 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 - [x] **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` seam + macOS hardware `VoiceProcessingEchoCanceller` (PyObjC `aec` extra) + pure-numpy `NlmsEchoCanceller` (~19 dB ERLE) + null. `Playback` carries the synthesized PCM reference; the monitor loop cancels per-frame and relaxes the energy floor when AEC is active. `aec_mode` config + `--aec`.
 - [x] **R2-3 — Acoustic interruption prediction** (`interrupt.InterruptPredictor`): a 3rd, purely-acoustic barge-in guard (sustained voiced energy + spectral flux + ZCR) composed with the gate so a real interruption wins before two words transcribe while backchannels are talked through. `interrupt_predict*` config + `--no-interrupt-predict`.
 - [x] **R2-6 — Robust interrupt plumbing**: interruption formalised as bus events (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`); captured barge-in audio fed straight into the streaming transcriber (`feed_clip`) — no from-scratch re-transcribe.
-- [ ] **G3 — full hardware-AEC path end-to-end**: route the `VoiceProcessingIO`-cancelled PCM into the Python capture path (today capture is `sounddevice`; software NLMS does the in-Python cancellation). **Partially done (R2-1).**
+- [x] **G3 / R3-4 — full hardware-AEC path end-to-end**: `aec.VoiceProcessingCapture` captures THROUGH the `AVAudioEngine` VoiceProcessingIO node (PyObjC tap) so already-OS-cancelled PCM reaches Python (48 kHz → pipeline rate); wired into the `--wake` capture + barge-in path (`source=` on `record_turn`/`monitor_during_playback`), SW NLMS bypassed when HW capture is live. Verified on arm64; falls back to sounddevice+NLMS otherwise. `aec_hw_capture` config.
+- [x] **R3-1 — true WebRTC transport**: `webrtc_transport.WebRtcTransport` (aiortc) — real `RTCPeerConnection`, Opus, jitter buffer, ICE NAT traversal; browser uses a real `RTCPeerConnection` + `getUserMedia({echoCancellation:true})` signaled via `/api/webrtc/offer`, WS PCM fallback intact. `transport=webrtc` + the `webrtc` extra.
+- [x] **R3-2 — full-duplex barge-in over the network transport**: `net_loop.respond_over_transport` keeps the mic live during TTS playout (`_MicSource` + `_TransportBargeIn`) and cancels TTS + the LLM stream on a confirmed interruption, chaining the captured audio to the next turn.
+- [x] **R3-3 — streamed low-latency TTS**: clause-chunked synthesis (`ClauseChunker`/`synth_pcm_stream`) piped into a `sounddevice` `OutputStream` (`StreamingPlayback`) / the transport sink; first audio in ~200–300 ms, cancel semantics preserved. `tts_streaming` config.
+- [x] **R3-6 — pre-VAD noise suppression**: `denoise.SpectralGateDenoiser` (pure-numpy, default) + optional RNNoise (graceful fallback), applied after AEC and before VAD/STT in both loops. `denoiser` config.
 - [x] **G7 / R2-5 — network audio transport**: `AudioTransport` seam (`transport.py`) with `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a real `websockets` server (`ws_transport.serve_websocket`/`WsSession`, the `transport` extra) bridges remote clients into the pipeline via `net_loop.run_transport_session`; a `satellite.py` client streams mic up + plays TTS back; the **browser GUI carries real audio** (`getUserMedia` → 16 kHz PCM over a same-origin `/ws/audio` WebSocket, TTS PCM streamed back), implemented on the stdlib `http.server` with a hand-rolled RFC-6455 codec (`ws_frame.py`). `transport`/`transport_*` config + `--transport`/`--browser-audio`.
 - [x] **R2-7 — In-conversation tool calling + cloud backends**: `tools.ToolRegistry` (Anthropic + OpenAI schemas) + the full tool-use round-trip in `Brain.stream` for both providers (request → execute → feed result back → stream the answer); example tools `get_time`/`calculator`/`home_control` (→ agent/HA dispatch); legacy "agent, …" still works. Optional **local-first** cloud STT (`CloudTranscriber`) + cloud TTS (`CloudTTS`) behind the seams, key-gated with graceful fallback. `tools_enabled`/`stt_backend`/`tts_backend` config.
 - [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
