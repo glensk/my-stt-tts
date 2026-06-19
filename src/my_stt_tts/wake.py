@@ -30,6 +30,24 @@ from .config import Config
 log = logging.getLogger("my_stt_tts.wake")
 
 
+def to_int16_pcm(frame: np.ndarray) -> np.ndarray:
+    """Convert audio to int16 PCM (±32768) for openWakeWord, scaling float input.
+
+    openWakeWord 0.4.0's ``AudioFeatures`` requires 16-bit-int samples: it buffers
+    the raw audio as a Python list and re-casts it with ``np.array(...).astype(
+    np.int16)``, so a **float32 signal in [-1, 1] is truncated to all zeros** and the
+    model sees silence (score pinned at ≈0.001 — the never-fires bug). The rest of
+    this pipeline carries float32 mono, so the float→int16 scale conversion happens
+    here at the model boundary. A frame that is already ``int16`` is passed through
+    unchanged; a float frame is clipped to [-1, 1] and scaled by 32767 (the same
+    convention as openWakeWord's own ``detect_from_microphone.py`` example).
+    """
+    arr = np.asarray(frame)
+    if arr.dtype == np.int16:
+        return arr
+    return (np.clip(arr.astype(np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+
+
 class WakeUnavailable(RuntimeError):
     """The wake-word model could not be loaded or run.
 
@@ -97,12 +115,21 @@ class WakeWord:
         the model-file stem (e.g. ``"maziko"``); we read the *values*, so the key
         naming is irrelevant. A construction or predict failure raises
         :class:`WakeUnavailable` once (not on every frame) so the loop can stop.
+
+        The frame is converted to **int16 PCM** before scoring (see
+        :func:`to_int16_pcm`). openWakeWord 0.4.0's ``AudioFeatures`` *requires*
+        16-bit-int input — its melspectrogram path buffers the raw samples as a
+        Python list and re-casts them with ``np.array(...).astype(np.int16)``, which
+        silently **truncates a float32 [-1, 1] signal to all zeros** (so the model
+        sees near-silence and the score is pinned at ≈0.001 — the never-fires bug).
+        The rest of the pipeline (capture/VAD/STT) is float32, so the conversion is
+        done here, at the model boundary, and nowhere else.
         """
         if self._broken:
             raise WakeUnavailable(f"wake model {self.model_path!r} is unavailable")
         self._ensure()
         try:
-            scores = self._model.predict(np.asarray(frame, dtype=np.float32))
+            scores = self._model.predict(to_int16_pcm(frame))
         except Exception as exc:  # noqa: BLE001 — a per-frame predict failure is terminal
             self._broken = True
             raise WakeUnavailable(f"wake model {self.model_path!r} failed to run: {exc}") from exc
