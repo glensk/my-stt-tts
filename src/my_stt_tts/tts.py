@@ -12,19 +12,40 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import queue
 import shutil
 import subprocess
 import tempfile
 import threading
 import wave
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from .config import Config
+from .text import ClauseChunker, strip_non_spoken
 
 log = logging.getLogger("my_stt_tts.tts")
+
+
+def _resample_to(pcm: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
+    """Resample float32 mono PCM to ``to_sr`` by linear interpolation (no deps).
+
+    A small, dependency-free resampler so streamed clauses (Piper renders at its
+    own native rate) can be fed into a single ``OutputStream`` opened at the
+    pipeline ``sample_rate``. Identity when the rates already match.
+    """
+    arr = np.asarray(pcm, dtype=np.float32).ravel()
+    if from_sr == to_sr or arr.size == 0:
+        return arr
+    n_out = max(1, int(round(arr.size * to_sr / from_sr)))
+    x_old = np.arange(arr.size, dtype=np.float64)
+    x_new = np.linspace(0.0, arr.size - 1, n_out)
+    return np.interp(x_new, x_old, arr).astype(np.float32)
+
 
 # A small menu of English Piper voices to pick from (`--voice <name>`).
 VOICE_PRESETS: dict[str, str] = {
@@ -149,6 +170,125 @@ class Playback:
         with self._lock:
             proc = self._proc
         return proc is None or proc.poll() is not None
+
+
+# A sentinel pushed onto the PCM queue to mark the end of a streamed utterance.
+_PCM_EOF = object()
+
+
+class StreamingPlayback:
+    """Cancellable playout that consumes PCM *chunks* as they arrive (R3-3).
+
+    Unlike :class:`Playback` (which launches a player on a fully-rendered WAV),
+    this presents the SAME barge-in surface (``done`` / :meth:`cancel` /
+    :meth:`wait` / ``reference`` / ``reference_sr``) but is fed clause-sized PCM
+    chunks via :meth:`feed` and plays them through a :mod:`sounddevice`
+    ``OutputStream`` so time-to-first-audio is the synthesis time of the *first
+    clause*, not the whole sentence. Each fed chunk is also appended to
+    :attr:`reference` so the AEC front-end can still subtract the assistant's
+    own voice during barge-in.
+
+    The player runs in a background thread reading a bounded PCM queue;
+    :meth:`cancel` stops it immediately (mid-chunk) and aborts the underlying
+    stream, so a barge-in still cuts the utterance off. Construct, start the
+    feeder, then hand the handle to ``monitor_during_playback``.
+    """
+
+    def __init__(self, sample_rate: int, *, frame_samples: int = 1024) -> None:
+        self.sample_rate = sample_rate
+        self.reference_sr: int | None = sample_rate
+        self.reference = np.zeros(0, dtype=np.float32)
+        self._frame_samples = frame_samples
+        self._q: queue.Queue[Any] = queue.Queue(maxsize=256)
+        self._cancelled = threading.Event()
+        self._finished = threading.Event()
+        self._started = False
+        self._lock = threading.Lock()
+        self._player: threading.Thread | None = None
+        self._open_stream = _open_output_stream
+
+    def feed(self, pcm: np.ndarray) -> None:
+        """Queue one PCM chunk for playout (no-op once cancelled/closed)."""
+        arr = np.asarray(pcm, dtype=np.float32).ravel()
+        if arr.size == 0 or self._cancelled.is_set():
+            return
+        with self._lock:
+            self.reference = np.concatenate([self.reference, arr])
+        self._ensure_player()
+        with contextlib.suppress(queue.Full):
+            self._q.put(arr, timeout=0.5)
+
+    def end_feed(self) -> None:
+        """Signal that no more chunks will be fed (the utterance is complete)."""
+        if not self._started:
+            # Nothing was ever played -> a finished, inert handle.
+            self._finished.set()
+            return
+        with contextlib.suppress(queue.Full):
+            self._q.put(_PCM_EOF, timeout=0.5)
+
+    def _ensure_player(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            self._player = threading.Thread(target=self._run, daemon=True)
+            self._player.start()
+
+    def _run(self) -> None:
+        stream = None
+        try:
+            stream = self._open_stream(self.sample_rate)
+            stream.start()
+            while not self._cancelled.is_set():
+                try:
+                    item = self._q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is _PCM_EOF:
+                    break
+                if self._cancelled.is_set():
+                    break
+                with contextlib.suppress(Exception):
+                    stream.write(np.asarray(item, dtype=np.float32).reshape(-1, 1))
+        except Exception:  # any device error must not crash the loop
+            log.warning("streaming playout failed", exc_info=True)
+        finally:
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.stop()
+                    stream.close()
+            self._finished.set()
+
+    def cancel(self) -> None:
+        """Abort playout now (drop queued chunks, stop the stream). Idempotent."""
+        self._cancelled.set()
+        with contextlib.suppress(queue.Full):
+            self._q.put_nowait(_PCM_EOF)
+
+    def wait(self) -> None:
+        """Block until the queued audio has finished playing (or was cancelled)."""
+        if not self._started:
+            return
+        self._finished.wait()
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether :meth:`cancel` was called on this handle."""
+        return self._cancelled.is_set()
+
+    @property
+    def done(self) -> bool:
+        """Whether playout has finished (or nothing was ever fed)."""
+        return self._finished.is_set() or (not self._started)
+
+
+def _open_output_stream(sample_rate: int) -> Any:
+    """Open a mono float32 :mod:`sounddevice` ``OutputStream`` (lazy import)."""
+    from . import audio
+
+    sd = audio._sd()  # noqa: SLF001 — same package lazy accessor
+    return sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
 
 
 def _popen(cmd: list[str], *, stdin: bytes | None = None) -> subprocess.Popen:
@@ -331,6 +471,61 @@ class TTSRouter:
         if pcm is not None and sr is not None:
             return pcm, sr
         return np.zeros(0, dtype=np.float32), self.cfg.sample_rate
+
+    def synth_pcm_stream(
+        self, text: str, lang: str | None = None
+    ) -> Iterator[tuple[np.ndarray, int]]:
+        """Yield ``(pcm, sample_rate)`` clause-by-clause for low-latency playout (R3-3).
+
+        Splits ``text`` into clauses (``ClauseChunker``) and synthesizes each one
+        independently, so the **first** chunk is ready after the first clause is
+        rendered rather than after the whole sentence — time-to-first-audio scales
+        with the first clause, not the utterance length. Each clause reuses
+        :meth:`synth_pcm`, so it inherits the cloud → Piper → ``say`` fallback. The
+        per-clause language is detected once for the whole ``text`` (cheap + stable
+        prosody). Empty/blank clauses are skipped; a blank input yields nothing.
+        """
+        spoken = strip_non_spoken(text)
+        if not spoken:
+            return
+        lang = lang or detect_language(spoken, self.cfg.default_language)
+        chunker = ClauseChunker(min_chars=self.cfg.tts_stream_min_chars)
+        for clause in [*chunker.feed(spoken), chunker.flush()]:
+            clause = clause.strip()
+            if not clause:
+                continue
+            pcm, sr = self.synth_pcm(clause, lang)
+            if pcm.size:
+                yield pcm, sr
+
+    def start_speaking_stream(self, text: str, lang: str | None = None) -> StreamingPlayback:
+        """Stream-synthesize ``text`` into a cancellable :class:`StreamingPlayback` (R3-3).
+
+        Synthesis runs clause-by-clause in a background thread (via
+        :meth:`synth_pcm_stream`) and each rendered chunk is fed into a
+        :class:`StreamingPlayback` that plays through a ``sounddevice``
+        ``OutputStream`` — so the first audio plays as soon as the first clause is
+        synthesized, while later clauses render concurrently. The returned handle
+        has the same barge-in surface as :class:`Playback` (``done`` / ``cancel`` /
+        ``wait`` / ``reference``), so ``monitor_during_playback`` works unchanged.
+        Returns an inert handle for blank text.
+        """
+        handle = StreamingPlayback(self.cfg.sample_rate, frame_samples=self.cfg.tts_stream_frame)
+        if not text.strip():
+            handle.end_feed()
+            return handle
+
+        def _synth() -> None:
+            try:
+                for pcm, sr in self.synth_pcm_stream(text, lang):
+                    if handle.cancelled:
+                        break
+                    handle.feed(_resample_to(pcm, sr, self.cfg.sample_rate))
+            finally:
+                handle.end_feed()
+
+        threading.Thread(target=_synth, daemon=True).start()
+        return handle
 
     def start_speaking(self, text: str, lang: str | None = None) -> Playback:
         """Synthesize ``text`` and start playing it; return a cancellable handle.
