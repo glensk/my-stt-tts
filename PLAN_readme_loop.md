@@ -61,5 +61,24 @@ embedded demo video, per-feature screenshots, animation, social-proof widgets. R
 - SKIP: star-history (repo is new — a flat 0-star chart hurts) and award widgets (none — won't fabricate).
 - DEFER to user: a *real* spoken-demo video (GitHub inline player) — needs a real mic recording.
 
-Round-2 merged at `bb854f2` (all self-hosted SVGs validated + SMIL-animated; lint clean). **Next:**
-fancy-checker round 2 vs lobe-chat — does the motion + control-room demo flip it? Loop until ours wins/ties.
+Round-2 merged at `bb854f2` (all self-hosted SVGs validated + SMIL-animated; lint clean).
+
+### Fancy-checker round 2 → still lobe-chat, but on motion + cohesion we now MATCH/BEAT it
+
+Judge: our hand-authored SMIL is "arguably more sophisticated than anything lobe-chat ships as a
+vector"; we match/beat on polish + cohesion. The ONLY remaining gap is **authentic full-motion
+video + real product screenshots**, which the checker states **requires a human** (a genuine
+recording of the app working). It agreed we should NOT fake awards or add a flat 0-star chart.
+
+**Software ceiling reached.** Remaining items need the user:
+
+- [ ] **(user)** record a ~20–40 s clip of `./mstt --wake --barge-in always --browser` and drag it
+  into a GitHub issue/PR comment → drop the resulting `user-attachments` URL in the README → native
+  inline `<video>` player (the single biggest wow element).
+- [ ] **(user, optional)** per-feature screenshots/clips.
+
+(Tried auto-capturing the GUI demo as a GIF via the shared browser — the browser-automation command
+was declined, so authentic media is left to the user, exactly as the checker recommended.)
+
+Round 3 (final automatable polish): add a **contrib.rocks** contributor collage + a ready-to-fill
+demo-video slot. After that the loop rests at its honest ceiling pending the user's recording.
