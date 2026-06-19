@@ -56,6 +56,24 @@ prior 265-test baseline (now 307+).
   barge-in). `memory_store`/`memory_max_turns` config + `--memory-store`. Tested:
   persistence (both backends), per-speaker isolation, context assembly, the flow,
   Brain integration. Fixed a real aliasing bug (`reset_live` rebound instead of cleared).
+  - **G7 wiring fix (2026-06-19)** — closed a real correctness gap: `set_speaker` /
+    `EcapaEmbedder` / `SpeakerIdentifier.identify` were unit-tested but **never
+    invoked in the live loop**, so the speaker was always `None` and per-speaker
+    memory never keyed to a real person. New `speaker_pipeline.py` builds the
+    embedder + identifier + enrolled centroids **once** (gated: only when
+    `SPEAKER_ID=true` AND voices are enrolled under `enroll_dir` AND `speechbrain`
+    is importable; fully `try/except`-wrapped so no enrollment / no model degrades
+    to guest at zero latency). Wired into **every** spoken path — local PTT
+    (`run_turn`, clip now returned from `_capture_ptt`), wake loop (`run_wake_loop`),
+    the barge-in re-capture (the interrupter is re-identified), and the transport
+    path (`respond_over_transport` / `capture_turn_clip` now keep the clip) for
+    satellites + browser audio. Sequential embed right before `brain.stream` (note:
+    not yet parallel with STT). Identified speaker published on the bus
+    (`bus.speaker`) for the UI. New config `speaker_id_enabled` (`SPEAKER_ID`),
+    `ENROLL_DIR`/`SPEAKER_THRESHOLD`/`SPEAKER_MARGIN` env overrides, `--settings`
+    row. Tested in `test_speaker_wiring.py` (live `run_turn`/transport paths call
+    `identify`→`set_speaker`; graceful-skip when no pipeline; gating + centroid
+    loading).
 - **G4 — Smart-Turn latency bench + language matrix** (`scripts/bench_smart_turn.py`):
   measures Smart Turn v3 on-device inference latency (warm + p50/p95) and **asserts**
   the p95 fits inside the silence window (`vad_silence_seconds`) with headroom — so
