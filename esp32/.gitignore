@@ -1,0 +1,7 @@
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Local credentials — copy secrets.h.example -> secrets.h and fill in.
+src/secrets.h
