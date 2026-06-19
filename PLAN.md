@@ -11,6 +11,62 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — round-3 breadth/ops gaps (R3-5/7/8/9)
+
+Closed the final four round-3 breadth/ops gaps a fair judge still ranked `pipecat`
+above us on (speech-to-speech, observability, first-run reliability, telephony).
+All wired + tested; no regression to the 170 baseline.
+
+- **R3-5 — Speech-to-speech / realtime LLM** (`realtime.py`): a `RealtimeBrain` +
+  `RealtimeClient` speaking the **real OpenAI Realtime WS protocol** (`session.update`,
+  `input_audio_buffer.append`/`commit`, `response.create`, `response.audio.delta`,
+  `response.done`). `run_realtime_session(transport, cfg)` bypasses the STT→LLM→TTS
+  cascade: mic PCM → base64 g711/pcm16 frames → realtime endpoint → decoded audio
+  deltas sunk back to the transport. Key-gated (`OPENAI_API_KEY` / `REALTIME_API_KEY`):
+  `make_realtime_brain` returns `None` when no key/endpoint so `__main__` falls back to
+  the cascade. `RealtimeProtocol` (event encode/decode, base64 PCM ⇄ int16) is **pure**
+  and unit-tested; the WS connect is isolated + lazy. `brain=realtime` config +
+  `--brain realtime`. Tested against a **mocked realtime WS server** (no key/network).
+- **R3-7 — Per-stage latency telemetry** (`metrics.py`): `TurnMetrics` now records
+  per-turn `stt` / `llm_first_token` / `tts` / `first_audio` latencies keyed by a
+  `speech_id`, emits each turn to `events.bus` (`metrics` event) **and** a structured
+  JSON-lines log (`MetricsLog`), with `mark()`/`stage()` driven by an **injectable clock**
+  (fake-clock tested) and a `MetricsAggregator` (count / mean / p50 / p95 per stage). An
+  **OpenTelemetry span hook** is lazy-imported and OFF by default (`telemetry_otel`).
+  Wired into `_respond` (`__main__`) + `respond_over_transport`/`capture_turn`
+  (`net_loop`). `telemetry` / `telemetry_log_file` / `telemetry_otel` config.
+- **R3-8 — Verified first-run bootstrap** (`preflight.py`, `turn.py`): `my-stt-tts
+  --preflight` fetches **and SHA-256-checksums** the Smart-Turn ONNX (pinned hash) plus
+  the configured Piper voices ahead of time and prints a clear ready/again report.
+  `verify_checksum` + `ensure_smart_turn_model(expected_sha256=...)` reject a corrupt
+  download (delete + retry). At runtime, when endpointing falls back to silence the
+  `SmartTurnAnalyzer` now surfaces an **explicit warning** (log + a `bus` `endpoint_fallback`
+  event + an optional one-time spoken cue) instead of silently degrading. Tested: the
+  checksum verify, the missing/corrupt-download path, and the fallback warning.
+- **R3-9 — Telephony reach** (`telephony.py`): a `TwilioMediaStreamSerializer` over the
+  existing WebSocket transport — decodes Twilio's **base64 μ-law 8 kHz** media frames ⇄
+  our int16 PCM with an **8k↔16k resample**, and handles the Twilio WS event protocol
+  (`connected` / `start` / `media` / `stop`, outbound `media` frames with `streamSid`).
+  `serve_twilio()` answers a phone call into the same pipeline (`run_transport_session`).
+  μ-law transcode (`ulaw_encode`/`ulaw_decode`, the ITU-T G.711 algorithm) + the frame
+  protocol are **pure** and unit-tested with fakes (no Twilio/network). `telephony` config
+  - `--telephony`; the `transport` extra (websockets) suffices.
+
+**202 tests passing** (170 baseline + 32 in `tests/test_round3d.py`); lint-clean
+(ruff format/check + mypy clean on every touched file; pylint at parity with the
+existing baseline — the only finding is the tolerated `duplicate-code` for the tiny
+JSON-decode guard / `_suppress_full` idiom that `ws_transport`/`webrtc_transport`
+already trigger). Optional extras added: `realtime`/`telephony` (both alias the
+existing `websockets` dep — the protocols are pure-numpy here, no new package),
+`otel` → opentelemetry-api/sdk (installs + the span hook emits a real per-turn span;
+OFF by default and a clean no-op without the SDK). Caveats: the realtime WS server,
+the Twilio call, the mic, the model download, and the clock are ALL faked in tests —
+nothing opens a socket, downloads a file, calls an API, or reads a real clock. The
+Smart-Turn SHA-256 pin (`07a133ab…`) was verified against the real upstream ONNX
+(8.4 MB, valid protobuf) on 2026-06-19. μ-law decode is byte-exact vs stdlib
+`audioop`; encode is a true nearest-quantizer (round-trip RMS < 1% of amplitude on
+speech) and standard-G.711-compatible so Twilio reconstructs it exactly.
+
 ## Build status (2026-06-19) — round-3 transport/audio robustness (R3-1/2/3/4/6)
 
 Closed the five gaps a round-3 judge ranked `pipecat` above us on (transport/audio
