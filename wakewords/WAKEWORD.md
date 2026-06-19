@@ -52,10 +52,5 @@ lives in this folder but is **gitignored** (generated binary).
 
 Both openWakeWord targets (accuracy ≥ 0.7, recall ≥ 0.5) are exceeded. If live
 testing shows missed activations, lower `WAKE_THRESHOLD` or retrain with more
-steps/samples. To re-fetch the trained model from the (still-running) pod:
-
-```commands
-
-kubectl --context sdsc-fqdn -n runai-test-test3 cp \
-  maziko-wakeword-0-0:/output/maziko.onnx wakewords/maziko.onnx
-```
+steps/samples. The model is gitignored — retrain via the steps above, or copy
+`/output/maziko.onnx` out of the training pod with `kubectl cp`.
