@@ -80,5 +80,11 @@ recording of the app working). It agreed we should NOT fake awards or add a flat
 (Tried auto-capturing the GUI demo as a GIF via the shared browser — the browser-automation command
 was declined, so authentic media is left to the user, exactly as the checker recommended.)
 
-Round 3 (final automatable polish): add a **contrib.rocks** contributor collage + a ready-to-fill
-demo-video slot. After that the loop rests at its honest ceiling pending the user's recording.
+Round 3 (final automatable polish) — **DONE, merged `ac20732`**: added a contrib.rocks contributor
+collage and a ready-to-fill demo-video slot (with paste-the-`user-attachments`-URL instructions).
+
+**Loop status: RESTING at its honest software ceiling.** The README is award-tier and matches/beats
+the canonical fanciest README (lobe-chat) on motion + cohesion. The only further gain is a real
+demo video — a human task (see the two `(user)` items above). Reopen this loop (designer round 4)
+only after the user records that clip, or if requirements change. The designer remains the standing
+owner of README styling.
