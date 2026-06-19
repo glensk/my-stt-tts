@@ -237,10 +237,18 @@ class EventBus:
     def state(self, state: str, detail: str = "") -> None:
         self.publish({"type": "state", "state": state, "detail": detail})
 
-    def transcript(self, text: str, *, partial: bool = False) -> None:
+    def transcript(self, text: str, *, partial: bool = False, source: str = "") -> None:
         """Publish a transcript. ``partial=True`` marks an in-progress streaming
-        transcript (G6); the UI can replace it when the final arrives."""
-        self.publish({"type": "transcript", "text": text, "partial": partial})
+        transcript (G6); the UI can replace it when the final arrives.
+
+        ``source`` (optional) tags WHERE this turn's text came from so the UI can
+        show e.g. "YOU · push-to-talk": one of ``"typed"`` / ``"push_to_talk"`` /
+        ``"wake"`` / ``"live_audio"``. Default ``""`` (unset) keeps back-compat for
+        callers that don't tag — the wire field is only added when non-empty."""
+        event: dict[str, Any] = {"type": "transcript", "text": text, "partial": partial}
+        if source:
+            event["source"] = source
+        self.publish(event)
 
     def response(self, text: str, *, final: bool = False, model: str = "") -> None:
         """Publish a response delta. ``model`` (when set) names the active model that

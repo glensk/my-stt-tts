@@ -176,7 +176,7 @@ def capture_turn_clip(
         spoke = spoke or is_speech
         partial = streamer.feed(arr)
         if partial is not None:
-            bus.transcript(partial, partial=True)
+            bus.transcript(partial, partial=True, source="live_audio")
         if analyzer.update(arr, is_speech):
             break
         if max_frames is not None and seen >= max_frames:
@@ -246,7 +246,8 @@ def respond_over_transport(
     metrics = TurnMetrics()
     metrics.note(transcript=text, transport=True)
     voiced_any = False
-    bus.transcript(text)
+    # Turns over the wire (browser-audio / satellite) are live-mic audio.
+    bus.transcript(text, source="live_audio")
     chunker = SentenceChunker()
     barge = (
         _TransportBargeIn.build(cfg, source, vad, denoiser)
