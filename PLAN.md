@@ -11,6 +11,77 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-19) — Wave E: multi-user / household maturity (G1/G2/G4/G7/G8)
+
+Reframed goal: be the best choice for a **household** (different people) talking to a
+Mac — multi-user, on-device, natural, interruptible — and close the code-achievable
+maturity gaps a judge cited vs `pipecat`. All wired + tested; no regression to the
+prior 265-test baseline (now 307+).
+
+- **G1 — Pluggable backend registry + real cloud adapters** (`registry.py`,
+  `stt_cloud.py`, `tts_cloud.py`): a `ServiceRegistry` (name→builder, namespaced by
+  `stt`/`tts`/`llm`) formalises the existing `Transcriber`/TTS/`Brain` seams.
+  **Real, key-gated** adapters speak the actual provider APIs with graceful
+  local-first fallback: **Deepgram** streaming STT, **ElevenLabs** + **Cartesia** TTS.
+  Each lazy-imports its SDK (optional `deepgram`/`elevenlabs`/`cartesia` extras) with
+  a dependency-light `urllib` HTTP fallback. Selected via `stt_backend`/`tts_backend`
+  (env, `--stt-backend`/`--tts-backend`, `--settings`); validation cross-checks names
+  against the registry. Tested against **mocked** SDK/HTTP responses (no live keys).
+- **G8 — Cross-platform brain (off-Mac)** (`stt.py` whisper.cpp + faster-whisper,
+  `platform.py`, `aec.py` WebRTC-APM): the central brain can run on a **Linux** box
+  with Mac/ESP32 satellites. Non-MLX STT backends (`whispercpp` via `pywhispercpp`,
+  `faster-whisper` via CTranslate2); a `platform` module (OS detect + override)
+  selecting a Linux-native WAV player (`aplay`/`paplay`) and a cross-platform
+  `play_array` (sounddevice → CLI fallback); a Linux **WebRTC Audio Processing Module**
+  AEC backend (`aec_mode=webrtc`/`auto`) behind the `EchoCanceller` seam with NLMS
+  fallback. **macOS path unchanged** when auto-detected. `platform`/`playback_backend`/
+  `whispercpp_model`/`faster_whisper_compute` config + flags. Selection/fallback faked.
+- **G2 — Typed, prioritized, non-droppable events** (`events.py`): a typed `Frame`
+  model with two priority classes. **SYSTEM** frames (interruption / error /
+  end-of-turn) **never drop**, **bypass** queued data, and **flush** stale data ahead
+  of them; **DATA** frames ride a bounded queue and may drop under back-pressure.
+  Per-subscriber delivery drains the system lane first, so ordering is **consistent
+  across every transport** (local, ws, webrtc, telephony). The ad-hoc interruption
+  emitters are now backed by this; the public API + wire types are unchanged
+  (back-compat). Tested: classification, bypass, flush, non-drop under load, ordering.
+- **G7 — Per-speaker persistent memory + provider-agnostic context** (`memory.py`):
+  a `ContextAggregator` assembles a neutral `[{role,content}]` list (per-speaker
+  recall + live session, deduped at the seam, budget-bounded) **independent of the
+  LLM provider**; a persistent `MemoryStore` (**SQLite** default, **JSON** for `.json`
+  paths) keyed **per enrolled speaker** (ties into `speaker_id` via `SpeakerIdentifier`)
+  for cross-session recall, with `unknown`/`ambiguous` bucketed to a shared guest so
+  one person's history never leaks into another's; plus a `DialogueFlow` structured-
+  dialogue hook. Wired into `Brain` (`set_speaker`, assembled context for every
+  backend, persist on completion, `commit_spoken` amends persistent memory after a
+  barge-in). `memory_store`/`memory_max_turns` config + `--memory-store`. Tested:
+  persistence (both backends), per-speaker isolation, context assembly, the flow,
+  Brain integration. Fixed a real aliasing bug (`reset_live` rebound instead of cleared).
+- **G4 — Smart-Turn latency bench + language matrix** (`scripts/bench_smart_turn.py`):
+  measures Smart Turn v3 on-device inference latency (warm + p50/p95) and **asserts**
+  the p95 fits inside the silence window (`vad_silence_seconds`) with headroom — so
+  smart endpointing can't clip the user. Pure assertion logic (`fits_silence_window`,
+  `summarize`, `run_bench` with an injectable clock) is unit-tested with a fake clock +
+  fake session; the real path reports `skipped` without the model. Language matrix below.
+
+### Supported-language matrix + per-language fallback (G4)
+
+The pipeline is built for **DE / FR / EN** (a Swiss household). Each stage degrades
+gracefully when a language isn't natively covered — never a hard failure.
+
+| Stage                                            | DE                                  | FR              | EN              | Other                       | Per-language fallback                                                                                                            |
+| :----------------------------------------------- | :---------------------------------- | :-------------- | :-------------- | :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------ |
+| **STT** `parakeet-tdt-0.6b-v3` (local, default)  | ✅ native                           | ✅ native       | ✅ native       | ⚠️ ~25 langs                | parakeet v3 is multilingual + auto language-ID; off-Mac `whispercpp`/`faster-whisper` cover ~99 Whisper langs; cloud `deepgram` |
+| **Smart-Turn v3** (prosodic end-of-turn)         | ✅                                  | ✅              | ✅              | ✅ language-agnostic        | falls back to the fixed silence timer if the ONNX/runtime is missing (logged, R3-8) — works for ANY language                    |
+| **TTS — Piper** (local, default)                 | ✅ `de_DE-thorsten-high`            | ✅ `fr_FR-tom`  | ✅ `en_US-lessac` | ⚠️ 30+ Piper voices       | unmapped language → macOS `say` premium voice for that language → `say` default voice                                           |
+| **TTS — `say`** (always-available fallback)      | ✅ Anna                             | ✅ Thomas       | ✅ Ava          | ✅ system voices            | used whenever Piper lacks/fails a voice; never blocks the turn                                                                   |
+| **TTS — cloud** (opt-in, key-gated)              | ✅ ElevenLabs `multilingual_v2`     | ✅              | ✅              | ✅ 29 langs                 | cloud is the **best DE voice** (local DE is the weak spot); a missing key → local Piper/`say`                                    |
+| **LLM**                                          | multilingual (Claude/GPT/Ollama)    | ✅              | ✅              | ✅                          | system prompt: "reply in the language the user spoke"; unrecognized → `default_language` (`en`)                                 |
+
+Detection: STT returns a detected language; TTS uses `lingua` on the answer text
+(`detect_language`, the `lang` extra) and falls back to `default_language` when
+`lingua` is absent or unsure. So a language outside DE/FR/EN still produces audio
+(via `say` / cloud) rather than erroring.
+
 ## Build status (2026-06-19) — round-3 breadth/ops gaps (R3-5/7/8/9)
 
 Closed the final four round-3 breadth/ops gaps a fair judge still ranked `pipecat`

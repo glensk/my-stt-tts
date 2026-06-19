@@ -65,3 +65,6 @@ voices/
 # Trained wake-word models (generated; see wakewords/WAKEWORD.md)
 wakewords/*.onnx
 wakewords/*.tflite
+
+# Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run)
+models/
