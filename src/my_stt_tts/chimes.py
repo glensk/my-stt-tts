@@ -40,6 +40,15 @@ def chime_listening(sample_rate: int = DEFAULT_SR) -> np.ndarray:
     return tone([880.0, 1320.0], sample_rate=sample_rate)
 
 
+def chime_wake(sample_rate: int = DEFAULT_SR) -> np.ndarray:
+    """Bright three-note ascending cue: the wake word was detected.
+
+    Distinct from :func:`chime_listening` (the mic-live cue) so the user hears an
+    unmistakable acknowledgement the instant the wake phrase fires, before the
+    recording cue plays."""
+    return tone([784.0, 1047.0, 1568.0], duration=0.21, sample_rate=sample_rate)
+
+
 def chime_done(sample_rate: int = DEFAULT_SR) -> np.ndarray:
     """Falling two-note cue: capture finished."""
     return tone([660.0, 440.0], sample_rate=sample_rate)
