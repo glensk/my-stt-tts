@@ -56,14 +56,12 @@ The pipeline, live — wake word → speech-to-text → LLM → speech, all on o
 
 ## 🚀 Get started
 
-**New here? Start in one of these two ways — that's the whole onboarding.**
+**New here? Onboarding is one command (below). First, here's how it looks:**
 
-### ▶ Try it live (no install)
+### 👀 How it looks
 
-**[Open the control room demo →](https://glensk.github.io/my-stt-tts/gui.html)** — a
-zero-setup, look-and-feel tour of the interface. It runs in **scripted demo mode** (a static
-showcase, no backend), so you can watch the live pipeline — listening → transcribe → thinking →
-speaking — and feel the experience right in your browser. Nothing to download.
+**[Open the interface preview →](https://glensk.github.io/my-stt-tts/gui.html)** — a zero-install,
+scripted preview of the control room (not a live LLM). To actually talk to it, run the one command below.
 
 ### ⌨️ Run it for real (one command)
 
@@ -73,9 +71,9 @@ Talking to a **real LLM in seconds** — no microphone and no API key:
 git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts && ./quickstart.sh
 ```
 
-`quickstart.sh` runs `uv sync --extra all`, then opens the **browser control room in typed
-mode** — so you're typing to a live LLM right away (the bundled key-free Claude CLI brain; a local
-Ollama model also works key-free).
+`quickstart.sh` runs `uv sync --extra all`, **auto-detects a key-free brain** (the Claude CLI, a
+local Ollama model, or Codex), then opens the **browser control room in typed mode** and prints +
+opens the link — so you're typing to a live LLM right away, no API key.
 
 > **Next:** once the control room is open, use the **Settings** panel to switch the
 > **brain/model, voice, and language (DE / FR / EN)** and set your **location + units** (defaults:
