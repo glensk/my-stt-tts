@@ -50,6 +50,23 @@ _CHIME_SR = chimes.DEFAULT_SR
 _BLUE = "\033[34m"
 _RESET = "\033[0m"
 
+# R3-7: one telemetry sink per process (JSON-lines log + aggregator + OTel span),
+# built lazily from config the first time a turn emits metrics. ``None`` when
+# telemetry is disabled — the headline log line + bus event still fire regardless.
+_SESSION_SINK: object | None = None
+_SESSION_SINK_BUILT = False
+
+
+def _session_sink(cfg: Config) -> Any:
+    """Return the process-wide telemetry sink (built once from config), or None."""
+    global _SESSION_SINK, _SESSION_SINK_BUILT  # noqa: PLW0603 — one-time process singleton
+    if not _SESSION_SINK_BUILT:
+        from .metrics import make_sink
+
+        _SESSION_SINK = make_sink(cfg)
+        _SESSION_SINK_BUILT = True
+    return _SESSION_SINK
+
 
 def _use_color() -> bool:
     return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -78,6 +95,9 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  hw-capture {cfg.aec_hw_capture}  denoiser {cfg.denoiser}"
         f"  analyzer {cfg.turn_analyzer}  min-words {cfg.interrupt_min_words}"
         f"  predict {cfg.interrupt_predict}",
+        f"  brain-mode {blue}{cfg.brain_mode}{reset}"
+        f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
+        f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
@@ -194,6 +214,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--transport-token", help="Shared token a transport client must present (optional auth)."
     )
     parser.add_argument(
+        "--realtime",
+        dest="brain_mode_realtime",
+        action="store_true",
+        help="Speech-to-speech: stream mic audio to a realtime LLM (OpenAI Realtime) "
+        "and play its audio back, bypassing the STT->LLM->TTS cascade. Key-gated "
+        "(REALTIME_API_KEY/OPENAI_API_KEY); falls back to the cascade without a key.",
+    )
+    parser.add_argument(
+        "--telephony",
+        action="store_true",
+        help="Answer phone calls via Twilio Media Streams (μ-law 8 kHz) over a "
+        "WebSocket; the same pipeline takes the call. Needs the 'transport' extra.",
+    )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="Record per-stage latency telemetry per turn to events.bus + a "
+        "JSON-lines log (set TELEMETRY_LOG_FILE) keyed by a speech_id.",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Fetch + checksum the Smart-Turn model and Piper voices ahead of time, "
+        "report what's ready, then exit (verified first-run bootstrap).",
+    )
+    parser.add_argument(
         "--list-voices", action="store_true", help="List the English voice presets and exit."
     )
     parser.add_argument(
@@ -235,6 +281,12 @@ def _build_config(args: argparse.Namespace) -> Config:
         cfg.stt_streaming = True
     if args.tts_streaming is not None:
         cfg.tts_streaming = args.tts_streaming
+    if args.brain_mode_realtime:
+        cfg.brain_mode = "realtime"
+    if args.telephony:
+        cfg.telephony = True
+    if args.telemetry:
+        cfg.telemetry = True
     if args.debug:
         cfg.debug = True
     return cfg
@@ -310,6 +362,7 @@ def _respond(
     metrics.note(transcript=text)
     bus.transcript(text)
     chunker = SentenceChunker()
+    voiced_any = False  # first-audio (R3-7): mark the instant the first audio plays
     barge_in = cfg.barge_in != "off" and vad is not None
     voiced_chars = 0
     result = RespondResult()
@@ -344,11 +397,16 @@ def _respond(
             first = True
             for delta in stream:
                 if first:
+                    # R3-7: latency from turn start to the model's first token.
+                    metrics.mark("llm_first_token")
                     bus.state("llm_response")
                     first = False
                 bus.response(delta, final=False)
                 for sentence in chunker.feed(delta):
                     spoken_n, res = _voice_sentence(cfg, tts, gate, ctx, sentence)
+                    if spoken_n and not voiced_any:
+                        metrics.mark("first_audio")  # R3-7: time-to-first-audio
+                        voiced_any = True
                     voiced_chars += spoken_n
                     if res is not None and res.interrupted:
                         result = res
@@ -359,6 +417,9 @@ def _respond(
                 tail = chunker.flush()
                 if tail:
                     spoken_n, res = _voice_sentence(cfg, tts, gate, ctx, tail)
+                    if spoken_n and not voiced_any:
+                        metrics.mark("first_audio")
+                        voiced_any = True
                     voiced_chars += spoken_n
                     if res is not None and res.interrupted:
                         result = res
@@ -377,7 +438,9 @@ def _respond(
             brain.commit_spoken(_spoken_prefix(brain, voiced_chars))
             bus.interrupted(voiced_chars)
     bus.state("idle")
-    metrics.log()
+    # R3-7: log + publish to the bus + (when telemetry is on) the JSON-lines file,
+    # the session aggregator, and the optional OpenTelemetry span.
+    metrics.emit(_session_sink(cfg))
     return result
 
 
@@ -662,15 +725,51 @@ def _run_browser(
     return 0
 
 
-def _run_websocket_server(cfg: Config, brain: Brain, tts: TTSRouter, stt: object | None) -> int:
+def _make_session_runner(
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    stt: object,
+    realtime_brain: object | None,
+) -> Any:
+    """Return the ``on_session(transport)`` callback for a network/telephony client.
+
+    Picks the brain at the transport boundary (R3-5): when a keyed realtime brain
+    is present, the client's audio is bridged straight to the speech-to-speech
+    endpoint (cascade bypassed); otherwise it runs the full STT->LLM->TTS
+    :func:`run_transport_session` loop. Same callable shape either way.
+    """
+    if realtime_brain is not None:
+        from .realtime import run_realtime_session
+
+        def _realtime_session(transport: object) -> None:
+            run_realtime_session(transport, cfg)  # type: ignore[arg-type]
+
+        return _realtime_session
+
+    from .net_loop import run_transport_session
+
+    def _cascade_session(transport: object) -> None:
+        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
+
+    return _cascade_session
+
+
+def _run_websocket_server(
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    stt: object | None,
+    realtime_brain: object | None = None,
+) -> int:
     """Serve the WebSocket audio transport (R2-5): bridge remote clients to the pipeline.
 
     Each accepted client (satellite or browser) gets a :class:`WebSocketTransport`
     that becomes the mic source + audio sink for a full :func:`run_transport_session`
     turn loop — the same STT/LLM/TTS stages, just with the device boundary on the
-    wire. Needs the ``transport`` extra; prints a clear message if it is missing.
+    wire — or, with a keyed realtime brain, a speech-to-speech session (R3-5). Needs
+    the ``transport`` extra; prints a clear message if it is missing.
     """
-    from .net_loop import run_transport_session
     from .ws_transport import serve_websocket
 
     if stt is None:
@@ -678,9 +777,7 @@ def _run_websocket_server(cfg: Config, brain: Brain, tts: TTSRouter, stt: object
 
         stt = make_transcriber(cfg)
 
-    def on_session(transport: object) -> None:
-        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
-
+    on_session = _make_session_runner(cfg, brain, tts, stt, realtime_brain)
     print(
         f"my-stt-tts WebSocket transport → ws://{cfg.transport_host}:{cfg.transport_port}"
         "  (Ctrl-C to quit)"
@@ -691,6 +788,48 @@ def _run_websocket_server(cfg: Config, brain: Brain, tts: TTSRouter, stt: object
             host=cfg.transport_host,
             port=cfg.transport_port,
             token=cfg.transport_token,
+            sample_rate=cfg.sample_rate,
+        )
+    except RuntimeError as exc:  # missing 'transport' extra
+        print(exc, file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\nbye")
+    return 0
+
+
+def _run_telephony_server(
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    stt: object | None,
+    realtime_brain: object | None = None,
+) -> int:
+    """Serve the Twilio Media Streams endpoint (R3-9): answer phone calls.
+
+    Point a Twilio ``<Stream>`` at ``ws://TELEPHONY_HOST:TELEPHONY_PORT/``; each
+    call gets a :class:`~my_stt_tts.telephony.TwilioTransport` (μ-law 8 kHz <->
+    PCM, 8k<->16k resample) bridged into the same pipeline as the WebSocket path —
+    cascade by default, speech-to-speech with a keyed realtime brain. Needs the
+    ``transport`` extra (websockets); prints a clear message if it is missing.
+    """
+    from .telephony import serve_twilio
+
+    if stt is None and realtime_brain is None:
+        from .stt import make_transcriber
+
+        stt = make_transcriber(cfg)
+
+    on_session = _make_session_runner(cfg, brain, tts, stt, realtime_brain)
+    print(
+        f"my-stt-tts Twilio telephony → ws://{cfg.telephony_host}:{cfg.telephony_port}/"
+        "  (point a Twilio <Stream> here; Ctrl-C to quit)"
+    )
+    try:
+        serve_twilio(
+            on_session,
+            host=cfg.telephony_host,
+            port=cfg.telephony_port,
             sample_rate=cfg.sample_rate,
         )
     except RuntimeError as exc:  # missing 'transport' extra
@@ -739,6 +878,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.settings:
             print(settings_text(cfg))
             return 0
+        if args.preflight:
+            from .preflight import preflight_main
+
+            return preflight_main(cfg)
         cfg.validate()
     except ConfigError as exc:
         print(exc, file=sys.stderr)
@@ -748,8 +891,11 @@ def main(argv: list[str] | None = None) -> int:
     tts = TTSRouter(cfg)
     gate = audio.MicGate(cfg.mic_gate_tail_seconds)
 
-    needs_stt = (
+    # The realtime brain (R3-5) does its own ASR, so it needs no local STT engine.
+    realtime_selected = cfg.brain_mode == "realtime" and bool(cfg.realtime_api_key)
+    needs_stt = not realtime_selected and (
         cfg.transport in ("websocket", "webrtc")
+        or cfg.telephony
         or (args.browser and args.browser_audio)
         or (not args.type_mode and args.text is None and (not args.browser or args.wake))
     )
@@ -759,11 +905,20 @@ def main(argv: list[str] | None = None) -> int:
 
         stt = make_transcriber(cfg)
 
+    # R3-5: a realtime speech-to-speech brain (key-gated). When selected AND keyed,
+    # it drives the loop at the audio level (bypassing this cascade Brain); None
+    # falls back to the cascade with a clear log line.
+    from .realtime import make_realtime_brain
+
+    realtime_brain = make_realtime_brain(cfg)
+
     if not args.browser:
         print(settings_text(cfg))
     try:
+        if cfg.telephony:  # R3-9: answer Twilio phone calls over the WS transport
+            return _run_telephony_server(cfg, brain, tts, stt, realtime_brain)
         if cfg.transport == "websocket":
-            return _run_websocket_server(cfg, brain, tts, stt)
+            return _run_websocket_server(cfg, brain, tts, stt, realtime_brain)
         if cfg.transport == "webrtc":
             return _run_webrtc_server(cfg, brain, tts, stt, port=args.port)
         if args.browser:

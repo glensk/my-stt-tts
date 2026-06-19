@@ -12,6 +12,13 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Brain mode (R3-5). The cascade is STT -> LLM -> TTS (everything to date); the
+# realtime mode streams mic audio to a speech-to-speech endpoint (OpenAI Realtime
+# over WebSocket) and plays the returned audio back, bypassing the cascade's
+# irreducible turn latency. ``realtime`` is key-gated and falls back to ``cascade``
+# when no key/endpoint is configured (see realtime.make_realtime_brain).
+BRAIN_MODES = ("cascade", "realtime")
+
 # Audio transport modes (R2-5/R3-1; see transport.py). Where the loop sources mic
 # audio and sinks TTS audio:
 #   local      — the local sound card via sounddevice (default, today's behaviour)
@@ -63,6 +70,10 @@ AEC_MODES = ("off", "nlms", "voiceprocessing", "auto")
 SMART_TURN_MODEL_URL = (
     "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.0.onnx"
 )
+# Pinned SHA-256 of the upstream smart-turn-v3.0.onnx (verified 2026-06-19). The
+# preflight (R3-8) and the runtime download checksum the file against this so a
+# silently-truncated or tampered download is rejected rather than used.
+SMART_TURN_MODEL_SHA256 = "07a133aba31e2d0b523f17f8c2e4e65efe6d8f685efd12ca4fe21ebf4e798991"
 
 # Friendly one-word brain presets -> (provider, model).
 # "-sub" uses your Claude subscription via the Claude Code CLI (no API key); the
@@ -202,6 +213,7 @@ class Config:
     turn_analyzer: str = "smart"
     smart_turn_model_path: str = "models/smart-turn-v3.0.onnx"
     smart_turn_model_url: str = SMART_TURN_MODEL_URL
+    smart_turn_sha256: str = SMART_TURN_MODEL_SHA256  # integrity pin (R3-8); "" disables
     smart_turn_auto_download: bool = True
     smart_turn_threshold: float = 0.5
 
@@ -271,6 +283,33 @@ class Config:
     tts_cloud_base_url: str | None = None
     tts_cloud_api_key: str | None = None
 
+    # --- Speech-to-speech / realtime LLM (R3-5): bypass the STT->LLM->TTS cascade.
+    # ``brain=realtime`` streams mic audio to a realtime speech-to-speech endpoint
+    # (OpenAI Realtime over WebSocket) and plays the returned audio back. Key-gated:
+    # without a key/endpoint the loop falls back to the cascade. ---
+    brain_mode: str = "cascade"
+    realtime_model: str = "gpt-4o-realtime-preview"
+    realtime_url: str = "wss://api.openai.com/v1/realtime"
+    realtime_api_key: str | None = None  # falls back to OPENAI_API_KEY
+    realtime_voice: str = "alloy"
+    # The endpoint's audio format. ``pcm16`` (24 kHz mono int16) is the default;
+    # ``g711_ulaw`` (8 kHz μ-law) is handy when bridging straight to telephony.
+    realtime_audio_format: str = "pcm16"
+
+    # --- Per-stage latency telemetry (R3-7): record STT / LLM-first-token / TTS /
+    # first-audio latencies per turn, keyed by a speech_id, to events.bus + a
+    # JSON-lines log, with an optional OpenTelemetry span. Off by default. ---
+    telemetry: bool = False
+    telemetry_log_file: str | None = None  # JSON-lines path; None = no file
+    telemetry_otel: bool = False  # emit an OpenTelemetry span per turn (lazy import)
+
+    # --- Telephony reach (R3-9): answer a phone call via Twilio Media Streams over
+    # the existing WebSocket transport (base64 μ-law 8 kHz <-> int16 PCM, 8k<->16k
+    # resample). Behind a toggle; uses the same 'transport' extra (websockets). ---
+    telephony: bool = False
+    telephony_host: str = "0.0.0.0"  # noqa: S104 — bind LAN-wide so Twilio can reach it
+    telephony_port: int = 8771
+
     debug: bool = False
 
     @classmethod
@@ -300,6 +339,7 @@ class Config:
             turn_analyzer=env.get("TURN_ANALYZER", "smart"),
             smart_turn_model_path=env.get("SMART_TURN_MODEL_PATH", "models/smart-turn-v3.0.onnx"),
             smart_turn_model_url=env.get("SMART_TURN_MODEL_URL", SMART_TURN_MODEL_URL),
+            smart_turn_sha256=env.get("SMART_TURN_SHA256", SMART_TURN_MODEL_SHA256),
             smart_turn_auto_download=_env_bool("SMART_TURN_AUTO_DOWNLOAD", default=True),
             stt_streaming=_env_bool("STT_STREAMING", default=False),
             interrupt_predict=_env_bool("INTERRUPT_PREDICT", default=True),
@@ -316,8 +356,21 @@ class Config:
             tts_cloud_voice=env.get("TTS_CLOUD_VOICE", "alloy"),
             tts_cloud_base_url=env.get("TTS_CLOUD_BASE_URL") or None,
             tts_cloud_api_key=env.get("TTS_CLOUD_API_KEY") or env.get("OPENAI_API_KEY") or None,
+            brain_mode=env.get("BRAIN_MODE", "cascade"),
+            realtime_model=env.get("REALTIME_MODEL", "gpt-4o-realtime-preview"),
+            realtime_url=env.get("REALTIME_URL", "wss://api.openai.com/v1/realtime"),
+            realtime_api_key=env.get("REALTIME_API_KEY") or env.get("OPENAI_API_KEY") or None,
+            realtime_voice=env.get("REALTIME_VOICE", "alloy"),
+            realtime_audio_format=env.get("REALTIME_AUDIO_FORMAT", "pcm16"),
+            telemetry=_env_bool("TELEMETRY", default=False),
+            telemetry_log_file=env.get("TELEMETRY_LOG_FILE") or None,
+            telemetry_otel=_env_bool("TELEMETRY_OTEL", default=False),
+            telephony=_env_bool("TELEPHONY", default=False),
+            telephony_host=env.get("TELEPHONY_HOST", "0.0.0.0"),  # noqa: S104 — LAN bind
             debug=_env_bool("DEBUG", default=False),
         )
+        if env.get("TELEPHONY_PORT"):
+            cfg.telephony_port = int(env["TELEPHONY_PORT"])
         if env.get("TRANSPORT_PORT"):
             cfg.transport_port = int(env["TRANSPORT_PORT"])
         if env.get("TTS_VOICE_EN"):
@@ -426,5 +479,14 @@ class Config:
             errors.append(f"tts_stream_min_chars must be > 0; got {self.tts_stream_min_chars}")
         if self.tts_stream_frame <= 0:
             errors.append(f"tts_stream_frame must be > 0; got {self.tts_stream_frame}")
+        if self.brain_mode not in BRAIN_MODES:
+            errors.append(f"brain_mode must be one of {BRAIN_MODES}; got {self.brain_mode!r}")
+        if self.realtime_audio_format not in ("pcm16", "g711_ulaw"):
+            errors.append(
+                "realtime_audio_format must be 'pcm16' or 'g711_ulaw'; "
+                f"got {self.realtime_audio_format!r}"
+            )
+        if not 0 < self.telephony_port < 65536:
+            errors.append(f"telephony_port must be in (0, 65535]; got {self.telephony_port}")
         if errors:
             raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(errors))

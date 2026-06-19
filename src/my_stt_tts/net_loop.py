@@ -39,6 +39,7 @@ from .config import Config
 from .denoise import make_denoiser
 from .events import bus
 from .interrupt import InterruptGate, frame_energy, make_interrupt_predictor
+from .metrics import TelemetrySink, TurnMetrics, make_sink
 from .stt import StreamingTranscriber, Transcriber
 from .text import SentenceChunker, strip_non_spoken
 from .transport import AudioTransport
@@ -175,6 +176,7 @@ def respond_over_transport(
     source: _MicSource | None = None,
     vad: Any | None = None,
     denoiser: Any = None,
+    sink: TelemetrySink | None = None,
 ) -> TransportResult:
     """Stream the LLM reply for ``text``, synthesize each sentence, sink it to ``transport``.
 
@@ -186,6 +188,10 @@ def respond_over_transport(
     streamed text is also published to the bus for the GUI. On an LLM error it
     sends a short spoken apology, mirroring the local loop.
     """
+
+    metrics = TurnMetrics()
+    metrics.note(transcript=text, transport=True)
+    voiced_any = False
     bus.transcript(text)
     chunker = SentenceChunker()
     barge = (
@@ -198,10 +204,18 @@ def respond_over_transport(
     stream = brain.stream(text)
     try:
         bus.state("llm_response")
+        first = True
         for delta in stream:
+            if first:
+                metrics.mark("llm_first_token")  # R3-7
+                first = False
             bus.response(delta, final=False)
             for sentence in chunker.feed(delta):
-                spoken.append(_voice_to_transport(transport, tts, sentence, barge))
+                voiced = _voice_to_transport(transport, tts, sentence, barge)
+                spoken.append(voiced)
+                if voiced and not voiced_any:
+                    metrics.mark("first_audio")  # R3-7
+                    voiced_any = True
                 if barge is not None and barge.interrupted:
                     break
             if barge is not None and barge.interrupted:
@@ -209,7 +223,11 @@ def respond_over_transport(
         else:
             tail = chunker.flush()
             if tail:
-                spoken.append(_voice_to_transport(transport, tts, tail, barge))
+                voiced = _voice_to_transport(transport, tts, tail, barge)
+                spoken.append(voiced)
+                if voiced and not voiced_any:
+                    metrics.mark("first_audio")
+                    voiced_any = True
         bus.response("", final=True)
     except LLMError as exc:
         log.error("LLM error over transport: %s", exc)
@@ -228,6 +246,7 @@ def respond_over_transport(
             bus.interrupt_start()
     result.spoken = result.spoken or "".join(spoken)
     bus.state("idle")
+    metrics.emit(sink)  # R3-7: per-turn latency telemetry over the wire
     return result
 
 
@@ -408,6 +427,7 @@ def run_transport_session(
     barge_on = cfg.barge_in != "off"
     source = _MicSource(transport)
     denoiser = make_denoiser(cfg)
+    sink = make_sink(cfg)  # R3-7: one telemetry sink per session (aggregates turns)
     bus.state("idle")
     while not _transport_closed(transport) and not source.closed:
         analyzer = make_turn_analyzer(cfg, frame_seconds)
@@ -425,6 +445,7 @@ def run_transport_session(
             source=source if barge_on else None,
             vad=vad if barge_on else None,
             denoiser=denoiser,
+            sink=sink,
         )
         # Chain barge-in follow-ups: the captured audio becomes the next turn.
         while result.interrupted and result.captured.size and not source.closed:
@@ -441,6 +462,7 @@ def run_transport_session(
                 source=source if barge_on else None,
                 vad=vad if barge_on else None,
                 denoiser=denoiser,
+                sink=sink,
             )
 
 

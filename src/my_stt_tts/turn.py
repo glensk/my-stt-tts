@@ -25,6 +25,7 @@ Selection is via :func:`make_turn_analyzer` (config-driven).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import urllib.error
 import urllib.request
@@ -45,19 +46,61 @@ _SMART_TURN_SR = 16000
 _SMART_TURN_WINDOW_S = 8
 
 
-def ensure_smart_turn_model(model_path: str, url: str, *, auto_download: bool = True) -> bool:
+def file_sha256(path: str | Path) -> str:
+    """Return the hex SHA-256 of a file, read in chunks (no whole-file slurp)."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_checksum(path: str | Path, expected_sha256: str) -> bool:
+    """True if ``path`` exists and its SHA-256 matches ``expected_sha256`` (case-insensitive).
+
+    The integrity gate for the first-run bootstrap (R3-8): a truncated / corrupt /
+    tampered download must not be silently accepted. An empty/blank ``expected``
+    means "no pin configured" and the check passes (verification is opt-in via a
+    configured hash). A missing file fails. Never raises — an IO error reads as a
+    mismatch so callers treat it like a bad download.
+    """
+    if not expected_sha256:
+        return True
+    try:
+        return file_sha256(path).lower() == expected_sha256.strip().lower()
+    except OSError:
+        return False
+
+
+def ensure_smart_turn_model(
+    model_path: str,
+    url: str,
+    *,
+    auto_download: bool = True,
+    expected_sha256: str = "",
+) -> bool:
     """Make sure the Smart Turn ONNX exists at ``model_path``, downloading if needed.
 
     Mirrors the Piper-voice auto-download (:func:`tts._ensure_piper_voice`) so smart
     endpointing works out of the box (R2-4): if the file is present it is used; if
     absent and ``auto_download`` is on, it is fetched once from ``url`` to a temp
     file and atomically renamed into place. Returns whether the file is available.
-    Network/IO failures are swallowed (the analyzer then falls back to silence) so
-    a first run offline never breaks the loop.
+
+    **Checksum verified (R3-8):** when ``expected_sha256`` is set, both an existing
+    file and a fresh download are SHA-256-checked. A present-but-corrupt file is
+    rejected (and re-downloaded if allowed); a download whose hash does not match is
+    **deleted** rather than installed, so a silently-truncated fetch never poisons
+    the cache. Network/IO failures are swallowed (the analyzer then falls back to
+    silence) so a first run offline never breaks the loop.
     """
     path = Path(model_path)
     if path.is_file():
-        return True
+        if verify_checksum(path, expected_sha256):
+            return True
+        # Present but corrupt/wrong: drop it and re-fetch (if allowed) below.
+        log.warning("Smart Turn model at %s failed checksum; re-downloading.", model_path)
+        with contextlib.suppress(OSError):
+            path.unlink()
     if not auto_download or not url:
         return False
     log.info("downloading Smart Turn model %s -> %s ...", url, model_path)
@@ -69,6 +112,11 @@ def ensure_smart_turn_model(model_path: str, url: str, *, auto_download: bool = 
         if not data:
             return False
         tmp.write_bytes(data)
+        if not verify_checksum(tmp, expected_sha256):
+            log.warning("Smart Turn download checksum mismatch; discarding %s.", url)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            return False
         tmp.replace(path)
     except (urllib.error.URLError, OSError, ValueError):
         log.warning("Smart Turn model download failed; falling back to silence.", exc_info=True)
@@ -129,10 +177,18 @@ class SmartTurnAnalyzer:
         hard_silence_seconds: float = 2.5,
         model_url: str = "",
         auto_download: bool = False,
+        expected_sha256: str = "",
+        on_fallback: Any = None,
     ) -> None:
         self.model_path = model_path
         self.model_url = model_url
         self.auto_download = auto_download
+        self.expected_sha256 = expected_sha256
+        # Called once (with a reason str) the first time endpointing degrades to the
+        # fixed silence timer, so the runtime surfaces the degradation instead of
+        # silently regressing (R3-8). Injectable for tests / the spoken cue.
+        self._on_fallback = on_fallback
+        self._warned = False
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.frame_seconds = frame_seconds
@@ -146,24 +202,46 @@ class SmartTurnAnalyzer:
 
     # --- model loading (lazy, with graceful fallback) ---
 
+    def _fall_back(self, reason: str) -> None:
+        """Latch silence-timer fallback and surface it ONCE — explicitly (R3-8).
+
+        A silent download/runtime failure used to degrade endpointing to a fixed
+        silence timer with no warning. Now the first time it happens we log a
+        warning, publish an ``endpoint_fallback`` bus event (the UI can show it),
+        and invoke the optional ``on_fallback`` hook (e.g. a one-time spoken cue) —
+        so the regression is never invisible.
+        """
+        self._fallback = True
+        if self._warned:
+            return
+        self._warned = True
+        log.warning("Smart Turn endpointing unavailable (%s); using the silence timer.", reason)
+        with contextlib.suppress(Exception):
+            from .events import bus
+
+            bus.publish({"type": "endpoint_fallback", "reason": reason})
+        if self._on_fallback is not None:
+            with contextlib.suppress(Exception):
+                self._on_fallback(reason)
+
     def _ensure_model(self) -> bool:
         """Load the ONNX session + feature extractor once. Returns availability.
 
-        Auto-downloads the model on first use when configured (R2-4), mirroring the
-        Piper-voice download; falls back to silence if it is genuinely unavailable.
+        Auto-downloads + checksum-verifies the model on first use when configured
+        (R2-4/R3-8); falls back to silence — with an explicit warning — if it is
+        genuinely unavailable.
         """
         if self._fallback:
             return False
         if self._session is not None:
             return True
         if not ensure_smart_turn_model(
-            self.model_path, self.model_url, auto_download=self.auto_download
+            self.model_path,
+            self.model_url,
+            auto_download=self.auto_download,
+            expected_sha256=self.expected_sha256,
         ):
-            log.info(
-                "Smart Turn model not found at %s; falling back to silence endpointing.",
-                self.model_path,
-            )
-            self._fallback = True
+            self._fall_back(f"model not available at {self.model_path}")
             return False
         try:
             import onnxruntime  # noqa: PLC0415 — heavy, lazy
@@ -178,8 +256,7 @@ class SmartTurnAnalyzer:
             )
             return True
         except Exception:  # missing runtime / load failure must not break the loop
-            log.warning("Smart Turn unavailable; falling back to silence.", exc_info=True)
-            self._fallback = True
+            self._fall_back("ONNX runtime / feature extractor unavailable")
             return False
 
     # --- inference ---
@@ -234,13 +311,17 @@ class SmartTurnAnalyzer:
         self._audio = []
 
 
-def make_turn_analyzer(cfg: Config, frame_seconds: float) -> TurnAnalyzer:
+def make_turn_analyzer(
+    cfg: Config, frame_seconds: float, *, on_fallback: Any = None
+) -> TurnAnalyzer:
     """Build the configured :class:`TurnAnalyzer` (``cfg.turn_analyzer``).
 
     ``"smart"`` is the default (R2-4): it selects :class:`SmartTurnAnalyzer`, which
-    auto-downloads the Smart Turn v3 ONNX on first run and itself falls back to the
-    silence endpointer if the model/runtime is genuinely unavailable. ``"silence"``
-    selects the pure silence timer (explicit opt-out).
+    auto-downloads + checksum-verifies the Smart Turn v3 ONNX on first run (R3-8)
+    and itself falls back to the silence endpointer — surfacing an explicit warning
+    via ``on_fallback`` — if the model/runtime is genuinely unavailable. ``"silence"``
+    selects the pure silence timer (explicit opt-out). ``on_fallback(reason)`` is
+    invoked once on the first degradation (e.g. to speak a short cue).
     """
     if cfg.turn_analyzer == "smart":
         return SmartTurnAnalyzer(
@@ -251,5 +332,7 @@ def make_turn_analyzer(cfg: Config, frame_seconds: float) -> TurnAnalyzer:
             threshold=cfg.smart_turn_threshold,
             model_url=getattr(cfg, "smart_turn_model_url", ""),
             auto_download=getattr(cfg, "smart_turn_auto_download", False),
+            expected_sha256=getattr(cfg, "smart_turn_sha256", ""),
+            on_fallback=on_fallback,
         )
     return SilenceTurnAnalyzer(cfg.vad_silence_seconds, frame_seconds=frame_seconds)
