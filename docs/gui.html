@@ -345,6 +345,11 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" stroke="currentColor" stroke-width="1.5"/></svg>
               Push-to-Talk <kbd>SPACE</kbd>
             </button>
+            <button class="btn" id="liveAudioBtn" type="button" aria-pressed="false" hidden
+                    title="Stream your real mic to the assistant and hear TTS back (WebSocket PCM)">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
+              <span id="liveAudioLabel">Live Audio</span>
+            </button>
             <button class="btn danger" id="resetBtn" type="button" title="Clear conversation">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.4M20 5v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Reset
@@ -736,6 +741,9 @@ function populate(s){
   $("#length").value = ls;
   $("#lengthVal").textContent = ls.toFixed(2);
   updateVoiceNote();
+  // Real-audio control is shown only when the backend can carry mic/TTS PCM (R2-5).
+  const liveBtn = $("#liveAudioBtn");
+  if(liveBtn) liveBtn.hidden = !settings.audio_enabled;
   // readout
   $("#roWake").textContent  = settings.wake_phrase || "—";
   const v = (settings.voices||[]).find(x=>x.id===settings.voice_en);
@@ -897,6 +905,139 @@ function handleEvent(raw){
     default:
       log("event: "+raw, "evt");
   }
+}
+
+/* ============================================================
+   LIVE AUDIO  (R2-5) — real mic PCM out / TTS PCM in over a
+   same-origin WebSocket (CSP connect-src 'self' allows ws://).
+   16 kHz int16 LE frames match the Python transport wire format.
+   ============================================================ */
+const SR = 16000;                // pipeline sample rate (matches cfg.sample_rate)
+let audioWS = null, audioCtx = null, micNode = null, micStream = null;
+let playHead = 0, liveOn = false;
+
+function f32ToInt16(f32){
+  const out = new DataView(new ArrayBuffer(f32.length * 2));
+  for(let i=0;i<f32.length;i++){
+    let s = Math.max(-1, Math.min(1, f32[i]));
+    out.setInt16(i*2, s < 0 ? s*0x8000 : s*0x7fff, true);  // little-endian
+  }
+  return out.buffer;
+}
+function int16ToF32(buf){
+  const view = new DataView(buf);
+  const n = Math.floor(buf.byteLength / 2);
+  const out = new Float32Array(n);
+  for(let i=0;i<n;i++){ const v = view.getInt16(i*2, true); out[i] = v / (v < 0 ? 0x8000 : 0x7fff); }
+  return out;
+}
+// Downsample a capture-rate Float32 block to 16 kHz by linear decimation.
+function downsample(block, fromRate){
+  if(fromRate === SR) return block;
+  const ratio = fromRate / SR;
+  const n = Math.floor(block.length / ratio);
+  const out = new Float32Array(n);
+  for(let i=0;i<n;i++) out[i] = block[Math.floor(i*ratio)];
+  return out;
+}
+function playPcm(f32){
+  if(!audioCtx) return;
+  const buf = audioCtx.createBuffer(1, f32.length, SR);
+  buf.getChannelData(0).set(f32);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf; src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if(playHead < now) playHead = now;       // schedule back-to-back for gapless TTS
+  src.start(playHead); playHead += buf.duration;
+}
+
+// R3-1: a real WebRTC peer connection (Opus + jitter buffer + ICE NAT traversal)
+// with hardware/browser echo cancellation. Falls back to the raw-PCM WebSocket path
+// below if WebRTC is unavailable or the server lacks the `webrtc` extra.
+let pc = null;
+async function startWebRtc(){
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,
+      noiseSuppression:true, autoGainControl:true, channelCount:1}});
+  }catch(e){ log("mic permission denied: "+e.message, "error"); return false; }
+  try{
+    pc = new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
+    stream.getTracks().forEach(t=>pc.addTrack(t, stream));
+    micStream = stream;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    pc.ontrack = ev=>{
+      const a = new Audio(); a.srcObject = ev.streams[0]; a.autoplay = true;
+      a.play().catch(()=>{});
+    };
+    const offer = await pc.createOffer({offerToReceiveAudio:true});
+    await pc.setLocalDescription(offer);
+    const res = await fetch("/api/webrtc/offer", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})});
+    if(!res.ok) throw new Error("server declined WebRTC ("+res.status+")");
+    const answer = await res.json();
+    await pc.setRemoteDescription(answer);
+    log("WebRTC audio channel open (Opus)", "sys");
+    return true;
+  }catch(e){
+    log("WebRTC unavailable ("+e.message+"); falling back to PCM", "sys");
+    try{ if(pc) pc.close(); }catch(_){}
+    pc = null;
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+    micStream = null;
+    return false;
+  }
+}
+
+async function startLiveAudio(){
+  if(window.RTCPeerConnection && await startWebRtc()) return true;
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
+      echoCancellation:true, noiseSuppression:true}});
+  }catch(e){ log("mic permission denied: "+e.message, "error"); return false; }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  playHead = 0;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  audioWS = new WebSocket(`${proto}://${location.host}/ws/audio`);
+  audioWS.binaryType = "arraybuffer";
+  audioWS.onopen = ()=> log("live audio channel open", "sys");
+  audioWS.onmessage = ev => { if(ev.data instanceof ArrayBuffer) playPcm(int16ToF32(ev.data)); };
+  audioWS.onclose = ()=>{ log("live audio channel closed", "sys"); stopLiveAudio(true); };
+  audioWS.onerror = ()=> log("live audio channel error", "error");
+  const source = audioCtx.createMediaStreamSource(micStream);
+  // ScriptProcessor is deprecated but ubiquitous and CSP-clean (no worklet URL).
+  micNode = audioCtx.createScriptProcessor(2048, 1, 1);
+  micNode.onaudioprocess = e => {
+    if(!audioWS || audioWS.readyState !== 1) return;
+    const pcm = downsample(e.inputBuffer.getChannelData(0), audioCtx.sampleRate);
+    audioWS.send(f32ToInt16(pcm));
+  };
+  source.connect(micNode); micNode.connect(audioCtx.destination);
+  return true;
+}
+function stopLiveAudio(fromClose){
+  if(micNode){ try{ micNode.disconnect(); }catch(_){} micNode = null; }
+  if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
+  if(pc){ try{ pc.close(); }catch(_){} pc = null; }
+  if(audioWS && !fromClose){ try{ audioWS.close(); }catch(_){} }
+  audioWS = null;
+  liveOn = false;
+  const b = $("#liveAudioBtn");
+  if(b){ b.classList.remove("on"); b.setAttribute("aria-pressed","false"); }
+  const lbl = $("#liveAudioLabel"); if(lbl) lbl.textContent = "Live Audio";
+}
+const liveAudioBtn = $("#liveAudioBtn");
+if(liveAudioBtn){
+  liveAudioBtn.addEventListener("click", async ()=>{
+    if(liveOn){ stopLiveAudio(false); return; }
+    if(await startLiveAudio()){
+      liveOn = true;
+      liveAudioBtn.classList.add("on");
+      liveAudioBtn.setAttribute("aria-pressed","true");
+      $("#liveAudioLabel").textContent = "Stop Audio";
+    }
+  });
 }
 
 /* ============================================================

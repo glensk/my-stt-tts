@@ -36,9 +36,15 @@ fancier, the designer iterates.** Loop until ours wins (or ties at the top).
 
 ## Round log
 
-### Round 1 — designer redesign (in progress)
+### Round 1 — designer redesign → merged (`1f44a29`)
 
-Designer rewriting `README.md` from scratch to the spec, comprehensive across all current
-features (wake-word, barge-in + AEC, smart-turn, speaker ID, DE/FR/EN, streaming, tool
-calling, network/browser transport, GUI). Then a fresh fancy-checker vs the internet's
-fanciest READMEs.
+Full customer-facing rewrite: centered `<picture>` hero (committed `docs/assets/hero-{dark,light}.svg`),
+badge row, two showcase links line-by-line (control room first), 10-line plain-language feature
+list, 8 capabilities each with a folded `<details>` technical block, quick-start + folded deep
+install, privacy + mermaid pipeline. Benchmarked vs othneildrew/Best-README-Template and
+twentyhq/twenty; matches their structure and exceeds on progressive disclosure + bespoke SVG.
+Also caught + removed a real overclaim (Kokoro TTS — no runtime code). Lints clean via a repo
+`.markdownlint.jsonc`.
+
+**Next:** fancy-checker — fresh judge compares this README head-to-head against the internet's
+fanciest READMEs (forced "which is fancier"); if a competitor wins, designer round 2. Loop until ours wins.
