@@ -804,6 +804,19 @@ def run_wake_loop(
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
 
+def _announce_browser_url(url: str) -> None:
+    """Show the GUI URL prominently AND auto-open it in the default browser.
+
+    So ``--browser`` both opens the page and prints a clickable link (handy when
+    the auto-open is suppressed, e.g. on a headless host or over SSH).
+    """
+    import webbrowser
+
+    print(f"\n▶ Open in your browser:  {url}\n  (auto-opening… Ctrl-C to quit)")
+    with contextlib.suppress(Exception):  # headless / no browser is fine
+        webbrowser.open(url)
+
+
 def _run_browser(
     cfg: Config,
     brain: Brain,
@@ -819,8 +832,6 @@ def _run_browser(
 
     Typed turns from the page are guest (no audio); the browser-audio session and
     the optional wake loop are speaker-identified (G7) when ``speaker_id`` is set."""
-    import webbrowser
-
     from .webui import WebUI
 
     def on_turn(text: str) -> None:
@@ -866,9 +877,7 @@ def _run_browser(
             kwargs={"speaker_id": speaker_id},
             daemon=True,
         ).start()
-    print(f"my-stt-tts web UI → {ui.url()}  (Ctrl-C to quit)")
-    with contextlib.suppress(Exception):  # headless / no browser is fine
-        webbrowser.open(ui.url())
+    _announce_browser_url(ui.url())
     try:
         ui.serve_forever()
     except KeyboardInterrupt:
