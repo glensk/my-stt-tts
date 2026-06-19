@@ -116,13 +116,44 @@ def capture_turn(
 ) -> str:
     """Pull mic frames from ``transport`` until end-of-turn, then transcribe.
 
+    Convenience wrapper over :func:`capture_turn_clip` that returns only the
+    transcript (kept for back-compat with callers/tests that don't need the audio).
+    """
+    return capture_turn_clip(
+        transport,
+        cfg,
+        vad,
+        analyzer,
+        transcriber,
+        max_frames=max_frames,
+        source=source,
+        denoiser=denoiser,
+    )[0]
+
+
+def capture_turn_clip(
+    transport: AudioTransport,
+    cfg: Config,
+    vad: Any,
+    analyzer: Any,
+    transcriber: Transcriber,
+    *,
+    max_frames: int | None = None,
+    source: _MicSource | None = None,
+    denoiser: Any = None,
+) -> tuple[str, np.ndarray]:
+    """Pull mic frames until end-of-turn; return ``(transcript, captured_clip)``.
+
     Drives the supplied VAD + :class:`~my_stt_tts.turn.TurnAnalyzer` exactly like
     the local capture loop and feeds a :class:`StreamingTranscriber` so partial
     transcripts are published to the bus during the turn (and the final at the
     end). ``max_frames`` bounds the loop for tests; in production the analyzer
     ends the turn. ``source`` shares one mic reader across capture + barge-in
     monitoring (R3-2); ``denoiser`` (R3-6) cleans each frame before VAD/STT.
-    Returns the final transcript (possibly empty on silence).
+
+    The (denoised) captured PCM is also accumulated and returned so the speaker-ID
+    pipeline can embed the same audio (G7) — the local loops keep the clip too. On
+    silence returns ``("", empty)``.
     """
     streamer = StreamingTranscriber(
         transcriber,
@@ -134,11 +165,13 @@ def capture_turn(
         denoiser.reset()
     analyzer.reset()
     spoke = False
+    captured: list[np.ndarray] = []
     bus.state("recording")
     for seen, frame in enumerate(_iter_source(transport, source), start=1):
         arr = np.asarray(frame, dtype=np.float32).ravel()
         if denoiser is not None:
             arr = denoiser.process(arr)
+        captured.append(arr)
         is_speech = vad.is_speech(arr)
         spoke = spoke or is_speech
         partial = streamer.feed(arr)
@@ -150,9 +183,10 @@ def capture_turn(
             break
     if not spoke:
         bus.state("idle")
-        return ""
+        return "", np.zeros(0, dtype=np.float32)
     bus.state("stt")
-    return str(streamer.final().text).strip()
+    clip = np.concatenate(captured) if captured else np.zeros(0, dtype=np.float32)
+    return str(streamer.final().text).strip(), clip
 
 
 def _iter_source(transport: AudioTransport, source: _MicSource | None) -> Iterator[np.ndarray]:
@@ -166,6 +200,18 @@ def _iter_source(transport: AudioTransport, source: _MicSource | None) -> Iterat
             yield frame
 
 
+def _set_speaker(brain: Brain, speaker_id: Any, clip: np.ndarray | None) -> None:
+    """Resolve a captured clip to an enrolled name and set it on the brain (G7).
+
+    Mirrors the local loop: gated + defensive. With no pipeline (disabled / no
+    enrollment / no speechbrain) or no clip the speaker is ``None`` (shared guest
+    bucket) and nothing is embedded. The identified name is published to the bus so
+    a remote/browser UI can show who is talking."""
+    name = speaker_id.identify(clip) if speaker_id is not None and clip is not None else None
+    brain.set_speaker(name)
+    bus.speaker(name)
+
+
 def respond_over_transport(
     transport: AudioTransport,
     cfg: Config,
@@ -177,6 +223,8 @@ def respond_over_transport(
     vad: Any | None = None,
     denoiser: Any = None,
     sink: TelemetrySink | None = None,
+    speaker_id: Any = None,
+    clip: np.ndarray | None = None,
 ) -> TransportResult:
     """Stream the LLM reply for ``text``, synthesize each sentence, sink it to ``transport``.
 
@@ -187,8 +235,14 @@ def respond_over_transport(
     Otherwise it is half-duplex over the wire (the original R2-5 behaviour). The
     streamed text is also published to the bus for the GUI. On an LLM error it
     sends a short spoken apology, mirroring the local loop.
-    """
 
+    ``speaker_id`` + ``clip`` (G7): when both are supplied the clip is embedded and
+    resolved to an enrolled name before streaming, so memory is per-person — the
+    same wiring as the local loop, just over the wire. The barge-in chaining in
+    :func:`run_transport_session` passes each follow-up's captured clip so a
+    different remote speaker is re-identified.
+    """
+    _set_speaker(brain, speaker_id, clip)
     metrics = TurnMetrics()
     metrics.note(transcript=text, transport=True)
     voiced_any = False
@@ -408,14 +462,17 @@ def run_transport_session(
     transcriber: Transcriber,
     *,
     vad: Any | None = None,
+    speaker_id: Any = None,
 ) -> None:
     """Run turns over ``transport`` until its mic source ends (one satellite session).
 
     Builds the VAD + turn analyzer from config (lazily, so tests can inject), then
     loops: capture a turn, respond over the wire. Full-duplex barge-in (R3-2) is
     armed when ``cfg.barge_in`` is on — the reply is interruptible and the captured
-    audio seeds the next turn. Ends when ``mic_frames`` is exhausted (the client
-    disconnected). Used as the ``on_session`` callback by the WebSocket server.
+    audio seeds the next turn. ``speaker_id`` (G7), when supplied, identifies the
+    captured clip before each reply so memory is per-person over the wire. Ends when
+    ``mic_frames`` is exhausted (the client disconnected). Used as the ``on_session``
+    callback by the WebSocket server.
     """
     if vad is None:
         from .vad import SileroVad
@@ -431,7 +488,7 @@ def run_transport_session(
     bus.state("idle")
     while not _transport_closed(transport) and not source.closed:
         analyzer = make_turn_analyzer(cfg, frame_seconds)
-        text = capture_turn(
+        text, clip = capture_turn_clip(
             transport, cfg, vad, analyzer, transcriber, source=source, denoiser=denoiser
         )
         if not text:
@@ -446,9 +503,13 @@ def run_transport_session(
             vad=vad if barge_on else None,
             denoiser=denoiser,
             sink=sink,
+            speaker_id=speaker_id,
+            clip=clip,
         )
-        # Chain barge-in follow-ups: the captured audio becomes the next turn.
+        # Chain barge-in follow-ups: the captured audio becomes the next turn (and is
+        # re-identified — the interrupter may be a different person) (G7).
         while result.interrupted and result.captured.size and not source.closed:
+            barge_clip = result.captured
             follow = _transcribe_captured(cfg, transcriber, result.captured)
             bus.interrupt_stop()
             if not follow:
@@ -463,6 +524,8 @@ def run_transport_session(
                 vad=vad if barge_on else None,
                 denoiser=denoiser,
                 sink=sink,
+                speaker_id=speaker_id,
+                clip=barge_clip,
             )
 
 

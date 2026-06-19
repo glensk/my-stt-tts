@@ -103,6 +103,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
+        f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
+        f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
         f"  prompt     {blue}{prompt_head}…{reset}  (edit prompts/system_prompt.md)",
@@ -384,6 +386,21 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
     gate.release()
 
 
+def _set_speaker(brain: Brain, speaker_id: object | None, clip: np.ndarray | None) -> None:
+    """Resolve a clip to an enrolled speaker and set it on the brain (G7).
+
+    Runs sequentially just before ``brain.stream`` so per-speaker memory keys to the
+    right person. Gated: with no pipeline (disabled / no enrollment / no speechbrain)
+    or a typed turn (``clip is None``) the speaker is ``None`` (shared guest bucket)
+    and there is no embed cost. The pipeline's :meth:`identify` is itself defensive,
+    so a model/clip failure simply yields ``None`` — never a crashed turn. The
+    identified name is published to the bus so the web UI can show who is talking.
+    """
+    name = speaker_id.identify(clip) if speaker_id is not None and clip is not None else None  # type: ignore[attr-defined]
+    brain.set_speaker(name)
+    bus.speaker(name)
+
+
 def _respond(
     cfg: Config,
     brain: Brain,
@@ -394,13 +411,21 @@ def _respond(
     vad: object | None = None,
     source: object | None = None,
     denoiser: object | None = None,
+    speaker_id: object | None = None,
+    clip: np.ndarray | None = None,
 ) -> RespondResult:
     """Stream the LLM for ``text``, speak it, and publish live state to the bus.
 
     When ``cfg.barge_in`` is enabled and a ``vad`` is supplied, the mic stays live
     during playback; confirmed user speech (gated by :class:`InterruptGate`)
     aborts TTS + the LLM stream and the spoken-prefix is committed to history
-    (G1/G4/G5). Otherwise playback is half-duplex (mic gated)."""
+    (G1/G4/G5). Otherwise playback is half-duplex (mic gated).
+
+    ``speaker_id`` + ``clip`` (G7): when both are supplied the clip is embedded and
+    resolved to an enrolled name before streaming, so memory is per-person. The
+    barge-in chaining loops call this again with the freshly *captured* clip, so a
+    different person interrupting is re-identified for the follow-up turn."""
+    _set_speaker(brain, speaker_id, clip)
     metrics = TurnMetrics()
     metrics.note(transcript=text)
     bus.transcript(text)
@@ -556,7 +581,18 @@ def _maybe_streamer(cfg: Config, stt: object) -> Any:
     )
 
 
-def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> str:
+@dataclass
+class _Captured:
+    """A push-to-talk capture: the transcript plus the raw clip it came from (G7).
+
+    The clip is kept (not discarded after STT) so the speaker-ID pipeline can embed
+    the same audio and key conversation memory per-person."""
+
+    text: str = ""
+    clip: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+
+def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> _Captured:
     gate.gate()
     _play(chimes.chime_listening())
     gate.release()
@@ -567,9 +603,10 @@ def _capture_ptt(cfg: Config, stt: object, gate: audio.MicGate) -> str:
     gate.release()
     if clip.size == 0:
         bus.state("idle")
-        return ""
+        return _Captured()
     bus.state("stt")
-    return str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
+    text = str(stt.transcribe(clip, cfg.sample_rate).text)  # type: ignore[attr-defined]
+    return _Captured(text=text, clip=clip)
 
 
 def _transcribe(cfg: Config, stt: object, clip: np.ndarray) -> str:
@@ -619,27 +656,50 @@ def run_turn(
     stt: object | None = None,
     typed_text: str | None = None,
     vad: object | None = None,
+    speaker_id: object | None = None,
 ) -> None:
-    """Run one push-to-talk or typed turn (chaining barge-in follow-ups)."""
-    text = typed_text.strip() if typed_text is not None else _capture_ptt(cfg, stt, gate)
+    """Run one push-to-talk or typed turn (chaining barge-in follow-ups).
+
+    For spoken turns the recorded clip is also speaker-identified (G7) so per-person
+    memory is keyed correctly; typed turns set the speaker to ``None`` (guest)."""
+    if typed_text is not None:
+        text = typed_text.strip()
+        clip: np.ndarray | None = None
+    else:
+        captured = _capture_ptt(cfg, stt, gate)
+        text, clip = captured.text, captured.clip
     if not text:
         return
     if cfg.debug and typed_text is None:
         tts.speak("recorded")
     active_vad = vad if typed_text is None else None
     while text:
-        result = _respond(cfg, brain, tts, gate, text, vad=active_vad)
+        result = _respond(
+            cfg, brain, tts, gate, text, vad=active_vad, speaker_id=speaker_id, clip=clip
+        )
         if not result.interrupted:
             return
         # User barged in: their captured audio is handed straight to the streaming
-        # transcriber (no from-scratch re-transcribe) as the next turn (R2-6).
+        # transcriber (no from-scratch re-transcribe) as the next turn (R2-6). The
+        # interrupter may be a different person, so the captured clip is re-identified
+        # on the next _respond (G7).
+        clip = result.captured
         text = _transcribe_barge_in(cfg, stt, result.captured) if stt is not None else ""
 
 
 def run_wake_loop(
-    cfg: Config, brain: Brain, tts: TTSRouter, gate: audio.MicGate, stt: object
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    gate: audio.MicGate,
+    stt: object,
+    *,
+    speaker_id: object | None = None,
 ) -> int:
-    """Always-listen: on the wake phrase, capture (VAD), respond, then follow up."""
+    """Always-listen: on the wake phrase, capture (VAD), respond, then follow up.
+
+    The VAD-recorded utterance clip is speaker-identified (G7) before responding so
+    memory is per-person; each barge-in follow-up re-identifies its captured clip."""
     from .aec import make_voiceprocessing_capture
     from .denoise import make_denoiser
     from .turn import make_turn_analyzer
@@ -696,17 +756,37 @@ def run_wake_loop(
             if not text:
                 break
             result = _respond(
-                cfg, brain, tts, gate, text, vad=barge_vad, source=hw_source, denoiser=denoiser
+                cfg,
+                brain,
+                tts,
+                gate,
+                text,
+                vad=barge_vad,
+                source=hw_source,
+                denoiser=denoiser,
+                speaker_id=speaker_id,
+                clip=clip,
             )
             while result.interrupted:
                 # Hand the captured barge-in audio straight to the transcriber as
                 # the next turn (no from-scratch re-transcribe, R2-6), and keep
-                # chaining if the new reply is itself interrupted.
+                # chaining if the new reply is itself interrupted. The captured clip
+                # is re-identified (a different person may have barged in) (G7).
+                barge_clip = result.captured
                 text = _transcribe_barge_in(cfg, stt, result.captured)
                 if not text:
                     break
                 result = _respond(
-                    cfg, brain, tts, gate, text, vad=barge_vad, source=hw_source, denoiser=denoiser
+                    cfg,
+                    brain,
+                    tts,
+                    gate,
+                    text,
+                    vad=barge_vad,
+                    source=hw_source,
+                    denoiser=denoiser,
+                    speaker_id=speaker_id,
+                    clip=barge_clip,
                 )
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
@@ -720,13 +800,18 @@ def _run_browser(
     *,
     wake: bool,
     port: int = 8765,
+    speaker_id: object | None = None,
 ) -> int:
-    """Serve the web GUI; turns are driven from the page (and optional wake loop)."""
+    """Serve the web GUI; turns are driven from the page (and optional wake loop).
+
+    Typed turns from the page are guest (no audio); the browser-audio session and
+    the optional wake loop are speaker-identified (G7) when ``speaker_id`` is set."""
     import webbrowser
 
     from .webui import WebUI
 
     def on_turn(text: str) -> None:
+        # Typed-only from the page in this build -> guest bucket (no clip to embed).
         _respond(cfg, brain, tts, gate, text)
 
     def on_action(name: str, _data: dict) -> None:
@@ -749,14 +834,24 @@ def _run_browser(
     def _audio_session(transport: object) -> None:
         from .net_loop import run_transport_session
 
-        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
+        run_transport_session(
+            transport,  # type: ignore[arg-type]
+            cfg,
+            brain,
+            tts,
+            stt,  # type: ignore[arg-type]
+            speaker_id=speaker_id,
+        )
 
     on_audio_session = _audio_session if stt is not None else None
     ui = WebUI(cfg, on_turn, on_action, port=port, on_audio_session=on_audio_session)
     bus.state("idle")
     if wake and stt is not None:
         threading.Thread(
-            target=run_wake_loop, args=(cfg, brain, tts, gate, stt), daemon=True
+            target=run_wake_loop,
+            args=(cfg, brain, tts, gate, stt),
+            kwargs={"speaker_id": speaker_id},
+            daemon=True,
         ).start()
     print(f"my-stt-tts web UI → {ui.url()}  (Ctrl-C to quit)")
     with contextlib.suppress(Exception):  # headless / no browser is fine
@@ -774,13 +869,14 @@ def _make_session_runner(
     tts: TTSRouter,
     stt: object,
     realtime_brain: object | None,
+    speaker_id: object | None = None,
 ) -> Any:
     """Return the ``on_session(transport)`` callback for a network/telephony client.
 
     Picks the brain at the transport boundary (R3-5): when a keyed realtime brain
     is present, the client's audio is bridged straight to the speech-to-speech
     endpoint (cascade bypassed); otherwise it runs the full STT->LLM->TTS
-    :func:`run_transport_session` loop. Same callable shape either way.
+    :func:`run_transport_session` loop (with speaker ID, G7). Same callable shape.
     """
     if realtime_brain is not None:
         from .realtime import run_realtime_session
@@ -793,7 +889,14 @@ def _make_session_runner(
     from .net_loop import run_transport_session
 
     def _cascade_session(transport: object) -> None:
-        run_transport_session(transport, cfg, brain, tts, stt)  # type: ignore[arg-type]
+        run_transport_session(
+            transport,  # type: ignore[arg-type]
+            cfg,
+            brain,
+            tts,
+            stt,  # type: ignore[arg-type]
+            speaker_id=speaker_id,
+        )
 
     return _cascade_session
 
@@ -804,6 +907,7 @@ def _run_websocket_server(
     tts: TTSRouter,
     stt: object | None,
     realtime_brain: object | None = None,
+    speaker_id: object | None = None,
 ) -> int:
     """Serve the WebSocket audio transport (R2-5): bridge remote clients to the pipeline.
 
@@ -820,7 +924,7 @@ def _run_websocket_server(
 
         stt = make_transcriber(cfg)
 
-    on_session = _make_session_runner(cfg, brain, tts, stt, realtime_brain)
+    on_session = _make_session_runner(cfg, brain, tts, stt, realtime_brain, speaker_id)
     print(
         f"my-stt-tts WebSocket transport → ws://{cfg.transport_host}:{cfg.transport_port}"
         "  (Ctrl-C to quit)"
@@ -884,7 +988,13 @@ def _run_telephony_server(
 
 
 def _run_webrtc_server(
-    cfg: Config, brain: Brain, tts: TTSRouter, stt: object | None, *, port: int = 8765
+    cfg: Config,
+    brain: Brain,
+    tts: TTSRouter,
+    stt: object | None,
+    *,
+    port: int = 8765,
+    speaker_id: object | None = None,
 ) -> int:
     """Serve the WebRTC signaling + GUI (R3-1): browser connects via RTCPeerConnection.
 
@@ -905,7 +1015,7 @@ def _run_webrtc_server(
         stt = make_transcriber(cfg)
     gate = audio.MicGate(cfg.mic_gate_tail_seconds)
     print(f"my-stt-tts WebRTC server (browser RTCPeerConnection) → port {port}  (Ctrl-C to quit)")
-    return _run_browser(cfg, brain, tts, gate, stt, wake=False, port=port)
+    return _run_browser(cfg, brain, tts, gate, stt, wake=False, port=port, speaker_id=speaker_id)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -955,20 +1065,30 @@ def main(argv: list[str] | None = None) -> int:
 
     realtime_brain = make_realtime_brain(cfg)
 
+    # G7: build the speaker-ID pipeline ONCE (or None). Gated + defensive — it loads
+    # nothing and adds no latency unless speaker ID is enabled AND voices are
+    # enrolled AND speechbrain is installed. Threaded into the live loops so the
+    # recorded clip resolves to a person and memory is per-speaker.
+    from .speaker_pipeline import SpeakerPipeline
+
+    speaker_id = SpeakerPipeline.from_config(cfg)
+
     if not args.browser:
         print(settings_text(cfg))
     try:
         if cfg.telephony:  # R3-9: answer Twilio phone calls over the WS transport
             return _run_telephony_server(cfg, brain, tts, stt, realtime_brain)
         if cfg.transport == "websocket":
-            return _run_websocket_server(cfg, brain, tts, stt, realtime_brain)
+            return _run_websocket_server(cfg, brain, tts, stt, realtime_brain, speaker_id)
         if cfg.transport == "webrtc":
-            return _run_webrtc_server(cfg, brain, tts, stt, port=args.port)
+            return _run_webrtc_server(cfg, brain, tts, stt, port=args.port, speaker_id=speaker_id)
         if args.browser:
-            return _run_browser(cfg, brain, tts, gate, stt, wake=args.wake, port=args.port)
+            return _run_browser(
+                cfg, brain, tts, gate, stt, wake=args.wake, port=args.port, speaker_id=speaker_id
+            )
         if args.wake:
-            return run_wake_loop(cfg, brain, tts, gate, stt)
-        _run_terminal_modes(args, cfg, brain, tts, gate, stt)
+            return run_wake_loop(cfg, brain, tts, gate, stt, speaker_id=speaker_id)
+        _run_terminal_modes(args, cfg, brain, tts, gate, stt, speaker_id=speaker_id)
     except (KeyboardInterrupt, EOFError):
         print("\nbye")
     return 0
@@ -981,8 +1101,12 @@ def _run_terminal_modes(
     tts: TTSRouter,
     gate: audio.MicGate,
     stt: object | None,
+    *,
+    speaker_id: object | None = None,
 ) -> None:
-    """One typed turn, the interactive typed loop, or the push-to-talk mic loop."""
+    """One typed turn, the interactive typed loop, or the push-to-talk mic loop.
+
+    Push-to-talk turns are speaker-identified (G7); typed turns are guest (None)."""
     if args.text is not None:
         run_turn(cfg, brain, tts, gate, typed_text=args.text)
         return
@@ -1000,7 +1124,7 @@ def _run_terminal_modes(
         ptt_vad = SileroVad(cfg.sample_rate)
     print("Push-to-talk: Enter to start/stop each turn. Ctrl-C to quit.")
     while True:
-        run_turn(cfg, brain, tts, gate, stt=stt, vad=ptt_vad)
+        run_turn(cfg, brain, tts, gate, stt=stt, vad=ptt_vad, speaker_id=speaker_id)
         if args.once:
             return
 
