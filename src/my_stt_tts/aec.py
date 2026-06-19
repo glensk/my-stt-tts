@@ -29,7 +29,10 @@ with the echo removed. The monitor loop pushes the active
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from collections import deque
+from collections.abc import Iterator
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -208,6 +211,167 @@ class VoiceProcessingEchoCanceller:
 
     def reset(self) -> None:  # noqa: D102
         return None
+
+
+class VoiceProcessingCapture:
+    """Capture mic audio THROUGH the macOS VoiceProcessingIO unit (R3-4, closes G3).
+
+    This is the real hardware-AEC capture path: instead of capturing via plain
+    ``sounddevice`` (which the OS does *not* echo-cancel) and cancelling in Python,
+    we open an ``AVAudioEngine`` whose input node has
+    ``setVoiceProcessingEnabled_(True)``, install a **tap** on its output bus, and
+    pull the **already-echo-cancelled** PCM the OS HAL produces. The tap callback
+    bridges each ``AVAudioPCMBuffer`` (non-interleaved float32, channel 0) into a
+    numpy frame, resamples it from the device rate (48 kHz) to the pipeline
+    ``sample_rate``, and queues it; :meth:`mic_frames` yields fixed-size frames so
+    it is a drop-in mic source for the capture loop.
+
+    PyObjC (the ``aec`` extra) is lazy-imported. :meth:`start` returns False if the
+    bridge can't be built (no PyObjC / VP can't enable / the engine won't start),
+    and the caller falls back to ``sounddevice`` + software NLMS — so this never
+    breaks the loop, it just upgrades the front-end when the HAL cooperates.
+    """
+
+    def __init__(self, sample_rate: int = 16000, *, frame_samples: int = 512) -> None:
+        self.sample_rate = sample_rate
+        self.frame_samples = frame_samples
+        self._engine: Any = None
+        self._input: Any = None
+        self._device_sr: float = 48000.0
+        self._q: queue.Queue[np.ndarray] = queue.Queue(maxsize=256)
+        self._residual = np.zeros(0, dtype=np.float32)
+        self._started = threading.Event()
+        self._closed = threading.Event()
+
+    @staticmethod
+    def available() -> bool:
+        """Whether the AVAudioEngine tap API is importable on this machine."""
+        try:
+            import AVFoundation  # noqa: PLC0415
+
+            # pylint: disable=no-member  # PyObjC populates these dynamically
+            return hasattr(AVFoundation, "AVAudioEngine") and hasattr(
+                AVFoundation.AVAudioInputNode, "installTapOnBus_bufferSize_format_block_"
+            )
+        except Exception:
+            return False
+
+    def start(self) -> bool:
+        """Open the engine, enable voice processing, install the tap. Returns success."""
+        try:
+            import AVFoundation  # noqa: PLC0415
+
+            # pylint: disable=no-member  # PyObjC populates these dynamically
+            engine = AVFoundation.AVAudioEngine.alloc().init()
+            input_node = engine.inputNode()
+            ok, err = input_node.setVoiceProcessingEnabled_error_(True, None)
+            if not ok or not input_node.isVoiceProcessingEnabled():
+                log.info("VoiceProcessingIO could not be enabled for capture: %s", err)
+                return False
+            fmt = input_node.outputFormatForBus_(0)
+            self._device_sr = float(fmt.sampleRate())
+            input_node.installTapOnBus_bufferSize_format_block_(0, 1024, fmt, self._on_buffer)
+            engine.prepare()
+            ok2, err2 = engine.startAndReturnError_(None)
+            if not ok2:
+                log.info("AVAudioEngine failed to start: %s", err2)
+                with _suppress():
+                    input_node.removeTapOnBus_(0)
+                return False
+            self._engine = engine
+            self._input = input_node
+            self._started.set()
+            return True
+        except Exception:  # any PyObjC / CoreAudio failure -> caller falls back
+            log.info("VoiceProcessingIO capture unavailable; using sounddevice + NLMS.")
+            return False
+
+    def _on_buffer(self, buf: Any, _when: Any) -> None:
+        """Tap callback: bridge channel-0 float32 PCM -> numpy, resample, enqueue."""
+        try:
+            n = int(buf.frameLength())
+            channels = buf.floatChannelData()
+            if channels is None or n == 0:
+                return
+            raw = np.frombuffer(channels[0].as_buffer(n * 4), dtype=np.float32).copy()
+        except Exception:  # malformed buffer -> drop it, never raise into CoreAudio
+            return
+        frame = self._resample(raw)
+        with _suppress_full():
+            self._q.put_nowait(frame)
+
+    def _resample(self, arr: np.ndarray) -> np.ndarray:
+        """Linear-resample a device-rate block to the pipeline ``sample_rate``."""
+        if self._device_sr == self.sample_rate or arr.size == 0:
+            return arr
+        n_out = max(1, int(round(arr.size * self.sample_rate / self._device_sr)))
+        x_new = np.linspace(0.0, arr.size - 1, n_out)
+        return np.interp(x_new, np.arange(arr.size), arr).astype(np.float32)
+
+    def mic_frames(self) -> Iterator[np.ndarray]:
+        """Yield fixed-size (``frame_samples``) HW-cancelled mic frames until closed.
+
+        Drains the queue even after :meth:`close` so buffered frames are still
+        delivered (the loop only ends once the queue has run dry)."""
+        while True:
+            try:
+                block = self._q.get(timeout=0.1)
+            except queue.Empty:
+                if self._closed.is_set():
+                    return
+                continue
+            self._residual = np.concatenate([self._residual, block])
+            while self._residual.size >= self.frame_samples:
+                yield self._residual[: self.frame_samples].copy()
+                self._residual = self._residual[self.frame_samples :]
+
+    def close(self) -> None:
+        """Stop the engine and remove the tap (idempotent)."""
+        self._closed.set()
+        with _suppress():
+            if self._input is not None:
+                self._input.removeTapOnBus_(0)
+            if self._engine is not None:
+                self._engine.stop()
+
+
+class _suppress:  # noqa: N801 — tiny context-manager helper
+    """Swallow any exception (best-effort PyObjC teardown)."""
+
+    def __enter__(self) -> _suppress:
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return True
+
+
+class _suppress_full:  # noqa: N801 — tiny queue.Full swallow
+    def __enter__(self) -> _suppress_full:
+        return self
+
+    def __exit__(self, exc_type: type | None, *_exc: object) -> bool:
+        return exc_type is not None and issubclass(exc_type, queue.Full)
+
+
+def make_voiceprocessing_capture(cfg: Any) -> VoiceProcessingCapture | None:
+    """Build + start a :class:`VoiceProcessingCapture`, or None to fall back (R3-4).
+
+    Returns a started capture only when ``aec_mode`` selects the hardware path,
+    ``aec_hw_capture`` is on, and the PyObjC bridge actually starts. In every other
+    case returns None so the caller uses ``sounddevice`` (+ software NLMS).
+    """
+    mode = getattr(cfg, "aec_mode", "off")
+    if mode not in ("voiceprocessing", "auto") or not getattr(cfg, "aec_hw_capture", True):
+        return None
+    if not VoiceProcessingCapture.available():
+        if mode == "voiceprocessing":
+            log.info("HW-AEC capture requested but PyObjC/VoiceProcessingIO is unavailable.")
+        return None
+    capture = VoiceProcessingCapture(int(getattr(cfg, "sample_rate", 16000)))
+    if capture.start():
+        log.info("capturing through macOS VoiceProcessingIO (hardware AEC).")
+        return capture
+    return None
 
 
 def make_echo_canceller(cfg: Any) -> EchoCanceller:
