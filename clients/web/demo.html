@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- CSP-safe: same-origin only. `connect-src 'self'` permits the same-origin
+       WebSocket (/ws/audio); no external scripts, styles, or fonts. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>my-stt-tts — browser audio demo</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0f1115; color: #e6e9ef; margin: 0; padding: 2rem;
+      max-width: 44rem; margin-inline: auto;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+    p.sub { color: #9aa3b2; margin-top: 0; }
+    fieldset { border: 1px solid #2a2f3a; border-radius: .6rem; padding: 1rem 1.25rem; }
+    legend { color: #9aa3b2; padding: 0 .4rem; }
+    label { display: block; margin: .6rem 0 .2rem; color: #c5cbd6; font-size: .9rem; }
+    input[type=text] {
+      width: 100%; box-sizing: border-box; padding: .55rem .7rem;
+      background: #161a22; color: #e6e9ef; border: 1px solid #2a2f3a; border-radius: .4rem;
+    }
+    .row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-top: 1rem; }
+    button {
+      font: inherit; padding: .6rem 1.1rem; border-radius: .5rem; border: 1px solid #2a2f3a;
+      background: #1d2330; color: #e6e9ef; cursor: pointer;
+    }
+    button.on { background: #c0392b; border-color: #e74c3c; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .pill { display: inline-block; padding: .2rem .6rem; border-radius: 1rem; font-size: .8rem;
+            background: #1d2330; border: 1px solid #2a2f3a; }
+    .pill[data-state=streaming] { background: #15331f; border-color: #2ecc71; color: #b8f0c9; }
+    .pill[data-state=closed], .pill[data-state=error] { background: #331515; border-color: #e74c3c; }
+    #log {
+      margin-top: 1.25rem; height: 14rem; overflow: auto; background: #0b0d12;
+      border: 1px solid #2a2f3a; border-radius: .5rem; padding: .75rem 1rem;
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+    }
+    #log .err { color: #ff8a80; }
+    #log .sys { color: #8ab4f8; }
+    code { background: #161a22; padding: .1rem .35rem; border-radius: .3rem; }
+  </style>
+</head>
+<body>
+  <h1>my-stt-tts — browser audio demo</h1>
+  <p class="sub">
+    Streams your mic (16&nbsp;kHz int16-LE PCM) to a my-stt-tts server over a
+    WebSocket and plays the TTS reply. See <code>clients/PROTOCOL.md</code>.
+  </p>
+
+  <fieldset>
+    <legend>Connection</legend>
+    <label for="url">WebSocket URL</label>
+    <input id="url" type="text" spellcheck="false"
+           placeholder="ws://HOST:8765/ws/audio">
+    <label for="token">Token (native transport only; leave blank for browser <code>/ws/audio</code>)</label>
+    <input id="token" type="text" spellcheck="false" placeholder="(optional)">
+    <label><input id="native" type="checkbox"> Native transport (port 8770, JSON <code>hello</code> + token)</label>
+    <div class="row">
+      <button id="toggle">Start Audio</button>
+      <span>Status: <span id="state" class="pill" data-state="idle">idle</span></span>
+    </div>
+  </fieldset>
+
+  <div id="log" aria-live="polite"></div>
+
+  <script type="module">
+    import { SttTtsClient } from "./my-stt-tts-client.js";
+
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log"), stateEl = $("state"), toggle = $("toggle");
+    const urlEl = $("url"), tokenEl = $("token"), nativeEl = $("native");
+
+    // Default to the browser same-origin /ws/audio endpoint when served by the
+    // my-stt-tts WebUI; otherwise the user types a ws:// URL explicitly.
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    urlEl.value = location.host
+      ? `${proto}://${location.host}/ws/audio`
+      : "ws://127.0.0.1:8765/ws/audio";
+
+    function log(msg, cls) {
+      const line = document.createElement("div");
+      if (cls) line.className = cls;
+      line.textContent = msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setState(s) { stateEl.textContent = s; stateEl.dataset.state = s; }
+
+    let client = null;
+
+    toggle.addEventListener("click", async () => {
+      if (client && client.running) {
+        client.stop();
+        client = null;
+        toggle.textContent = "Start Audio";
+        toggle.classList.remove("on");
+        setState("idle");
+        return;
+      }
+      client = new SttTtsClient({
+        url: urlEl.value.trim(),
+        nativeHandshake: nativeEl.checked,
+        token: tokenEl.value.trim() || null,
+        onStatus: (s) => setState(s),
+        onLog: (m) => log(m, "sys"),
+        onError: (e) => { log(e.message, "err"); setState("error"); },
+      });
+      const ok = await client.start();
+      if (ok) {
+        toggle.textContent = "Stop Audio";
+        toggle.classList.add("on");
+        log("speak now — the assistant will reply through your speakers.", "sys");
+      } else {
+        client = null;
+      }
+    });
+  </script>
+</body>
+</html>
