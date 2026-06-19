@@ -117,13 +117,13 @@ transport/audio robustness, highest leverage):
 
 **Wave D** (breadth / ops):
 
-- [ ] **R3-5 — Speech-to-speech / realtime LLM option** (OpenAI Realtime / Gemini Live):
+- [x] **R3-5 — Speech-to-speech / realtime LLM option** (OpenAI Realtime / Gemini Live):
   stream mic audio to a realtime endpoint and play its audio back, bypassing the cascade.
-- [ ] **R3-7 — Per-stage latency telemetry**: emit STT/LLM/TTS/first-audio latencies keyed by
+- [x] **R3-7 — Per-stage latency telemetry**: emit STT/LLM/TTS/first-audio latencies keyed by
   `speech_id` to the bus + structured log (optional OpenTelemetry).
-- [ ] **R3-8 — Verified first-run bootstrap**: a preflight that fetches+checksums the Smart-Turn
+- [x] **R3-8 — Verified first-run bootstrap**: a preflight that fetches+checksums the Smart-Turn
   model (and Piper voices), with a surfaced warning when it falls back to the silence timer.
-- [ ] **R3-9 — Telephony reach**: a Twilio-Media-Streams serializer over the WS transport.
+- [x] **R3-9 — Telephony reach**: a Twilio-Media-Streams serializer over the WS transport.
 
 Wave C merged at `1f44a29` (8 commits, +~2900 lines, new `webrtc_transport.py`/`denoise.py`;
 **170 tests pass**, lint clean). aiortc WebRTC verified end-to-end (two real peers, Opus); macOS
@@ -132,5 +132,11 @@ clause-level TTS, and a spectral-gate denoiser all wired + tested. Caveats: `pyr
 arm64-runtime-broken → numpy spectral denoiser is the working default; concurrent wake-listen +
 VoiceProcessingIO has a documented device-contention edge.
 
-Current action: **Wave D** (R3-5 realtime speech-to-speech, R3-7 latency telemetry, R3-8 first-run
-model bootstrap, R3-9 telephony), then a round-4 checker.
+Wave D merged at `93f3227..841bc2f` (7 commits, new `realtime.py`/`metrics.py`/`preflight.py`/
+`telephony.py`; **202 tests pass**, lint clean): OpenAI-Realtime speech-to-speech brain, per-stage
+latency telemetry (+ live-verified OpenTelemetry), checksum-verified `--preflight` bootstrap (real
+Smart-Turn SHA pinned), and a Twilio Media-Streams telephony transport (G.711 μ-law verified vs stdlib).
+
+**All round-3 gaps (R3-1…R3-9) closed.** Current action: round-4 checker (pipecat vs my-stt-tts) —
+with full-duplex+AEC barge-in, WebRTC/WebSocket/telephony transports, streaming STT, smart-turn,
+tool calling, realtime S2S, and telemetry all shipped, this is the strongest case yet for the flip.
