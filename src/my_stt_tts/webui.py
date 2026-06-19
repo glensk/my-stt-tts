@@ -27,6 +27,7 @@ from .config import (
     PROVIDERS,
     TRANSPORT_MODES,
     TURN_ANALYZERS,
+    UNITS,
     Config,
 )
 from .events import bus
@@ -62,6 +63,8 @@ def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]
         "agent_workspace": cfg.agent_workspace or "",
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
+        "location": cfg.location,
+        "units": cfg.units,
         "barge_in": cfg.barge_in,
         "aec_mode": cfg.aec_mode,
         "turn_analyzer": cfg.turn_analyzer,
@@ -86,6 +89,7 @@ def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]
         "turn_analyzers": list(TURN_ANALYZERS),
         "transport_modes": list(TRANSPORT_MODES),
         "denoiser_modes": list(DENOISER_MODES),
+        "units_modes": list(UNITS),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
             for name in VOICE_PRESETS
@@ -115,6 +119,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         cfg.agent_model = str(data["agent_model"])
     if "system_prompt" in data:
         cfg.system_prompt = str(data["system_prompt"])
+    if "location" in data:
+        cfg.location = str(data["location"])
+    if "units" in data:
+        cfg.units = str(data["units"])
     if "barge_in" in data:
         cfg.barge_in = str(data["barge_in"])
     if "aec_mode" in data:

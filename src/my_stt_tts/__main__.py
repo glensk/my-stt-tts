@@ -38,6 +38,7 @@ from .config import (
     TRANSPORT_MODES,
     TTS_BACKENDS,
     TURN_ANALYZERS,
+    UNITS,
     Config,
     ConfigError,
 )
@@ -108,6 +109,7 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
         f"  prompt     {blue}{prompt_head}…{reset}  (edit prompts/system_prompt.md)",
+        f"  locale     location {blue}{cfg.location}{reset}  units {blue}{cfg.units}{reset}",
     ]
     return "\n".join(rows)
 
@@ -153,6 +155,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--provider", help="Override LLM_PROVIDER (anthropic/openai/ollama/claude-cli/...)."
     )
     parser.add_argument("--model", help="Override LLM_MODEL.")
+    parser.add_argument(
+        "--location",
+        help="User location for weather + units-aware answers (default 'Lausanne, Switzerland').",
+    )
+    parser.add_argument(
+        "--units",
+        choices=UNITS,
+        help="Measurement system for answers + the weather tool: metric (default) | imperial.",
+    )
     parser.add_argument(
         "--voice", choices=sorted(VOICE_PRESETS), help="English TTS voice (see --list-voices)."
     )
@@ -295,6 +306,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 _CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("provider", "llm_provider"),
     ("model", "llm_model"),
+    ("location", "location"),
+    ("units", "units"),
     ("barge_in", "barge_in"),
     ("aec_mode", "aec_mode"),
     ("turn_analyzer", "turn_analyzer"),

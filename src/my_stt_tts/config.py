@@ -12,6 +12,11 @@ from dotenv import load_dotenv
 PROVIDERS = ("anthropic", "openai", "openai-compatible", "ollama", "claude-cli")
 LANGUAGES = ("de", "fr", "en")
 
+# Measurement systems the assistant can answer in (see Config.units). Injected into
+# the system prompt so temperatures/distances/etc. come back in the right system,
+# and consumed by the get_weather tool to pick °C/km·h vs °F/mph.
+UNITS = ("metric", "imperial")
+
 # Brain mode (R3-5). The cascade is STT -> LLM -> TTS (everything to date); the
 # realtime mode streams mic audio to a speech-to-speech endpoint (OpenAI Realtime
 # over WebSocket) and plays the returned audio back, bypassing the cascade's
@@ -132,6 +137,23 @@ def load_system_prompt(override: str | os.PathLike[str] | None = None) -> str:
     return text or _DEFAULT_SYSTEM_PROMPT
 
 
+def locale_prompt_line(base_prompt: str, location: str, units: str) -> str:
+    """Append a location + units awareness line to ``base_prompt``.
+
+    Keeps the editable base prompt (``prompts/system_prompt.md``) intact and adds a
+    single sentence so the assistant is generally location- and units-aware (weather,
+    distances, temperatures). Returns the base unchanged when location is blank.
+    """
+    place = location.strip()
+    if not place:
+        return base_prompt
+    line = (
+        f"The user is in {place} and uses {units} units; "
+        "answer measurements, distances, and temperatures accordingly."
+    )
+    return f"{base_prompt.rstrip()}\n\n{line}"
+
+
 @dataclass(slots=True)
 class Config:
     """All tunables for the voice loop, with sane defaults.
@@ -152,6 +174,13 @@ class Config:
     requests_per_minute: int = 30
     # Spoken-output system prompt; edit prompts/system_prompt.md to change it.
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT
+
+    # --- Locale (location + measurement units) ---
+    # Injected into the assembled system prompt so the assistant is generally
+    # location- and units-aware (weather, "how far is…", temperatures), and used as
+    # the default for the get_weather tool. ``units`` is one of :data:`UNITS`.
+    location: str = "Lausanne, Switzerland"
+    units: str = "metric"
 
     # --- Agent dispatch (Phase 6): "agent, <task>" hands off to a full,
     # MCP-capable Claude Code agent in `agent_workspace`. Disabled until a
@@ -364,6 +393,8 @@ class Config:
             anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
             openai_api_key=env.get("OPENAI_API_KEY") or None,
             system_prompt=load_system_prompt(env.get("SYSTEM_PROMPT_FILE")),
+            location=env.get("LOCATION", "Lausanne, Switzerland"),
+            units=env.get("UNITS", "metric"),
             agent_trigger=env.get("AGENT_TRIGGER", "agent"),
             agent_workspace=env.get("AGENT_WORKSPACE") or None,
             agent_model=env.get("AGENT_MODEL", "sonnet"),
@@ -484,6 +515,10 @@ class Config:
             errors.append(f"LLM_BASE_URL is required for provider {self.llm_provider!r}")
         if self.llm_provider == "claude-cli" and not shutil.which("claude"):
             errors.append("provider 'claude-cli' needs the `claude` CLI on PATH")
+        if self.units not in UNITS:
+            errors.append(f"units must be one of {UNITS}; got {self.units!r}")
+        if not self.location.strip():
+            errors.append("location must not be empty")
         if self.sample_rate <= 0:
             errors.append(f"sample_rate must be > 0; got {self.sample_rate}")
         if not 0.0 < self.speaker_threshold < 1.0:

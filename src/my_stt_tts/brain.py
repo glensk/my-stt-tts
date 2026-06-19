@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import AgentError, dispatch_to_agent
-from .config import Config
+from .config import Config, locale_prompt_line
 from .memory import ContextAggregator, make_memory_store
 from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
@@ -81,7 +81,13 @@ class Brain:
         # calculator, and home_control (routed to the existing agent / HA dispatch).
         # Injectable so tests can supply fakes; built from config when omitted.
         if tools is None and cfg.tools_enabled:
-            tools = ToolRegistry(default_tools(home_dispatch=self._home_dispatch))
+            tools = ToolRegistry(
+                default_tools(
+                    home_dispatch=self._home_dispatch,
+                    location=cfg.location,
+                    units=cfg.units,
+                )
+            )
         self.tools = tools
 
     def set_speaker(self, name: str | None) -> None:
@@ -91,6 +97,16 @@ class Brain:
     def _assembled(self) -> list[dict[str, str]]:
         """Provider-agnostic message list: per-speaker recall + the live session (G7)."""
         return self.context.assemble(self.speaker)
+
+    def _system_prompt(self) -> str:
+        """System prompt for the backend: the editable base + a locale line.
+
+        Keeps ``prompts/system_prompt.md`` (``cfg.system_prompt``) as the editable
+        base and appends a single line making the assistant location- and
+        units-aware, so weather/distance/temperature answers use the configured
+        place and measurement system without editing the prompt file.
+        """
+        return locale_prompt_line(self.cfg.system_prompt, self.cfg.location, self.cfg.units)
 
     def _home_dispatch(self, command: str) -> str:
         """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).
@@ -278,7 +294,7 @@ class Brain:
             "--output-format",
             "json",
             "--system-prompt",
-            self.cfg.system_prompt,  # replace the agentic prompt
+            self._system_prompt(),  # replace the agentic prompt (+ locale line)
             "--setting-sources",
             "",  # skip ~/.claude/CLAUDE.md, ~/.llm-shared, hooks
             "--tools",
@@ -310,14 +326,14 @@ class Brain:
         with client.messages.stream(  # type: ignore[attr-defined]
             model=model,
             max_tokens=1024,
-            system=self.cfg.system_prompt,
+            system=self._system_prompt(),
             messages=self._assembled(),
         ) as stream:
             yield from stream.text_stream
 
     def _stream_openai(self, model: str) -> Iterator[str]:
         client = self._ensure_client()
-        messages = [{"role": "system", "content": self.cfg.system_prompt}, *self._assembled()]
+        messages = [{"role": "system", "content": self._system_prompt()}, *self._assembled()]
         stream = client.chat.completions.create(  # type: ignore[attr-defined]
             model=model, messages=messages, stream=True
         )
@@ -340,13 +356,14 @@ class Brain:
         """
         assert self.tools is not None
         client = self._ensure_client()
+        system = self._system_prompt()
         messages: list[dict[str, Any]] = [dict(m) for m in self._assembled()]
         tool_schemas = self.tools.anthropic_tools()
         for _ in range(self.cfg.tools_max_iterations):
             msg = client.messages.create(  # type: ignore[attr-defined]
                 model=model,
                 max_tokens=1024,
-                system=self.cfg.system_prompt,
+                system=system,
                 messages=messages,
                 tools=tool_schemas,
             )
@@ -362,7 +379,7 @@ class Brain:
         with client.messages.stream(  # type: ignore[attr-defined]
             model=model,
             max_tokens=1024,
-            system=self.cfg.system_prompt,
+            system=system,
             messages=messages,
             tools=tool_schemas,
         ) as stream:
@@ -388,7 +405,7 @@ class Brain:
         assert self.tools is not None
         client = self._ensure_client()
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self.cfg.system_prompt},
+            {"role": "system", "content": self._system_prompt()},
             *(dict(m) for m in self._assembled()),
         ]
         tool_schemas = self.tools.openai_tools()
