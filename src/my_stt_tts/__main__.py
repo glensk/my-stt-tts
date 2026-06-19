@@ -1012,7 +1012,13 @@ def _run_mic_test(cfg: Config) -> None:
     except Exception as exc:  # mic_test is defensive; belt-and-braces
         log.error("mic test error: %s", exc)
         result = audio.MicTestResult(ok=False, verdict="error", message=f"microphone error: {exc}")
-    bus.mic_result(ok=result.ok, verdict=result.verdict, message=result.message, level=result.level)
+    bus.mic_result(
+        ok=result.ok,
+        verdict=result.verdict,
+        message=result.message,
+        level=result.level,
+        permission=result.permission,
+    )
     bus.log(("✓ " if result.ok else "✗ ") + result.message, "info" if result.ok else "error")
     bus.state("idle")
 

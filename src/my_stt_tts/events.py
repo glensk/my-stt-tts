@@ -248,12 +248,16 @@ class EventBus:
     def wake(self) -> None:
         self.publish({"type": "wake", "fired": True})
 
-    def mic_result(self, *, ok: bool, verdict: str, message: str, level: int = 0) -> None:
+    def mic_result(
+        self, *, ok: bool, verdict: str, message: str, level: int = 0, permission: str = "unknown"
+    ) -> None:
         """Publish the outcome of a server-side mic test (GUI "Test mic").
 
         DATA priority — the UI shows it prominently (green/red status chip) and
         also logs it. ``verdict`` is the machine tag (``ok`` / ``silent`` /
-        ``no_device`` / ``error``); ``level`` is the measured loudness 0–100."""
+        ``no_device`` / ``error`` / ``denied`` / ``restricted``); ``level`` is the
+        measured loudness 0–100; ``permission`` is the macOS mic authorization
+        (``authorized`` / ``denied`` / ``notDetermined`` / ``restricted`` / ``unavailable``)."""
         self.publish(
             {
                 "type": "mic_result",
@@ -261,6 +265,7 @@ class EventBus:
                 "verdict": verdict,
                 "message": message,
                 "level": level,
+                "permission": permission,
             }
         )
 

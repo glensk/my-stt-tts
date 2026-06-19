@@ -116,6 +116,31 @@ class MicTestResult:
     level: int = 0
     rms: float = 0.0
     peak: float = 0.0
+    permission: str = "unknown"
+
+
+def mic_permission_status() -> str:
+    """The macOS microphone authorization for this app, WITHOUT capturing audio.
+
+    Queries ``AVCaptureDevice.authorizationStatus(for: .audio)`` via PyObjC and maps
+    it to ``authorized`` / ``denied`` / ``notDetermined`` / ``restricted``. The status
+    is per-app (the process inherits its terminal/launcher's grant), so this answers
+    "is System Settings › Privacy & Security › Microphone enabled for this app?".
+    Returns ``unavailable`` off macOS or when the AVFoundation binding (the ``aec``
+    extra) isn't installed — callers then fall back to the capture-based verdict.
+    """
+    try:
+        from AVFoundation import (  # type: ignore[import-not-found]
+            AVCaptureDevice,
+            AVMediaTypeAudio,
+        )
+
+        status = int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception:  # noqa: BLE001 — non-macOS / no pyobjc-AVFoundation / API change
+        return "unavailable"
+    return {0: "notDetermined", 1: "restricted", 2: "denied", 3: "authorized"}.get(
+        status, "unavailable"
+    )
 
 
 # Below this peak amplitude (of full-scale 1.0) a capture is treated as "no audio"
@@ -130,31 +155,69 @@ _MIC_PERMISSION_HINT = (
 
 
 def mic_test_verdict(
-    *, captured: bool, rms: float, peak: float, error: str | None = None
+    *,
+    captured: bool,
+    rms: float,
+    peak: float,
+    error: str | None = None,
+    permission: str = "unknown",
 ) -> MicTestResult:
-    """Map a capture outcome to a user-facing :class:`MicTestResult` (pure).
+    """Map a capture outcome (+ macOS mic permission) to a user-facing result (pure).
 
     Split out from :func:`mic_test` so the verdict logic is unit-testable without a
-    real microphone. ``error`` (when set) is the exact device/sounddevice failure
-    reason and wins; otherwise ``captured`` + ``peak`` decide working vs. silent.
+    real microphone. A *conclusive* permission (``denied`` / ``restricted``) wins —
+    no capture can succeed without it; otherwise ``error`` wins, then ``captured`` +
+    ``peak`` decide working vs. silent. When permission is ``authorized`` a silent
+    capture is clearly a device/level issue, not a permission one — the message says so.
     """
+    if permission == "denied":
+        return MicTestResult(
+            ok=False,
+            verdict="denied",
+            message=(
+                "Microphone permission is DENIED for this app — enable your terminal/app in "
+                "System Settings › Privacy & Security › Microphone, then quit & reopen it."
+            ),
+            permission=permission,
+        )
+    if permission == "restricted":
+        return MicTestResult(
+            ok=False,
+            verdict="restricted",
+            message="Microphone access is restricted by a system policy (e.g. MDM / Screen Time).",
+            permission=permission,
+        )
     if error is not None:
-        return MicTestResult(ok=False, verdict="error", message=error)
+        return MicTestResult(ok=False, verdict="error", message=error, permission=permission)
     if not captured:
         return MicTestResult(
             ok=False,
             verdict="no_device",
             message="No microphone available — connect an input device and grant mic access.",
+            permission=permission,
         )
     level = int(round(min(1.0, max(0.0, peak)) * 100))
     if peak < _SILENCE_PEAK:
+        if permission == "notDetermined":
+            message = (
+                "No audio yet — macOS hasn't granted mic access; it should prompt on the first "
+                f"capture. If no prompt appears, {_MIC_PERMISSION_HINT}."
+            )
+        elif permission == "authorized":
+            message = (
+                "Permission is granted but no audio — check the selected input device and that "
+                "the microphone isn't muted."
+            )
+        else:
+            message = f"No audio — {_MIC_PERMISSION_HINT}."
         return MicTestResult(
             ok=False,
             verdict="silent",
-            message=f"No audio — {_MIC_PERMISSION_HINT}.",
+            message=message,
             level=level,
             rms=rms,
             peak=peak,
+            permission=permission,
         )
     return MicTestResult(
         ok=True,
@@ -163,6 +226,7 @@ def mic_test_verdict(
         level=level,
         rms=rms,
         peak=peak,
+        permission=permission,
     )
 
 
@@ -176,14 +240,19 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
     On macOS a silent (near-zero) capture is the tell-tale sign of an ungranted
     microphone permission — the verdict says exactly that.
     """
+    permission = mic_permission_status()
     try:
         sd = _sd()
     except Exception as exc:  # noqa: BLE001 — no audio extra / no PortAudio
         return mic_test_verdict(
-            captured=False, rms=0.0, peak=0.0, error=f"audio capture unavailable: {exc}"
+            captured=False,
+            rms=0.0,
+            peak=0.0,
+            error=f"audio capture unavailable: {exc}",
+            permission=permission,
         )
     if not mic_available():
-        return mic_test_verdict(captured=False, rms=0.0, peak=0.0)
+        return mic_test_verdict(captured=False, rms=0.0, peak=0.0, permission=permission)
 
     frames_q: queue.Queue[np.ndarray] = queue.Queue()
 
@@ -206,7 +275,13 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
                 except queue.Empty:
                     continue
     except Exception as exc:  # noqa: BLE001 — device opened/failed mid-capture
-        return mic_test_verdict(captured=False, rms=0.0, peak=0.0, error=f"microphone error: {exc}")
+        return mic_test_verdict(
+            captured=False,
+            rms=0.0,
+            peak=0.0,
+            error=f"microphone error: {exc}",
+            permission=permission,
+        )
 
     # Drain any frames the callback queued right at/after the deadline (and, for a
     # synchronous-callback backend, every frame) so the last syllable isn't lost.
@@ -217,11 +292,17 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
             break
 
     if not collected:
-        return mic_test_verdict(captured=False, rms=0.0, peak=0.0, error="no audio frames captured")
+        return mic_test_verdict(
+            captured=False,
+            rms=0.0,
+            peak=0.0,
+            error="no audio frames captured",
+            permission=permission,
+        )
     samples = np.concatenate(collected)
     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
     rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
-    return mic_test_verdict(captured=True, rms=rms, peak=peak)
+    return mic_test_verdict(captured=True, rms=rms, peak=peak, permission=permission)
 
 
 def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:

@@ -64,10 +64,15 @@ def settings_dict(
     exists AND a mic is usable). When False the page disables those buttons and shows
     ``voice_hint`` (a short reason) instead of letting them POST and silently error.
     """
+    from .audio import mic_permission_status
+
     return {
         "audio_enabled": audio_enabled,
         "voice_available": voice_available,
         "voice_hint": voice_hint,
+        # macOS mic authorization (authorized/denied/notDetermined/restricted/unavailable) so
+        # the page can show whether System Settings › Microphone is enabled for this app.
+        "mic_permission": mic_permission_status(),
         "provider": cfg.llm_provider,
         "model": cfg.llm_model,
         "model_deep": cfg.llm_model_deep,
