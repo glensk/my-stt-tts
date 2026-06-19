@@ -42,10 +42,6 @@ The pipeline, live — wake word → speech-to-text → LLM → speech, all on o
 
 ### 🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html) &nbsp;·&nbsp; 🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)
 
-<br>
-
-▶ **Live demo video** — coming soon (the animated control room above shows the interface in motion).
-
 <!-- DEMO VIDEO: record ~20-40s of `./mstt --wake --barge-in always --browser`,
      drag the file into a GitHub issue/PR comment to get a https://github.com/user-attachments/... URL,
      then paste that bare URL on its own line right here — GitHub mounts a native <video> player. -->
