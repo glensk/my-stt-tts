@@ -33,6 +33,7 @@ from .config import (
     AEC_MODES,
     BARGE_IN_MODES,
     BRAIN_PRESETS,
+    DENOISER_MODES,
     TRANSPORT_MODES,
     TURN_ANALYZERS,
     Config,
@@ -71,8 +72,10 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  window {cfg.stt_window_s}s  backend {cfg.stt_backend}",
         f"  transport  {blue}{cfg.transport}{reset}"
         f"  {cfg.transport_host}:{cfg.transport_port}"
-        f"  tools {cfg.tools_enabled}  tts-backend {cfg.tts_backend}",
+        f"  tools {cfg.tools_enabled}  tts-backend {cfg.tts_backend}"
+        f"  tts-stream {cfg.tts_streaming}",
         f"  turn       barge-in {blue}{cfg.barge_in}{reset}  aec {cfg.aec_mode}"
+        f"  hw-capture {cfg.aec_hw_capture}  denoiser {cfg.denoiser}"
         f"  analyzer {cfg.turn_analyzer}  min-words {cfg.interrupt_min_words}"
         f"  predict {cfg.interrupt_predict}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}",
@@ -168,7 +171,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--transport",
         choices=TRANSPORT_MODES,
         help="Audio transport: local (sound card, default) | websocket (network "
-        "server for remote satellites / the browser).",
+        "server for remote satellites / the browser) | webrtc (real RTCPeerConnection: "
+        "Opus + jitter buffer + NAT traversal; needs the webrtc extra).",
+    )
+    parser.add_argument(
+        "--denoiser",
+        choices=DENOISER_MODES,
+        help="Pre-VAD noise suppression on mic frames: off | spectral (pure-numpy, "
+        "default-safe) | rnnoise (needs the denoiser extra; falls back to spectral).",
+    )
+    parser.add_argument(
+        "--no-tts-streaming",
+        dest="tts_streaming",
+        action="store_false",
+        default=None,
+        help="Disable streamed clause-by-clause TTS playout (render whole sentences first).",
     )
     parser.add_argument(
         "--transport-port", type=int, help="WebSocket transport port (default 8770)."
@@ -200,6 +217,7 @@ _CONFIG_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("transport", "transport"),
     ("transport_port", "transport_port"),
     ("transport_token", "transport_token"),
+    ("denoiser", "denoiser"),
 )
 
 
@@ -215,6 +233,8 @@ def _build_config(args: argparse.Namespace) -> Config:
             setattr(cfg, field_name, value)
     if args.stt_streaming:
         cfg.stt_streaming = True
+    if args.tts_streaming is not None:
+        cfg.tts_streaming = args.tts_streaming
     if args.debug:
         cfg.debug = True
     return cfg
@@ -250,6 +270,8 @@ class _BargeInCtx:
     igate: InterruptGate | None = None
     aec: object | None = None
     predictor: object | None = None
+    source: object | None = None  # R3-4: HW VoiceProcessingIO capture, if active
+    denoiser: object | None = None  # R3-6: pre-VAD noise suppression, if enabled
 
     @property
     def live(self) -> bool:
@@ -275,6 +297,8 @@ def _respond(
     text: str,
     *,
     vad: object | None = None,
+    source: object | None = None,
+    denoiser: object | None = None,
 ) -> RespondResult:
     """Stream the LLM for ``text``, speak it, and publish live state to the bus.
 
@@ -301,11 +325,16 @@ def _respond(
     )
     # R2-1 AEC front-end + R2-3 acoustic interruption predictor, built once per
     # reply and shared across its sentences so adaptation/scoring persists.
+    # R3-4: with HW capture active the OS already cancelled the echo, so the
+    # software AEC front-end is a no-op (avoid double-processing).
+    sw_aec = make_echo_canceller(cfg) if (barge_in and source is None) else None
     ctx = _BargeInCtx(
         vad=vad if barge_in else None,
         igate=igate,
-        aec=make_echo_canceller(cfg) if barge_in else None,
+        aec=sw_aec,
         predictor=make_interrupt_predictor(cfg, frame_ms) if barge_in else None,
+        source=source if barge_in else None,
+        denoiser=denoiser if barge_in else None,
     )
     stream = brain.stream(text)
     try:
@@ -381,7 +410,11 @@ def _voice_sentence(
         tts.speak(spoken)
         gate.release()
         return len(sentence), None
-    playback = tts.start_speaking(spoken)
+    # R3-3: stream the clause-chunked PCM so first audio plays within a few hundred
+    # ms; the StreamingPlayback handle keeps the same cancel surface for barge-in.
+    playback = (
+        tts.start_speaking_stream(spoken) if cfg.tts_streaming else tts.start_speaking(spoken)
+    )
     res = audio.monitor_during_playback(
         playback,
         cfg.sample_rate,
@@ -390,6 +423,8 @@ def _voice_sentence(
         energy_floor=cfg.barge_in_energy,
         aec=ctx.aec,
         predictor=ctx.predictor,
+        source=ctx.source,
+        denoiser=ctx.denoiser,
     )
     bus.bot_stopped_speaking()  # R2-6: playback ended (cancelled or finished)
     if res.interrupted:
@@ -499,6 +534,8 @@ def run_wake_loop(
     cfg: Config, brain: Brain, tts: TTSRouter, gate: audio.MicGate, stt: object
 ) -> int:
     """Always-listen: on the wake phrase, capture (VAD), respond, then follow up."""
+    from .aec import make_voiceprocessing_capture
+    from .denoise import make_denoiser
     from .turn import make_turn_analyzer
     from .vad import SileroVad
     from .wake import WakeWord
@@ -515,6 +552,10 @@ def run_wake_loop(
     vad = SileroVad(cfg.sample_rate)
     frame_seconds = 512 / cfg.sample_rate
     barge_vad = vad if cfg.barge_in != "off" else None
+    # R3-4: capture through macOS VoiceProcessingIO (hardware AEC) when requested
+    # and available; None means fall back to sounddevice. R3-6: pre-VAD denoiser.
+    hw_source = make_voiceprocessing_capture(cfg)
+    denoiser = make_denoiser(cfg)
     print(f'Listening for "{cfg.wake_phrase}". Ctrl-C to quit.')
     while True:
         bus.state("listening", cfg.wake_phrase)
@@ -536,6 +577,8 @@ def run_wake_loop(
                 max_seconds=max_s,
                 streamer=streamer,
                 on_partial=lambda t: bus.transcript(t, partial=True),
+                source=hw_source,
+                denoiser=denoiser,
             )
             if clip.size == 0:
                 break  # silence -> back to listening for the wake word
@@ -546,7 +589,9 @@ def run_wake_loop(
             )
             if not text:
                 break
-            result = _respond(cfg, brain, tts, gate, text, vad=barge_vad)
+            result = _respond(
+                cfg, brain, tts, gate, text, vad=barge_vad, source=hw_source, denoiser=denoiser
+            )
             while result.interrupted:
                 # Hand the captured barge-in audio straight to the transcriber as
                 # the next turn (no from-scratch re-transcribe, R2-6), and keep
@@ -554,7 +599,9 @@ def run_wake_loop(
                 text = _transcribe_barge_in(cfg, stt, result.captured)
                 if not text:
                     break
-                result = _respond(cfg, brain, tts, gate, text, vad=barge_vad)
+                result = _respond(
+                    cfg, brain, tts, gate, text, vad=barge_vad, source=hw_source, denoiser=denoiser
+                )
             follow_up = True  # subsequent turns are short follow-ups (no re-wake)
 
 
@@ -654,6 +701,31 @@ def _run_websocket_server(cfg: Config, brain: Brain, tts: TTSRouter, stt: object
     return 0
 
 
+def _run_webrtc_server(
+    cfg: Config, brain: Brain, tts: TTSRouter, stt: object | None, *, port: int = 8765
+) -> int:
+    """Serve the WebRTC signaling + GUI (R3-1): browser connects via RTCPeerConnection.
+
+    WebRTC is browser-first: the page opens a real ``RTCPeerConnection`` (Opus +
+    jitter buffer + ICE NAT traversal) and POSTs its SDP offer to
+    ``/api/webrtc/offer``, which the WebUI answers and bridges into the same
+    pipeline as the WebSocket path. Reuses the GUI server so the WS PCM channel
+    stays available as a fallback. Needs the ``webrtc`` extra (aiortc).
+    """
+    from .webrtc_transport import webrtc_available
+
+    if not webrtc_available():
+        print("WebRTC transport needs the 'webrtc' extra: uv sync --extra webrtc", file=sys.stderr)
+        return 2
+    if stt is None:
+        from .stt import make_transcriber
+
+        stt = make_transcriber(cfg)
+    gate = audio.MicGate(cfg.mic_gate_tail_seconds)
+    print(f"my-stt-tts WebRTC server (browser RTCPeerConnection) → port {port}  (Ctrl-C to quit)")
+    return _run_browser(cfg, brain, tts, gate, stt, wake=False, port=port)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Validate config, build components, run the chosen loop. Returns exit code."""
     args = _parse_args(argv)
@@ -677,7 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     gate = audio.MicGate(cfg.mic_gate_tail_seconds)
 
     needs_stt = (
-        cfg.transport == "websocket"
+        cfg.transport in ("websocket", "webrtc")
         or (args.browser and args.browser_audio)
         or (not args.type_mode and args.text is None and (not args.browser or args.wake))
     )
@@ -692,6 +764,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if cfg.transport == "websocket":
             return _run_websocket_server(cfg, brain, tts, stt)
+        if cfg.transport == "webrtc":
+            return _run_webrtc_server(cfg, brain, tts, stt, port=args.port)
         if args.browser:
             return _run_browser(cfg, brain, tts, gate, stt, wake=args.wake, port=args.port)
         if args.wake:
