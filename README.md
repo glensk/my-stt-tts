@@ -1,5 +1,7 @@
 <div align="center">
 
+<a id="top" name="top"></a>
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.svg">
@@ -8,7 +10,10 @@
 
 <br>
 
-**Talk to your Mac. It talks back.**
+<a href="#-quick-start"><img alt="Talk to your Mac. It talks back. German · French · English. Interrupt any time." src="https://readme-typing-svg.demolab.com/?font=JetBrains+Mono&weight=600&size=24&pause=900&color=22E7FF&center=true&vCenter=true&width=720&height=54&lines=Talk+to+your+Mac.;It+talks+back.;German+%C2%B7+French+%C2%B7+English.;Interrupt+any+time."></a>
+
+<br>
+
 A private voice assistant that lives on your own machine — say a word, ask out loud, and hear a natural reply.
 
 <br>
@@ -23,13 +28,23 @@ A private voice assistant that lives on your own machine — say a word, ask out
 
 <br>
 
-### 🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)
-
-### 🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)
+**🎙️ [What it does](#what-it-does) · ⚡ [Quick start](#-quick-start) · 🔁 [How it works](#how-it-works) · 🔒 [Privacy](#-your-audio-never-leaves-your-mac) · 🛠️ [Developers](#for-developers)**
 
 </div>
 
----
+<br>
+
+<div align="center">
+
+The pipeline, live — wake word → speech-to-text → LLM → speech, all on one Mac:
+
+<img alt="my-stt-tts control room — live pipeline cycling through listening, recording, transcribe, thinking, speaking" src="docs/assets/control-room.svg" width="100%">
+
+### 🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html) &nbsp;·&nbsp; 🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)
+
+</div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## What it does
 
@@ -221,7 +236,9 @@ token if you have a key.
 
 </details>
 
----
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## 🚀 Quick start
 
@@ -279,7 +296,9 @@ uv sync && uv run pytest
 
 </details>
 
----
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## 🔒 Your audio never leaves your Mac
 
@@ -299,7 +318,9 @@ profiles stay local and git-ignored.
 
 </details>
 
----
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## How it works
 
@@ -355,7 +376,9 @@ This project is **Apache-2.0**. Optional backends carry their own licenses and a
 
 </details>
 
----
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
 ## For developers
 
@@ -369,5 +392,7 @@ full roadmap are in **[PLAN.md](PLAN.md)**. Contributions and security reports: 
 
 **Local. Private. Conversational.**
 🖥️ [Control room](https://glensk.github.io/my-stt-tts/gui.html) · 🔊 [Voices](https://glensk.github.io/my-stt-tts/) · 📜 [Apache-2.0](LICENSE)
+
+<sub><a href="#top">↑ back to top</a></sub>
 
 </div>
