@@ -257,7 +257,11 @@ class Config:
     tts_stream_min_chars: int = 12  # min speakable chars before a sub-sentence clause fires
     tts_stream_frame: int = 1024  # OutputStream write block (samples) for streamed playout
 
-    # --- Speaker ID ---
+    # --- Speaker ID (G7): per-utterance ECAPA embedding -> enrolled name so
+    # conversation memory keys per-person. Opt-in: only active when enabled AND
+    # ``enroll_dir`` holds centroids AND speechbrain is installed; otherwise the
+    # loop runs with speaker=None (shared guest bucket) at zero added latency. ---
+    speaker_id_enabled: bool = False
     speaker_threshold: float = 0.45
     speaker_margin: float = 0.06
     enroll_dir: Path = field(default_factory=lambda: Path("enroll"))
@@ -382,6 +386,7 @@ class Config:
             transport_host=env.get("TRANSPORT_HOST", "0.0.0.0"),  # noqa: S104 — LAN bind
             transport_token=env.get("TRANSPORT_TOKEN") or None,
             tools_enabled=_env_bool("TOOLS_ENABLED", default=True),
+            speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
             stt_backend=env.get("STT_BACKEND", "local"),
             stt_cloud_model=env.get("STT_CLOUD_MODEL", "whisper-1"),
             stt_cloud_base_url=env.get("STT_CLOUD_BASE_URL") or None,
@@ -452,6 +457,12 @@ class Config:
             cfg.denoiser_strength = float(env["DENOISER_STRENGTH"])
         if env.get("MEMORY_MAX_TURNS"):
             cfg.memory_max_turns = int(env["MEMORY_MAX_TURNS"])
+        if env.get("ENROLL_DIR"):
+            cfg.enroll_dir = Path(env["ENROLL_DIR"])
+        if env.get("SPEAKER_THRESHOLD"):
+            cfg.speaker_threshold = float(env["SPEAKER_THRESHOLD"])
+        if env.get("SPEAKER_MARGIN"):
+            cfg.speaker_margin = float(env["SPEAKER_MARGIN"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:

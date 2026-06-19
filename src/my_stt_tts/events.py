@@ -248,6 +248,13 @@ class EventBus:
     def wake(self) -> None:
         self.publish({"type": "wake", "fired": True})
 
+    def speaker(self, name: str | None) -> None:
+        """Publish the identified speaker for the current turn (G7).
+
+        ``name`` is the enrolled person, or ``None`` for a guest / unrecognized /
+        typed turn. DATA priority — purely informational for the UI."""
+        self.publish({"type": "speaker", "name": name or "", "known": bool(name)})
+
     # --- interruption / control lifecycle (G2: SYSTEM priority, non-droppable) ---
     # These are the control plane: they bypass queued data, flush it, and are never
     # dropped — across every transport. Formerly ad-hoc DATA events.
