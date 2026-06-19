@@ -47,6 +47,12 @@ judge the actual onboarding/test experience.
 
 ## Status
 
-Queued behind the in-flight speaker-ID wiring fix (`config.py`/`brain.py` overlap). Order: merge
-speaker-fix → **Wave G** (location/units + weather + `quickstart.sh`) → designer onboarding README
-round → **onboarding seamlessness checker** (round 1) → iterate.
+✅ Speaker-fix merged. ✅ **Wave G merged** (`8bbb17d`): location=`Lausanne, Switzerland` / units=`metric`
+in config + CLI + `--settings` + web-UI; **Open-Meteo no-key weather tool** (live sanity-checked: Lausanne
+30 °C / NY 72 °F / bad-place graceful); location+units injected into the system prompt; **`quickstart.sh`**
+(executable). ✅ **Onboarding README merged** (`b1b86d3`): top **"🚀 Get started"** with *▶ Try it live*
+(hosted demo) + *one-command* `git clone … && ./quickstart.sh` → real LLM in the browser, no mic/no key.
+
+**Onboarding-seamlessness checker (round 1) RUNNING** — single question only; my-stt-tts vs the 5 prior
+repos + award-winning onboarding exemplars (checker researches). If a competitor is more seamless,
+implement the cited onboarding gaps + re-check; loop until ours wins.
