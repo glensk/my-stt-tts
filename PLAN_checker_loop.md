@@ -125,4 +125,10 @@ transport/audio robustness, highest leverage):
   model (and Piper voices), with a surfaced warning when it falls back to the silence timer.
 - [ ] **R3-9 — Telephony reach**: a Twilio-Media-Streams serializer over the WS transport.
 
-Current action: Wave C implementer (R3-1/2/3/4/6), then Wave D (R3-5/7/8/9), then a round-4 checker.
+Current action (PAUSED — account usage limit, resets 02:00 Europe/Berlin): Wave C was cut off
+mid-implementation. Partial work is snapshotted (NOT merged, untested/unlinted) on branch
+`wave-c-transport-audio-20260618-233337` @ `d336fc3` — it covers R3-3 (streamed TTS), R3-4
+(HW-AEC capture), R3-6 (`denoise.py`) + config wiring; R3-1 (WebRTC) and R3-2 (network-duplex
+barge-in) are not started. **Resume:** spawn an implementer in that worktree to finish R3-1 and
+R3-2, then verify (pytest + lint) the whole branch, merge to main, run Wave D (R3-5/7/8/9), then
+a round-4 checker.
