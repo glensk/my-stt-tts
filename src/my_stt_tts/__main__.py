@@ -708,11 +708,17 @@ def run_wake_loop(
     stt: object,
     *,
     speaker_id: object | None = None,
+    stop: threading.Event | None = None,
 ) -> int:
     """Always-listen: on the wake phrase, capture (VAD), respond, then follow up.
 
     The VAD-recorded utterance clip is speaker-identified (G7) before responding so
-    memory is per-person; each barge-in follow-up re-identifies its captured clip."""
+    memory is per-person; each barge-in follow-up re-identifies its captured clip.
+
+    ``stop`` (optional) makes the loop cleanly tearable-down: it is checked between
+    iterations and passed to :func:`audio.listen_for_wake` so a GUI-driven loop
+    exits promptly while it sits idle waiting for the wake phrase. ``None`` keeps the
+    classic run-forever terminal behaviour (Ctrl-C to quit)."""
     from .aec import make_voiceprocessing_capture
     from .denoise import make_denoiser
     from .turn import make_turn_analyzer
@@ -737,14 +743,22 @@ def run_wake_loop(
     denoiser = make_denoiser(cfg)
     print(f'Listening for "{cfg.wake_phrase}". Ctrl-C to quit.')
     while True:
+        if stop is not None and stop.is_set():
+            bus.state("idle")
+            return 0
         bus.state("listening", cfg.wake_phrase)
-        audio.listen_for_wake(wake, cfg.sample_rate)
+        if not audio.listen_for_wake(wake, cfg.sample_rate, stop=stop):
+            bus.state("idle")
+            return 0  # stop requested while idle-listening for the wake word
         bus.wake()
         gate.gate()
         _play(chimes.chime_listening())
         gate.release()
         follow_up = False
         while True:
+            if stop is not None and stop.is_set():
+                bus.state("idle")
+                return 0
             bus.state("recording")
             analyzer = make_turn_analyzer(cfg, frame_seconds)
             streamer = _maybe_streamer(cfg, stt)
@@ -817,6 +831,142 @@ def _announce_browser_url(url: str) -> None:
         webbrowser.open(url)
 
 
+class _WakeController:
+    """Start/stop the server-side wake loop + run one-shot push-to-talk for the GUI.
+
+    All three GUI voice actions (``wake_start`` / ``wake_stop`` / ``ptt``) are driven
+    through here so they share one lock and can never double-start the loop or run a
+    push-to-talk turn while the always-listen loop is active. The wake loop runs in a
+    daemon thread with a :class:`threading.Event` stop flag; a one-shot push-to-talk
+    runs in its own short-lived worker. Thread-safe: every transition takes ``_lock``.
+    """
+
+    def __init__(
+        self,
+        cfg: Config,
+        brain: Brain,
+        tts: TTSRouter,
+        gate: audio.MicGate,
+        stt: object,
+        *,
+        speaker_id: object | None = None,
+    ) -> None:
+        self._cfg = cfg
+        self._brain = brain
+        self._tts = tts
+        self._gate = gate
+        self._stt = stt
+        self._speaker_id = speaker_id
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop: threading.Event | None = None
+        self._ptt_busy = False
+
+    def start_wake(self) -> None:
+        """Start the always-listen wake loop in a daemon thread (idempotent)."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                bus.log("wake loop already listening")
+                return
+            self._stop = threading.Event()
+            self._thread = threading.Thread(
+                target=self._wake_target, args=(self._stop,), daemon=True
+            )
+            self._thread.start()
+        bus.log(f'wake loop started — say "{self._cfg.wake_phrase}"')
+
+    def stop_wake(self) -> None:
+        """Signal the wake loop to exit between iterations and return to idle."""
+        with self._lock:
+            stop, thread = self._stop, self._thread
+            self._stop, self._thread = None, None
+        if stop is None or thread is None or not thread.is_alive():
+            bus.log("wake loop not running")
+            bus.state("idle")
+            return
+        stop.set()
+        bus.log("wake loop stopping")
+        bus.state("idle")
+
+    def push_to_talk(self) -> None:
+        """Run one server-side push-to-talk capture + respond in a worker thread."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                bus.log("push-to-talk unavailable while the wake loop is listening", "error")
+                return
+            if self._ptt_busy:
+                bus.log("push-to-talk already capturing", "error")
+                return
+            self._ptt_busy = True
+        threading.Thread(target=self._ptt_target, daemon=True).start()
+
+    def _wake_target(self, stop: threading.Event) -> None:
+        try:
+            run_wake_loop(
+                self._cfg,
+                self._brain,
+                self._tts,
+                self._gate,
+                self._stt,
+                speaker_id=self._speaker_id,
+                stop=stop,
+            )
+        except Exception as exc:  # never let a mic/model failure kill the thread silently
+            log.error("wake loop error: %s", exc)
+            bus.log(f"wake loop error: {exc}", "error")
+        finally:
+            bus.state("idle")
+
+    def _ptt_target(self) -> None:
+        try:
+            captured = _capture_ptt(self._cfg, self._stt, self._gate)
+            if not captured.text:
+                # macOS: a blank capture is most often an ungranted mic permission.
+                bus.log(
+                    "no audio captured — check the microphone permission "
+                    "(macOS prompts the Terminal/app on first capture)",
+                    "error",
+                )
+                return
+            _respond(
+                self._cfg,
+                self._brain,
+                self._tts,
+                self._gate,
+                captured.text,
+                speaker_id=self._speaker_id,
+                clip=captured.clip,
+            )
+        except Exception as exc:
+            log.error("push-to-talk error: %s", exc)
+            bus.log(f"push-to-talk error: {exc}", "error")
+        finally:
+            with self._lock:
+                self._ptt_busy = False
+            bus.state("idle")
+
+
+def _voice_status(cfg: Config, stt: object | None) -> tuple[bool, str]:
+    """Whether the server can actually do GUI wake / push-to-talk, and why not.
+
+    Voice is available only when (1) an STT engine is loaded, (2) the trained wake
+    model file exists, and (3) a microphone is usable. Returns ``(available, hint)``
+    where ``hint`` is a short human reason shown in the GUI when unavailable (empty
+    when available)."""
+    from .wake import WakeWord
+
+    if stt is None:
+        return False, "Voice off — relaunch with `./mstt --browser --wake` and grant mic access"
+    if not WakeWord.from_config(cfg).available():
+        return (
+            False,
+            f'Wake model missing ({cfg.wake_model_path}) — train "{cfg.wake_phrase}" first',
+        )
+    if not audio.mic_available():
+        return False, "No microphone detected — connect one and grant mic access, then relaunch"
+    return True, ""
+
+
 def _run_browser(
     cfg: Config,
     brain: Brain,
@@ -830,9 +980,19 @@ def _run_browser(
 ) -> int:
     """Serve the web GUI; turns are driven from the page (and optional wake loop).
 
-    Typed turns from the page are guest (no audio); the browser-audio session and
-    the optional wake loop are speaker-identified (G7) when ``speaker_id`` is set."""
+    Typed turns from the page are guest (no audio); the browser-audio session, the
+    push-to-talk one-shots, and the wake loop are speaker-identified (G7) when
+    ``speaker_id`` is set. When the voice pipeline is available (STT loaded + wake
+    model present + a usable mic) the GUI's Start-Wake / Push-to-Talk buttons drive
+    the server-side loop; otherwise they are reported as disabled (honest UI)."""
     from .webui import WebUI
+
+    voice_available, voice_hint = _voice_status(cfg, stt)
+    controller = (
+        _WakeController(cfg, brain, tts, gate, stt, speaker_id=speaker_id)
+        if voice_available and stt is not None
+        else None
+    )
 
     def on_turn(text: str) -> None:
         # Typed-only from the page in this build -> guest bucket (no clip to embed).
@@ -845,10 +1005,14 @@ def _run_browser(
         elif name == "list_voices":
             bus.log("voices: " + ", ".join(VOICE_PRESETS))
         elif name in {"wake_start", "wake_stop", "ptt"}:
-            bus.log(
-                f"'{name}' runs from the terminal in this build (use --wake / push-to-talk)",
-                "error",
-            )
+            if controller is None:
+                bus.log(f"'{name}' unavailable: {voice_hint}", "error")
+            elif name == "wake_start":
+                controller.start_wake()
+            elif name == "wake_stop":
+                controller.stop_wake()
+            else:  # ptt
+                controller.push_to_talk()
         else:
             bus.log(f"unknown action '{name}'", "error")
 
@@ -868,15 +1032,22 @@ def _run_browser(
         )
 
     on_audio_session = _audio_session if stt is not None else None
-    ui = WebUI(cfg, on_turn, on_action, port=port, on_audio_session=on_audio_session)
+    ui = WebUI(
+        cfg,
+        on_turn,
+        on_action,
+        port=port,
+        on_audio_session=on_audio_session,
+        voice_available=voice_available,
+        voice_hint=voice_hint,
+    )
     bus.state("idle")
-    if wake and stt is not None:
-        threading.Thread(
-            target=run_wake_loop,
-            args=(cfg, brain, tts, gate, stt),
-            kwargs={"speaker_id": speaker_id},
-            daemon=True,
-        ).start()
+    # ``--wake`` on launch means "start listening immediately" — but the GUI can
+    # still stop/restart it via the Start-Wake button (same controller).
+    if wake and controller is not None:
+        controller.start_wake()
+    elif wake and controller is None:
+        bus.log(f"--wake requested but voice is off: {voice_hint}", "error")
     _announce_browser_url(ui.url())
     try:
         ui.serve_forever()

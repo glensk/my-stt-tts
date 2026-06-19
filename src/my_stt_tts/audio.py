@@ -79,6 +79,26 @@ def _sd() -> Any:  # noqa: ANN401 — thin lazy accessor
     return sd
 
 
+def mic_available() -> bool:
+    """True when an input (capture) device is usable for mic capture.
+
+    Used by the browser GUI to decide whether the server-side wake / push-to-talk
+    controls can actually do anything (they need a real mic via ``sounddevice``).
+    Defensive: a missing ``sounddevice`` (no ``audio`` extra), no PortAudio, or no
+    input device all resolve to ``False`` instead of raising. Note that on macOS the
+    first real capture still triggers a Terminal microphone-permission prompt — this
+    only confirms a device exists, not that permission has been granted.
+    """
+    try:
+        sd = _sd()
+        default_in = sd.default.device[0]  # (input, output) indices; -1/None if unset
+        if default_in is not None and default_in >= 0:
+            return True
+        return any(int(dev.get("max_input_channels", 0)) > 0 for dev in sd.query_devices())
+    except Exception:  # no sounddevice / no PortAudio / no device
+        return False
+
+
 def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
     """Play a float32 mono array and block until done (cross-platform, G8).
 
@@ -392,9 +412,19 @@ def record_turn(
 
 
 def listen_for_wake(
-    wake: Any, sample_rate: int, *, frame_samples: int = 1280, poll_seconds: float = 0.1
-) -> None:
-    """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame."""
+    wake: Any,
+    sample_rate: int,
+    *,
+    frame_samples: int = 1280,
+    poll_seconds: float = 0.1,
+    stop: threading.Event | None = None,
+) -> bool:
+    """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame.
+
+    Returns ``True`` when the wake word fired, or ``False`` if ``stop`` was set
+    before it fired (so a GUI-driven wake loop can be torn down between frames
+    while it sits idle waiting for the phrase).
+    """
     sd = _sd()
     frames_q: queue.Queue[np.ndarray] = queue.Queue()
 
@@ -410,9 +440,11 @@ def listen_for_wake(
         callback=_callback,
     ):
         while True:
+            if stop is not None and stop.is_set():
+                return False
             try:
                 frame = frames_q.get(timeout=poll_seconds)
             except queue.Empty:
                 continue
             if wake.detect(frame):
-                return
+                return True

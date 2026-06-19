@@ -45,15 +45,28 @@ _FALLBACK_HTML = (
 )
 
 
-def settings_dict(cfg: Config, *, audio_enabled: bool = False) -> dict[str, Any]:
+def settings_dict(
+    cfg: Config,
+    *,
+    audio_enabled: bool = False,
+    voice_available: bool = False,
+    voice_hint: str = "",
+) -> dict[str, Any]:
     """The settable subset of the config plus the choice lists, for the UI.
 
     ``audio_enabled`` tells the page whether the backend can carry real mic/TTS
     audio over the WebSocket channel (R2-5); when False the page stays state /
     transcript only and uses the demo fallback offline.
+
+    ``voice_available`` tells the page whether the *server-side* wake / push-to-talk
+    controls can actually do anything (an STT engine is loaded AND the wake model
+    exists AND a mic is usable). When False the page disables those buttons and shows
+    ``voice_hint`` (a short reason) instead of letting them POST and silently error.
     """
     return {
         "audio_enabled": audio_enabled,
+        "voice_available": voice_available,
+        "voice_hint": voice_hint,
         "provider": cfg.llm_provider,
         "model": cfg.llm_model,
         "model_deep": cfg.llm_model_deep,
@@ -198,10 +211,7 @@ class _Handler(BaseHTTPRequestHandler):
         if route in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", self._ui.html.encode("utf-8"))
         elif route == "/api/settings":
-            self._json(
-                200,
-                settings_dict(self._ui.cfg, audio_enabled=self._ui.on_audio_session is not None),
-            )
+            self._json(200, self._ui.settings_payload())
         elif route == "/events":
             self._sse()
         elif route == "/ws/audio":
@@ -280,10 +290,7 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # bad value from the UI shouldn't 500-crash
                 self._json(400, {"error": str(exc)})
                 return
-            self._json(
-                200,
-                settings_dict(self._ui.cfg, audio_enabled=self._ui.on_audio_session is not None),
-            )
+            self._json(200, self._ui.settings_payload())
         elif route == "/api/turn":
             text = str(body.get("text", "")).strip()
             if text:
@@ -332,6 +339,8 @@ class WebUI:
         host: str = "127.0.0.1",
         port: int = 8765,
         on_audio_session: Callable[[WebSocketTransport], None] | None = None,
+        voice_available: bool = False,
+        voice_hint: str = "",
     ) -> None:
         self.cfg = cfg
         self._on_turn = on_turn
@@ -340,6 +349,11 @@ class WebUI:
         # (browser mic PCM in, TTS PCM out). When None, the page stays state/transcript
         # only (and falls back to demo mode offline) — the prior behaviour (R2-5).
         self.on_audio_session = on_audio_session
+        # Whether the server-side wake / push-to-talk controls can actually run
+        # (STT + wake model + mic). Surfaced via /api/settings so the page disables
+        # those buttons (and shows ``voice_hint``) when voice is off.
+        self.voice_available = voice_available
+        self.voice_hint = voice_hint
         self.host = host
         self.port = port
         self.html = (
@@ -351,6 +365,15 @@ class WebUI:
 
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/"
+
+    def settings_payload(self) -> dict[str, Any]:
+        """The full ``/api/settings`` payload (config + capability flags) for the UI."""
+        return settings_dict(
+            self.cfg,
+            audio_enabled=self.on_audio_session is not None,
+            voice_available=self.voice_available,
+            voice_hint=self.voice_hint,
+        )
 
     def run_audio_session(self, sock: Any) -> None:
         """Bridge an upgraded WebSocket ``sock`` to the pipeline (R2-5, browser audio).
