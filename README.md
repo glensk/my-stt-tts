@@ -1,43 +1,310 @@
-# my-stt-tts
+<div align="center">
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey)
-![Status](https://img.shields.io/badge/status-prototype-brightgreen)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/hero-light.svg">
+  <img alt="my-stt-tts — talk to your Mac, it talks back" src="docs/assets/hero-dark.svg" width="100%">
+</picture>
 
-A hand-wired, low-latency **voice assistant that runs on a MacBook (Apple
-Silicon)**: **wake word → speech-to-text → an LLM (streaming) → text-to-speech →
-playback**, with **speaker identification** and **German / French / English**
-support. On-device STT/TTS; only transcribed text ever leaves the machine.
+<br>
 
-> **Status: working prototype.** Phases 0–7 are built and tested — push-to-talk,
-> typed, and wake-word modes; streaming; provider-agnostic brain (incl. no-API-key
-> Claude CLI); speaker ID; "agent, …" dispatch; and **natural interruptible
-> conversation** — barge-in (cancel speech mid-sentence), Smart Turn v3 prosodic
-> end-of-turn (**default**, auto-downloaded on first run), false-interrupt
-> suppression with an acoustic interruption predictor, context repair, bounded
-> sliding-window streaming STT, and **acoustic echo cancellation** (`--aec`:
-> macOS hardware `VoiceProcessingIO`, or a software NLMS filter) so barge-in
-> works on open speakers, not just headphones. Now also **network audio transport**
-> (`--transport websocket` / **`webrtc`**) for whole-house satellites + real browser
-> audio — with **full-duplex barge-in over the wire**, **streamed low-latency TTS**
-> (first audio in ~200–300 ms), **hardware-AEC capture** (macOS VoiceProcessingIO),
-> and an optional **pre-VAD denoiser** — plus **in-conversation tool/function calling**
-> (the model calls tools mid-reply) with an **optional cloud STT/TTS backend**
-> (local-first). Design + roadmap: **[`PLAN.md`](PLAN.md)**.
+**Talk to your Mac. It talks back.**
+A private voice assistant that lives on your own machine — say a word, ask out loud, and hear a natural reply.
 
-**🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)** — live voice-sample gallery.
-**🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)** — the live `--browser` GUI (in demo mode).
+<br>
 
-## Why this exists
+[![License](https://img.shields.io/badge/license-Apache--2.0-2f81f7.svg?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-2f81f7?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-555?style=flat-square&logo=apple&logoColor=white)](#-quick-start)
+[![Status](https://img.shields.io/badge/status-working%20prototype-3dffa6?style=flat-square)](#-quick-start)
+[![Privacy](https://img.shields.io/badge/audio-stays%20on%20device-22e7ff?style=flat-square)](#-your-audio-never-leaves-your-mac)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-d6249f?style=flat-square)](https://github.com/astral-sh/ruff)
+[![Tests](https://img.shields.io/badge/tests-pytest-2f81f7?style=flat-square)](#-quick-start)
 
-Off-the-shelf assistants are cloud-tethered, single-voice, and can't tell who's
-speaking. This is a local, swappable pipeline where the "brain" is a pluggable LLM — Claude by default (Haiku
-for speed, Opus for depth), the voices are yours to choose per language, and the
-mic audio stays on your machine.
+<br>
 
-## Pipeline
+### 🖥️ [See the control room →](https://glensk.github.io/my-stt-tts/gui.html)
+
+### 🔊 [Hear the voices →](https://glensk.github.io/my-stt-tts/)
+
+</div>
+
+---
+
+## What it does
+
+- 🗣️ Talk to it hands-free — just say the wake word, no buttons.
+- 💬 It replies out loud in a natural voice — a real back-and-forth, not beeps.
+- 🌍 Understands and speaks **German, French, and English**.
+- ✋ Interrupt it any time — start talking and it stops to listen.
+- 👥 Knows who's speaking and can greet each person by name.
+- 🛠️ Actually *does* things — checks the time, does the math, controls your home — not just chat.
+- 💻 Use it from your laptop, another room, or your web browser.
+- 🔒 Your voice never leaves your Mac — only the words you say reach the AI.
+- 🧠 Pick your own brain — Claude by default (no API key needed), or OpenAI, or a fully local model.
+- 🎙️ Choose your voice — calm, warm, male, female, per language.
+
+---
+
+## Meet your assistant
+
+It is the assistant you wish the smart speaker on your shelf actually was: **always local, always
+yours, and genuinely conversational.** You speak; it listens; it answers in a real voice — and if you
+change your mind mid-sentence, you just talk over it and it stops to hear you out.
+
+It runs entirely on a **MacBook with Apple Silicon**. The microphone audio is processed on the machine
+itself; only the *words* you say are sent to the AI brain you choose. That brain is **Claude by
+default — and it works with no API key at all** thanks to a bundled command-line login — or you can
+point it at OpenAI, a local model, or anything in between.
+
+> **Status — working prototype.** Everything below is built and tested today on macOS Apple Silicon.
+> It runs from source; one-click installers are on the roadmap. Full design and roadmap live in
+> **[`PLAN.md`](PLAN.md)**.
+
+---
+
+## What you can do with it
+
+Each capability below is real and shipping. Open **Technical details** under any one for the
+specifics — models, flags, and how it works under the hood.
+
+### 🗣️ Talk to it hands-free
+
+Say **"maziko"** and start talking. No buttons, no app to open — it is always listening for its name
+and ignores everything else.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+On-device wake-word detection via **openWakeWord** with a custom-trained **"maziko"** phrase
+(`wakewords/maziko.onnx`). Enable hands-free mode with `--wake`; without it you get a simple
+push-to-talk or typed loop. The detector runs locally on raw mic frames — nothing is streamed
+anywhere to listen for the wake word.
+
+</details>
+
+### 💬 It answers out loud, naturally
+
+You ask a question by voice and hear a spoken answer in a calm, natural voice — a real conversation,
+not a list of beeps.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+Speech-to-text runs locally with **`parakeet-mlx`** (MLX-native, sub-second on Apple Silicon) and
+streams **partial transcripts as you speak** (`--stt-streaming`) so the reply starts sooner. The
+reply is spoken by **Piper** neural voices (German, French, and English) with a built-in macOS `say`
+fallback that needs zero install. Short **chimes** mark the start and end of listening — language-
+neutral and far faster than spoken stage-cues. An optional cloud voice backend can be enabled for a
+higher-quality voice when a key is present; it stays **local-first** and falls back to on-device
+otherwise.
+
+</details>
+
+### ✋ Interrupt it any time
+
+It is still listening while it talks. Start speaking and it stops mid-sentence to hear you — even
+out loud on open speakers, not just with headphones.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+Full-duplex **barge-in** (`--barge-in off|headphones|always`): the mic stays live during playback,
+and confirmed speech cancels both the spoken output **and** the in-flight LLM response. **Acoustic
+echo cancellation** (`--aec off|nlms|voiceprocessing|auto`) removes the assistant's own voice from
+the mic — either via macOS hardware `VoiceProcessingIO` or a pure-numpy NLMS adaptive filter — so
+barge-in works on open speakers. A **false-interrupt gate plus an acoustic interruption predictor**
+keep it from cutting itself off on stray noise, and **post-interruption context repair** trims the
+conversation history to only what was actually spoken aloud, so the assistant never thinks it said
+something you cut off.
+
+</details>
+
+### 🎯 It knows when you're done talking
+
+It waits for you to actually finish a thought instead of cutting you off on a half-second pause.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+Turn-taking is handled by a two-stage voice-activity detector feeding **Smart Turn v3** prosodic
+end-of-turn detection, which is the **default** (`--turn-analyzer smart`). The model auto-downloads
+on first run and gracefully falls back to a plain silence timer (`--turn-analyzer silence`) if the
+model or runtime is unavailable.
+
+</details>
+
+### 👥 It knows who's speaking
+
+It can tell household members apart by voice and greet each person by name.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+Speaker identification via **SpeechBrain ECAPA-TDNN** embeddings with per-person voice enrollment and
+cosine matching (with a rejection margin for unknown voices). It runs **in parallel** with
+speech-to-text, so it adds effectively zero latency. Enrollment profiles are stored locally and
+git-ignored.
+
+</details>
+
+### 🛠️ It does things, not just chat
+
+Ask the time, ask it to do some math, or ask it to control your home — it carries out the action and
+tells you the result, all in one spoken turn.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+In-conversation **function / tool calling** (`tools.py`): the model emits a tool call mid-reply, the
+loop runs it, feeds the result back, and keeps streaming the spoken answer. Both the **Anthropic and
+OpenAI** tool-use round-trips are implemented. Shipped example tools: `get_time`, a safe
+`calculator`, and `home_control` (routes to a Home Assistant dispatch). Toggle with `TOOLS_ENABLED`.
+
+</details>
+
+### 💻 Use it from anywhere in the house
+
+Run it on your laptop, stream it to another room, or watch and talk to it right in your web browser.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+A pluggable **audio transport** seam lets the same pipeline source mic audio and play replies
+**over the network** (`--transport local|websocket`), so one Mac can serve a whole-house satellite
+(`python -m my_stt_tts.satellite ws://<host>:<port>`) while the heavy STT/LLM/TTS stays in one place.
+The **browser control room** (`--browser`, with `--browser-audio` for real mic capture via
+`getUserMedia`) streams 16 kHz PCM over a same-origin WebSocket and plays the reply back — live
+state, transcript, and audio in the page. The WebSocket framing is hand-rolled on Python's stdlib
+(`ws_frame.py`), so the GUI carries **zero runtime web dependencies**.
+
+</details>
+
+### 🧠 Bring your own brain
+
+Claude runs it out of the box with **no API key required**. Prefer OpenAI, a local model, or
+something self-hosted? Point it there in one line.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+The brain is **provider-agnostic** over an OpenAI-compatible interface. Select it in `.env`
+(see [`.env.example`](.env.example)):
+
+| Variable         | Example                     | Meaning                                                                |
+| :--------------- | :-------------------------- | :--------------------------------------------------------------------- |
+| `LLM_PROVIDER`   | `anthropic`                 | `anthropic` / `openai` / `openai-compatible` / `ollama` / `claude-cli` |
+| `LLM_MODEL`      | `claude-haiku-4-5`          | fast-path model id                                                     |
+| `LLM_MODEL_DEEP` | `claude-opus-4-8`           | optional "deep" model                                                  |
+| `LLM_BASE_URL`   | `http://localhost:11434/v1` | for OpenAI-compatible / local servers                                  |
+
+The **`claude-cli`** brain shells out to a **stripped, isolated** Claude CLI — its own minimal
+prompt, no tools, and no access to your global `~/.claude` config — so you get a no-API-cost,
+session-keeping brain (`--brain haiku-sub`). The API path (`--brain haiku-api`) is faster to first
+token if you have a key.
+
+</details>
+
+---
+
+## 🚀 Quick start
+
+```bash
+git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts
+uv sync --extra all                 # core + speech/voice/speaker/wake-word backends
+uv tool install piper-tts           # neural voices for German / French / English
+./mstt                              # start talking (push-to-talk; --debug shows cues)
+```
+
+No API key? The bundled Claude CLI needs none:
+
+```bash
+./mstt --brain haiku-sub --type     # type to it, hear it reply — zero API cost
+```
+
+The full natural-conversation experience — wake word, interrupt-any-time on open speakers, and
+live partial transcripts:
+
+```bash
+./mstt --wake --barge-in always --aec auto --stt-streaming
+```
+
+<details>
+<summary>More install options, voices, and the fine print</summary>
+
+<br>
+
+**Pick a voice.** List the bundled voices and choose one per language:
+
+```bash
+./mstt --list-voices
+./mstt --voice amy                  # calm female (en); also ryan, kristin, lessac, thorsten (de), tom (fr)
+```
+
+**Lighter dev install** — pure logic and tests only, no machine-learning backends:
+
+```bash
+uv sync && uv run pytest
+```
+
+**Notes.**
+
+- After `uv sync --extra all`, run the app with **`./mstt …`** (or `.venv/bin/my-stt-tts`). Avoid
+  `uv run my-stt-tts` for daily use — it re-syncs and strips the optional extras.
+- macOS `say` gives zero-install fallback voices, and the `sounddevice` wheel bundles PortAudio — no
+  `brew install portaudio` needed. **uv-first**; Homebrew is only a fallback for anything without a wheel.
+- Customize the spoken personality by editing `prompts/system_prompt.md`.
+- Whole-house / browser audio needs the transport extra, included in `--extra all`. Run a satellite
+  with `python -m my_stt_tts.satellite ws://<host>:<port>`.
+- **Docker is not supported on macOS** for this app: containers there run in a Linux VM with no
+  microphone or speaker access and no Apple-Silicon GPU (Metal / MLX) — no audio, no acceleration.
+  Run it natively.
+- Packaged installs (`uv tool install my-stt-tts`, a Homebrew tap) are planned.
+
+</details>
+
+---
+
+## 🔒 Your audio never leaves your Mac
+
+Speech-to-text and text-to-speech run **on-device**. Only the *transcribed text* of what you say is
+sent to your chosen AI brain — exactly as ordinary Claude (or OpenAI) usage would. Voice-enrollment
+profiles stay local and git-ignored.
+
+<details>
+<summary>Privacy details</summary>
+
+<br>
+
+- The microphone signal is transcribed and spoken back **locally**; raw audio is never uploaded.
+- The only thing that leaves the machine is the text prompt to the LLM provider you configure.
+- Speaker profiles and any local recordings live on disk and are git-ignored.
+- Don't dictate confidential content to a third-party LLM — the same caution as any cloud AI.
+
+</details>
+
+---
+
+## How it works
+
+A single warm async process wires the stages together: **wake word → speech-to-text → LLM (streaming)
+→ text-to-speech → playback**, with speaker ID running alongside.
 
 ```mermaid
 flowchart LR
@@ -45,188 +312,62 @@ flowchart LR
   WW --> VAD["Two-stage VAD<br/>+ smart-turn endpointing"]
   VAD --> STT["STT<br/>(parakeet-mlx)"]
   VAD --> SID["Speaker ID<br/>(ECAPA)"]
-  STT --> Brain["LLM<br/>(Claude/OpenAI/local)"]
+  STT --> Brain["LLM<br/>(Claude / OpenAI / local)"]
   SID --> Brain
-  Brain --> TTS["TTS router<br/>(Piper / Kokoro / say)"]
+  Brain --> TTS["TTS<br/>(Piper / say)"]
   TTS --> Spk["Speakers"]
 ```
 
-| Stage | Choice (v1) | Why |
-|:------|:------------|:----|
-| Orchestrator   | **Python**, one warm async process            | Latency is model/network-bound; another language buys ~nothing |
-| Wake word      | openWakeWord, custom phrase **"maziko"**      | Free, no vendor lock, on-device |
-| Speech-to-text | `parakeet-mlx` (multilingual)                 | MLX-native, sub-second, DE/FR/EN auto-detect |
-| Speaker ID     | SpeechBrain ECAPA-TDNN, enrollment + cosine   | Runs in parallel with STT → ~0 added latency |
-| LLM            | Any provider — Anthropic (default), OpenAI, Ollama, local; streaming | Pluggable via OpenAI-compatible API; Haiku→Opus deep path; MCP-ready |
-| Text-to-speech | Piper (DE/FR/EN) · Kokoro (EN) · `say` fallback | Only local engine strong in German *and* fast on M1 |
-| Confirmations  | short **chimes**, not spoken phrases          | Spoken stage cues add ~6 s/query; chimes are language-neutral |
-| Turn-taking    | push-to-talk → Silero VAD → Smart Turn v3     | Smart Turn v3 prosody is the **default** (`--turn-analyzer`, auto-downloaded on first run); falls back to a silence timer if the model/runtime is unavailable |
-| Barge-in       | interrupt playback mid-sentence (`--barge-in`) | Mic stays live during TTS; confirmed speech aborts speech + LLM; false-interrupt gate **+ acoustic interruption predictor**; **AEC** (`--aec`) removes the bot's own voice (software NLMS **or macOS hardware-AEC capture**, R3-4); optional **pre-VAD denoiser** (`--denoiser`, R3-6) |
-| Transport      | local · **WebSocket** · **WebRTC** (`--transport`) | `AudioTransport` seam: PCM/Opus over the wire for satellites + browser, **full-duplex barge-in over the wire**, **streamed clause-level TTS** (R2-5/R3-1/R3-2/R3-3) |
-| Tools          | in-conversation **function calling** (`tools.py`) | Model calls tools mid-reply (get_time, calculator, home_control); Anthropic + OpenAI round-trip; legacy "agent, …" still works (R2-7) |
+<details>
+<summary>The full pipeline, stage by stage</summary>
 
-## LLM provider
+<br>
 
-The "brain" is **provider-agnostic**. Anthropic/Claude is the default and the
-recommendation, but any OpenAI-compatible endpoint works — OpenAI, Ollama, vLLM,
-LM Studio, or a local server. Select it via `.env` (see `.env.example`):
+| Stage          | Choice                                                   | Why                                                                          |
+| :------------- | :------------------------------------------------------- | :--------------------------------------------------------------------------- |
+| Orchestrator   | **Python**, one warm async process                       | Latency is model/network-bound; another language buys ~nothing               |
+| Wake word      | openWakeWord, custom phrase **"maziko"**                 | Free, no vendor lock, on-device                                              |
+| Speech-to-text | `parakeet-mlx` (multilingual)                            | MLX-native, sub-second, DE/FR/EN auto-detect                                 |
+| Speaker ID     | SpeechBrain ECAPA-TDNN, enrollment + cosine              | Runs in parallel with STT → ~0 added latency                                 |
+| LLM brain      | Anthropic (default), OpenAI, Ollama, local — streaming   | Pluggable over an OpenAI-compatible API; no-API-key Claude CLI path          |
+| Text-to-speech | Piper (DE/FR/EN) · macOS `say` fallback · optional cloud | Local-first; `say` needs zero install                                        |
+| Confirmations  | short **chimes**, not spoken phrases                     | Spoken stage cues add seconds per query; chimes are language-neutral         |
+| Turn-taking    | two-stage VAD → **Smart Turn v3** (default)              | Prosodic end-of-turn; falls back to a silence timer if unavailable           |
+| Barge-in       | interrupt playback mid-sentence (`--barge-in`)           | Mic stays live; false-interrupt gate + predictor; **AEC** for open speakers  |
+| Transport      | local sound card · **WebSocket** (`--transport`)         | Mic/TTS PCM over the wire for whole-house satellites + browser audio         |
+| Tools          | in-conversation **function calling** (`tools.py`)        | Model calls tools mid-reply; Anthropic + OpenAI round-trips                  |
 
-| Variable | Example | Meaning |
-|:---------|:--------|:--------|
-| `LLM_PROVIDER`   | `anthropic`                    | `anthropic` / `openai` / `openai-compatible` / `ollama` / `claude-cli` |
-| `LLM_MODEL`      | `claude-haiku-4-5`             | fast-path model id |
-| `LLM_MODEL_DEEP` | `claude-opus-4-8`              | optional "deep" model |
-| `LLM_BASE_URL`   | `http://localhost:11434/v1`    | for OpenAI-compatible / local servers |
+</details>
 
-## Network audio transport (R2-5)
+<details>
+<summary>Third-party licenses</summary>
 
-By default the loop owns the local mic + speaker. An `AudioTransport` seam
-(`transport.py`) lets it instead source mic audio and sink TTS audio **over the
-wire**, so it can serve a whole-house satellite or a remote browser while the
-STT/LLM/TTS pipeline stays on one machine. `LocalTransport` (sounddevice) is the
-default; `WebSocketTransport` carries int16 PCM frames over a WebSocket.
+<br>
 
-```bash
-# Host: run the pipeline as a WebSocket audio server (needs the `transport` extra)
-uv sync --extra all                  # `all` now includes the transport extra
-./mstt --transport websocket --transport-port 8770   # optional: --transport-token <secret>
+This project is **Apache-2.0**. Optional backends carry their own licenses and are invoked as
+**separate processes** (not linked in), so they don't change this project's license:
 
-# Satellite (another room / a Pi): stream its mic up, play TTS back
-python -m my_stt_tts.satellite ws://192.168.1.10:8770          # --token <secret> if set
-```
+| Backend                         | License             | Note                                              |
+| :------------------------------ | :------------------ | :------------------------------------------------ |
+| Piper, espeak-ng                | **GPL-3.0**         | invoked as a subprocess (CLI), never imported     |
+| openWakeWord (bundled models)   | **CC-BY-NC-SA-4.0** | self-trained models avoid this                    |
+| SpeechBrain, Silero-VAD         | Apache-2.0 / MIT    | permissive                                        |
 
-**Browser audio.** With `--browser --browser-audio`, the GUI's *Live Audio* button
-first tries a **real WebRTC `RTCPeerConnection`** (R3-1) with
-`getUserMedia({audio:{echoCancellation:true}})` — Opus, a jitter buffer, and ICE NAT
-traversal, signaled by POSTing the SDP offer to a same-origin `/api/webrtc/offer`
-endpoint the server answers via **aiortc**. If WebRTC is unavailable (no `webrtc`
-extra, blocked ICE) it **falls back** to the original raw-PCM **same-origin
-WebSocket** (`/ws/audio`, so the page's strict CSP `connect-src 'self'` allows it,
-hand-rolled on the stdlib `http.server` via `ws_frame.py`). Without `--browser-audio`
-the GUI stays state/transcript only (and falls back to the scripted demo offline).
+</details>
 
-**Round-3 transport/audio robustness:**
+---
 
-- **WebRTC (`--transport webrtc`, R3-1)** — a third `AudioTransport` (`WebRtcTransport`)
-  backed by **aiortc**: real `RTCPeerConnection`, **Opus**, a jitter buffer, RTP/SRTP,
-  and **ICE (STUN/TURN) NAT traversal**, so a remote browser/satellite over the open
-  internet is robust where the raw-PCM WebSocket was fragile. Needs the `webrtc` extra
-  (`uv sync --extra webrtc`); the WS PCM path stays as a fallback.
-- **Full-duplex barge-in over the wire (R3-2)** — satellites and browser users can now
-  **interrupt the reply**, not just local users: the inbound mic stays live during TTS
-  playout and the same VAD + false-interrupt gate + AEC + acoustic-predictor machinery
-  runs on every frame; a confirmed interruption cancels the outbound TTS **and** the
-  in-flight LLM stream and hands the captured audio to the next turn.
-- **Streamed low-latency TTS (R3-3)** — the reply is synthesized + played **clause by
-  clause** (a `sounddevice` `OutputStream` locally, the transport sink on the wire), so
-  time-to-first-audio is the first clause (~200–300 ms) instead of the whole sentence.
-  Cancel semantics are preserved (it still aborts mid-utterance on barge-in).
+## For developers
 
-## Hardware AEC capture & noise suppression (R3-4 / R3-6)
+Conventions for humans and AI agents are in **[AGENTS.md](AGENTS.md)**; the design rationale and
+full roadmap are in **[PLAN.md](PLAN.md)**. Contributions and security reports: see
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
-**Hardware-AEC capture (R3-4, closes G3).** With `--aec voiceprocessing` (or `auto`)
-and `AEC_HW_CAPTURE=true` (the default), the always-on **`--wake`** loop captures mic
-audio **through** the macOS `AVAudioEngine` **VoiceProcessingIO** input node via PyObjC
-— it enables voice processing, installs a tap on the input bus, and bridges the
-**already-echo-cancelled** float32 PCM (channel 0, resampled 48 kHz → 16 kHz) into
-Python, so the software NLMS filter is bypassed entirely (the OS HAL did the
-cancellation, the same path FaceTime uses). This is verified working on this arm64
-machine: the tap delivers OS-cancelled buffers to numpy. **What falls back:** if PyObjC
-/ VoiceProcessingIO is unavailable or the engine fails to start, capture reverts to
-`sounddevice` + the in-Python NLMS canceller (R2-1). The push-to-talk (Enter-driven)
-loop still uses `sounddevice`; HW capture is wired into the `--wake` capture + barge-in
-path (the home case). Needs the `aec` extra.
+<div align="center">
 
-**Pre-VAD denoiser (R3-6).** `--denoiser spectral` (or `DENOISER=spectral`) inserts a
-noise-suppression stage on mic frames **after** echo cancellation and **before** VAD/STT
-— a pure-numpy **spectral-gate** denoiser (no extra deps, always available) that lifts
-the signal-to-noise ratio of steady-state noise to raise STT accuracy and cut false
-barge-ins in noisy rooms. `--denoiser rnnoise` uses an **RNNoise** wheel when present
-and **falls back to spectral** otherwise (on this arm64 setup the RNNoise wheel's
-transitive deps conflict with the WebRTC `av` build, so spectral is the working
-default).
+<br>
 
-## In-conversation tools + cloud backends (R2-7)
+**Local. Private. Conversational.**
+🖥️ [Control room](https://glensk.github.io/my-stt-tts/gui.html) · 🔊 [Voices](https://glensk.github.io/my-stt-tts/) · 📜 [Apache-2.0](LICENSE)
 
-The brain supports **function/tool calling mid-conversation** (`tools.py`): the
-model emits a tool call, the loop executes it, feeds the result back, and continues
-streaming the spoken answer — the Anthropic *and* OpenAI tool-use round-trips are
-both implemented. Shipped example tools: `get_time`, a safe `calculator`, and
-`home_control` (routes to the existing agent / Home Assistant dispatch). The legacy
-`"agent, …"` trigger still works; this is the inline upgrade. Toggle with
-`TOOLS_ENABLED`.
-
-An **optional cloud STT/TTS backend** sits behind the existing seams (`STT_BACKEND` /
-`TTS_BACKEND` = `local`|`cloud`) — useful for a high-quality cloud **German** voice,
-since local German TTS is the weak spot. It is **local-first**: cloud is selected
-only when a key is present, and degrades gracefully to on-device otherwise. Both
-speak an OpenAI-compatible API; no secrets are hard-coded (see `.env.example`).
-
-## Install
-
-> The voice loop runs from source today (Phases 1–2). Packaged installs land in
-> Phase 9. **uv-first** — Homebrew is only a fallback for anything without a wheel.
-
-```bash
-# From source (works now)
-git clone https://github.com/glensk/my-stt-tts && cd my-stt-tts
-uv sync --extra all                 # core + STT/TTS/speaker/VAD/wake/lang backends
-uv tool install piper-tts           # Piper CLI for DE/FR/EN TTS (GPL; run as a subprocess)
-export ANTHROPIC_API_KEY=...        # or set LLM_PROVIDER / LLM_BASE_URL (see .env.example)
-./mstt                              # push-to-talk loop (runs the venv directly; --debug for cues)
-
-# Natural conversation: interrupt the assistant mid-sentence on OPEN speakers
-# (AEC removes the bot's own voice — hardware VoiceProcessingIO capture when
-# available), prosodic end-of-turn (default), streamed low-latency TTS, a pre-VAD
-# denoiser for noisy rooms, and partial transcripts as you speak:
-./mstt --wake --barge-in always --aec auto --denoiser spectral --stt-streaming
-
-# No API key? Stripped + isolated Claude CLI (no API cost, keeps a session, ~2s/turn):
-./mstt --brain haiku-sub --type     # typed input -> spoken replies
-./mstt --brain haiku-api            # or the API (needs ANTHROPIC_API_KEY) — faster TTFT
-
-# Lighter dev install — pure logic + tests only, no ML backends
-uv sync && uv run pytest
-
-# Planned (Phase 9): packaged installs
-uv tool install my-stt-tts          # PyPI (planned)
-brew install glensk/tap/my-stt-tts  # Homebrew tap (planned)
-```
-
-macOS `say` gives zero-install fallback voices, and `sounddevice`'s wheel bundles
-PortAudio — no `brew install portaudio` needed.
-
-**Run without `uv run`:** after `uv sync --extra all`, use **`./mstt …`** (or
-`.venv/bin/my-stt-tts`). Avoid `uv run my-stt-tts` for daily use — it re-syncs and
-strips the optional extras. **Customize the spoken style** by editing
-`prompts/system_prompt.md`; choose a voice via `./mstt --list-voices` / `--voice`.
-The `claude-cli` brain runs **stripped + isolated** (its own minimal prompt, no
-tools, no access to your global `~/.claude`/`~/.llm-shared` config).
-
-**Docker is not supported on macOS** for this app: containers there run in a
-Linux VM with **no microphone/speaker access and no Apple-Silicon GPU (Metal/MLX)**
-— i.e. no audio and no acceleration. Run it natively.
-
-## Third-party licenses
-
-This project is **Apache-2.0**. Optional backends carry their own licenses and are
-invoked as **separate processes** (not linked in), so they don't change this
-project's license:
-
-| Backend | License | Note |
-|:--------|:--------|:-----|
-| Piper, espeak-ng        | **GPL-3.0**            | invoked as a subprocess (CLI), never imported |
-| XTTS-v2 (Coqui)         | **CPML, non-commercial** | optional; personal use only |
-| openWakeWord (bundled models) | **CC-BY-NC-SA-4.0** | self-trained models avoid this |
-| Kokoro, SpeechBrain, Silero-VAD | Apache-2.0 / MIT | permissive (Kokoro run with espeak-ng disabled) |
-
-## Privacy
-
-Local STT/TTS keep audio **on-device**; only transcribed text reaches your chosen LLM provider
-(Anthropic by default, as with ordinary Claude usage). Voice-enrollment profiles stay local and
-gitignored. Don't dictate confidential content.
-
-## Development
-
-Conventions for humans and AI agents are in **[AGENTS.md](AGENTS.md)**; the design
-rationale is in **[PLAN.md](PLAN.md)**.
+</div>

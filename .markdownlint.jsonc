@@ -1,0 +1,14 @@
+{
+  // Config for the public-facing, design-rich README (hero SVG, badges,
+  // collapsible <details>, <picture>). The rules below are relaxed because a
+  // landing-page README intentionally uses inline HTML and wide prose lines;
+  // structural rules (headings, lists, table alignment) stay enforced.
+  "default": true,
+  // Inline HTML is required for the hero <picture>, badge centering, and the
+  // folded <details>/<summary> progressive-disclosure blocks.
+  "MD033": false,
+  // Prose and link/table lines are not wrapped at 80 cols in a landing page.
+  "MD013": false,
+  // The document opens with a centered HTML hero block, not an <h1> heading.
+  "MD041": false
+}
