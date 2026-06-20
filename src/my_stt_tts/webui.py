@@ -127,6 +127,11 @@ def settings_dict(
         # page uses this to decide whether to ALSO embed the muted YouTube video when
         # it is local to the server. "server" = audio-only; "hybrid" = may embed video.
         "music_playback": cfg.music_playback,
+        # Within-turn speaker diarization (G7+): split one turn that holds several
+        # voices + TV into per-speaker segments, each named via the ECAPA path. Opt-in
+        # and active only when speaker ID is usable AND sherpa-onnx + the models exist.
+        "speaker_diarize_enabled": cfg.speaker_diarize_enabled,
+        "diarize_num_speakers": cfg.diarize_num_speakers,
         "brain_mode": cfg.brain_mode,
         "realtime_keyed": bool(cfg.realtime_api_key),
         "telephony": cfg.telephony,

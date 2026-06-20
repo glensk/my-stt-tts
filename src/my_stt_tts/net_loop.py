@@ -40,6 +40,7 @@ from .denoise import make_denoiser
 from .events import bus
 from .interrupt import InterruptGate, frame_energy, make_interrupt_predictor
 from .metrics import TelemetrySink, TurnMetrics, make_sink
+from .speaker_pipeline import resolve_turn_speaker
 from .stt import StreamingTranscriber, Transcriber
 from .text import SentenceChunker, strip_non_spoken
 from .transport import AudioTransport
@@ -200,18 +201,6 @@ def _iter_source(transport: AudioTransport, source: _MicSource | None) -> Iterat
             yield frame
 
 
-def _set_speaker(brain: Brain, speaker_id: Any, clip: np.ndarray | None) -> None:
-    """Resolve a captured clip to an enrolled name and set it on the brain (G7).
-
-    Mirrors the local loop: gated + defensive. With no pipeline (disabled / no
-    enrollment / no speechbrain) or no clip the speaker is ``None`` (shared guest
-    bucket) and nothing is embedded. The identified name is published to the bus so
-    a remote/browser UI can show who is talking."""
-    name = speaker_id.identify(clip) if speaker_id is not None and clip is not None else None
-    brain.set_speaker(name)
-    bus.speaker(name)
-
-
 def respond_over_transport(
     transport: AudioTransport,
     cfg: Config,
@@ -242,12 +231,22 @@ def respond_over_transport(
     :func:`run_transport_session` passes each follow-up's captured clip so a
     different remote speaker is re-identified.
     """
-    _set_speaker(brain, speaker_id, clip)
+    # G7+: resolve who is speaking; within-turn diarization may split the clip into
+    # per-speaker segments (each NAMED via the existing ECAPA path) and DROP a turn
+    # that is only unknown / background voices so it can't drive a command.
+    turn_speakers = resolve_turn_speaker(speaker_id, clip, bus=bus)
+    if turn_speakers.should_drop:
+        bus.log("dropped a turn with no enrolled speaker (only unknown / background voices)")
+        bus.state("idle")
+        return TransportResult()
+    brain.set_speaker(turn_speakers.routed)
     metrics = TurnMetrics()
     metrics.note(transcript=text, transport=True)
     voiced_any = False
-    # Turns over the wire (browser-audio / satellite) are live-mic audio.
-    bus.transcript(text, source="live_audio")
+    # Turns over the wire (browser-audio / satellite) are live-mic audio. When
+    # diarization split the turn, emit a LABELLED transcript per known segment instead.
+    if not turn_speakers.emit_transcripts(text, bus=bus, source="live_audio"):
+        bus.transcript(text, source="live_audio")
     chunker = SentenceChunker()
     barge = (
         _TransportBargeIn.build(cfg, source, vad, denoiser)

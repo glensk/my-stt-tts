@@ -47,6 +47,7 @@ from .config import (
 from .events import bus, install_log_bridge
 from .interrupt import InterruptGate, make_interrupt_predictor
 from .metrics import TurnMetrics
+from .speaker_pipeline import resolve_turn_speaker
 from .text import SentenceChunker, strip_non_spoken
 from .tts import VOICE_PRESETS, TTSRouter, list_voice_presets
 
@@ -245,7 +246,9 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
-        f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}",
+        f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}"
+        f"  diarize {blue}{cfg.speaker_diarize_enabled}{reset}"
+        f"  speakers {cfg.diarize_num_speakers if cfg.diarize_num_speakers > 0 else 'auto'}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
         f"  music      enabled {blue}{cfg.music_enabled}{reset}  player {blue}{cfg.music_player}{reset}"
@@ -751,16 +754,28 @@ def _respond(
     resolved to an enrolled name before streaming, so memory is per-person. The
     barge-in chaining loops call this again with the freshly *captured* clip, so a
     different person interrupting is re-identified for the follow-up turn."""
+    # G7+: resolve who is speaking FIRST (before the music router + LLM) so within-turn
+    # diarization can DROP a turn that is only unknown voices / background TV — that
+    # chatter must never drive a command. Emits per-segment speaker events itself when
+    # diarization split the turn.
+    turn_speakers = resolve_turn_speaker(speaker_id, clip, bus=bus)  # type: ignore[arg-type]
+    if turn_speakers.should_drop:
+        bus.log("dropped a turn with no enrolled speaker (only unknown / background voices)")
+        bus.state("idle")
+        return RespondResult()
+    brain.set_speaker(turn_speakers.routed)
     # LOCAL INTENT ROUTER (cross-brain): handle a music command ("play <song>",
     # "stop", …) HERE, before the LLM, so it works for every brain. On a match the
     # song is played + a short confirmation is spoken, and the turn ends without
     # ever asking the model (which would otherwise answer "I can't play music").
     if maybe_handle_music(cfg, tts, gate, text):
         return RespondResult()
-    _set_speaker(brain, speaker_id, clip)
     metrics = TurnMetrics()
     metrics.note(transcript=text)
-    bus.transcript(text, source=turn_source)
+    # When diarization split the turn, emit a LABELLED transcript per known segment;
+    # otherwise the single plain transcript (today's behaviour).
+    if not turn_speakers.emit_transcripts(text, bus=bus, source=turn_source):
+        bus.transcript(text, source=turn_source)
     chunker = SentenceChunker()
     voiced_any = False  # first-audio (R3-7): mark the instant the first audio plays
     barge_in = cfg.barge_in != "off" and vad is not None

@@ -115,7 +115,9 @@ def _fmt_transcript(e: dict[str, Any]) -> str:
     tag = "partial" if e.get("partial") else "final"
     src = str(e.get("source", "")).strip()
     head = f"{tag}:{src}" if src else tag
-    return f"[{head}] {e.get('text', '')}"
+    spk = str(e.get("speaker", "")).strip()
+    body = f"[{spk}] {e.get('text', '')}" if spk else str(e.get("text", ""))
+    return f"[{head}] {body}"
 
 
 def _fmt_response(e: dict[str, Any]) -> str:
@@ -483,17 +485,27 @@ class EventBus:
     def state(self, state: str, detail: str = "") -> None:
         self.publish({"type": "state", "state": state, "detail": detail})
 
-    def transcript(self, text: str, *, partial: bool = False, source: str = "") -> None:
+    def transcript(
+        self, text: str, *, partial: bool = False, source: str = "", speaker: str | None = None
+    ) -> None:
         """Publish a transcript. ``partial=True`` marks an in-progress streaming
         transcript (G6); the UI can replace it when the final arrives.
 
         ``source`` (optional) tags WHERE this turn's text came from so the UI can
         show e.g. "YOU · push-to-talk": one of ``"typed"`` / ``"push_to_talk"`` /
         ``"wake"`` / ``"live_audio"``. Default ``""`` (unset) keeps back-compat for
-        callers that don't tag — the wire field is only added when non-empty."""
+        callers that don't tag — the wire field is only added when non-empty.
+
+        ``speaker`` (G7+, optional) labels this transcript with the diarized,
+        ECAPA-named speaker for a within-turn diarization segment (an enrolled name,
+        or ``"unknown"`` for a guest / background voice). Default ``None`` keeps
+        back-compat for single-speaker turns — the wire field is added only when set,
+        so a non-diarized turn's event shape is unchanged."""
         event: dict[str, Any] = {"type": "transcript", "text": text, "partial": partial}
         if source:
             event["source"] = source
+        if speaker is not None:
+            event["speaker"] = speaker
         self.publish(event)
 
     def response(self, text: str, *, final: bool = False, model: str = "") -> None:
