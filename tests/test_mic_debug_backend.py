@@ -51,8 +51,10 @@ def test_save_recording_writes_16k_wav_with_hash_and_url(
     clip = (np.sin(np.linspace(0, 100, 32000)) * 0.4).astype(np.float32)
     path, hash8, wav_url = audio.save_recording(clip, 16000, kind="mic", source="server")
     assert len(hash8) == 8 and all(c in "0123456789abcdef" for c in hash8)
+    # Mic-check clips stay flat: <ts>-<source>-<hash>.wav directly under recordings/.
     assert wav_url == f"/recordings/{Path(path).name}"
-    assert Path(path).name.endswith(f"-mic-server-{hash8}.wav")
+    assert Path(path).name.endswith(f"-server-{hash8}.wav")
+    assert Path(path).parent == tmp_path
     # A readable mono 16 kHz WAV was written.
     with wave.open(path, "rb") as wf:
         assert wf.getframerate() == 16000
@@ -68,8 +70,11 @@ def test_save_recording_resamples_to_16k_and_names_word(
     path, hash8, wav_url = audio.save_recording(
         clip48, 48000, kind="wake", source="browser", word="maziko"
     )
-    assert f"-wake-browser-maziko-{hash8}.wav" in Path(path).name
-    assert wav_url.startswith("/recordings/")
+    # Wake clips are kept as training data in a PER-WORD subfolder, named
+    # <ts>-<source>-<hash>.wav (the word is the folder, not in the filename).
+    assert Path(path).parent == tmp_path / "wake" / "maziko"
+    assert Path(path).name.endswith(f"-browser-{hash8}.wav")
+    assert wav_url == f"/recordings/wake/maziko/{Path(path).name}"
     with wave.open(path, "rb") as wf:
         assert wf.getframerate() == 16000
         # ~2 s of 16 kHz audio (resampled from 48 kHz).

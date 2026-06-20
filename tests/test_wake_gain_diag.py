@@ -313,7 +313,10 @@ def test_wake_gain_sweep_newest_clip_when_hash_null(
         "my_stt_tts.wake.wake_model_for", lambda *_a, **_k: str(tmp_path / "m.onnx")
     )
     (tmp_path / "m.onnx").write_bytes(b"x")
-    _write_wav(tmp_path / "20260620-000000-wake-server-maziko-aaaa1111.wav", np.full(32000, 0.3))
+    # Wake clips now live in the per-word training folder wake/<word>/.
+    word_dir = tmp_path / "wake" / "maziko"
+    word_dir.mkdir(parents=True)
+    _write_wav(word_dir / "20260620-000000-server-aaaa1111.wav", np.full(32000, 0.3))
     cfg = Config(anthropic_api_key="sk-test", wake_threshold=0.5, wake_phases=1)
     bus = EventBus()
     sub = bus.subscribe()

@@ -113,47 +113,118 @@ def test_model_version_label_unknown_passes_through():
     assert model_version_label("some-future-model") == "some-future-model"
 
 
-# --- wake-word reliability metadata (GUI contract) -----------------------------
+# --- wake-word DATA-DRIVEN reliability (GUI contract) --------------------------
+# Reliability is a 0..1 scalar: the MEASURED chance the word fires for THIS user
+# (from his wake tests, server-biased) when tests exist, else a static prior
+# (official 0.9, self-trained 0.3). Tier is DERIVED from the scalar. Empirical
+# driver: official models fire ~100% on Albert's voice while self-trained maziko
+# scores 0% — so its dot must read RED (0.3 prior), not the static training metric.
 
 
 @pytest.mark.parametrize(
-    ("word", "tier", "recall"),
+    ("word", "tier", "reliability"),
     [
-        # Official -> always green, recall unmeasured (None).
-        ("alexa", "green", None),
-        ("hey_jarvis", "green", None),
-        ("hey_mycroft", "green", None),
-        # Self-trained by recall band: >=0.70 green, [0.50,0.70) orange, <0.50 red.
-        ("maziko", "green", 0.76),
-        ("orion", "green", 0.70),  # 0.70 is the green boundary (inclusive)
-        ("computer", "orange", 0.64),
-        ("luna", "orange", 0.52),
-        ("sage", "red", 0.45),
-        # Self-trained, unrecorded recall -> red.
-        ("nexus", "red", None),
-        ("jarvis", "red", None),
+        # Official -> 0.9 prior -> green (no measured tests).
+        ("alexa", "green", 0.9),
+        ("hey_jarvis", "green", 0.9),
+        ("hey_mycroft", "green", 0.9),
+        # Self-trained -> 0.3 prior -> RED (maziko was the empirical proof of 0%).
+        ("maziko", "red", 0.3),
+        ("nexus", "red", 0.3),
+        ("computer", "red", 0.3),
+        ("orion", "red", 0.3),
+        # An entirely unknown word is treated as self-trained -> red prior.
+        ("whatever", "red", 0.3),
     ],
 )
-def test_wake_word_tier_rules(word, tier, recall):
+def test_wake_word_tier_prior_rules(word, tier, reliability):
+    """Static-prior tier from the scalar, no measured tests (empty stats)."""
     from my_stt_tts.config import wake_word_tier
 
-    got_tier, note, got_recall = wake_word_tier(word)
+    got_tier, note, got_reliability = wake_word_tier(word, stats={})
     assert got_tier == tier
-    assert got_recall == recall
+    assert got_reliability == pytest.approx(reliability)
     assert note  # always a non-empty human reason
+
+
+def test_tier_from_reliability_thresholds():
+    from my_stt_tts.config import _tier_from_reliability
+
+    assert _tier_from_reliability(0.70) == "green"  # green boundary inclusive
+    assert _tier_from_reliability(0.99) == "green"
+    assert _tier_from_reliability(0.69) == "orange"
+    assert _tier_from_reliability(0.40) == "orange"  # orange boundary inclusive
+    assert _tier_from_reliability(0.39) == "red"
+    assert _tier_from_reliability(0.0) == "red"
+
+
+def test_measured_overrides_prior_and_drives_tier():
+    """When this user's tests exist, the MEASURED mean drives reliability + tier,
+    overriding the static prior. A self-trained word that fails for him -> red ~0;
+    one that fires for him -> green."""
+    from my_stt_tts.config import wake_word_tier
+
+    # maziko fails on his voice (0% fire, near-zero confidence) -> red ~0.0.
+    failing = {"maziko": [{"confidence": 0.0, "fired": False, "source": "server"}] * 6}
+    tier, note, rel = wake_word_tier("maziko", stats=failing)
+    assert tier == "red"
+    assert rel == pytest.approx(0.0)
+    assert "measured" in note
+
+    # A self-trained word that fires reliably for him -> measured overrides 0.3 -> green.
+    firing = {"maziko": [{"confidence": 0.97, "fired": True, "source": "server"}] * 6}
+    tier, _note, rel = wake_word_tier("maziko", stats=firing)
+    assert tier == "green"
+    assert rel == pytest.approx(0.97)
+
+
+def test_measured_reliability_is_server_biased():
+    """Server tests are the live loop, so they win: when ANY server test exists, only
+    server tests count; browser-only falls back to browser."""
+    from my_stt_tts.config import measured_reliability
+
+    mixed = {
+        "w": [
+            {"confidence": 0.1, "fired": False, "source": "server"},
+            {"confidence": 0.9, "fired": True, "source": "browser"},  # ignored (server exists)
+        ]
+    }
+    rel, tested = measured_reliability("w", mixed)
+    assert rel == pytest.approx(0.1)
+    assert tested == 1
+
+    browser_only = {"w": [{"confidence": 0.8, "fired": True, "source": "browser"}]}
+    rel, tested = measured_reliability("w", browser_only)
+    assert rel == pytest.approx(0.8)
+    assert tested == 1
+
+    assert measured_reliability("missing", {}) == (None, 0)
+
+
+def test_measured_reliability_uses_only_recent_window():
+    """Only the most recent WAKE_STATS_RECENT tests feed the mean (old failures age out)."""
+    from my_stt_tts.config import WAKE_STATS_RECENT, measured_reliability
+
+    old = [{"confidence": 0.0, "fired": False, "source": "server"}] * 5
+    recent = [{"confidence": 1.0, "fired": True, "source": "server"}] * WAKE_STATS_RECENT
+    rel, tested = measured_reliability("w", {"w": old + recent})
+    assert rel == pytest.approx(1.0)  # the 5 old zeros aged out of the window
+    assert tested == WAKE_STATS_RECENT
 
 
 def test_wake_word_info_shape_for_available_models():
     from my_stt_tts.config import available_wake_words, wake_word_info
 
-    info = wake_word_info()
+    info = wake_word_info(stats={})
     # One entry per available model, each with the contract keys.
     assert set(info) == set(available_wake_words())
     for _word, meta in info.items():
-        assert set(meta) == {"tier", "note", "recall"}
+        assert set(meta) == {"tier", "note", "reliability", "tested", "measured"}
         assert meta["tier"] in {"green", "orange", "red"}
         assert isinstance(meta["note"], str) and meta["note"]
-        assert meta["recall"] is None or isinstance(meta["recall"], float)
+        assert isinstance(meta["reliability"], float) and 0.0 <= meta["reliability"] <= 1.0
+        assert isinstance(meta["tested"], int) and meta["tested"] >= 0
+        assert isinstance(meta["measured"], bool)
 
 
 def test_wake_word_info_in_settings_dict():
@@ -161,9 +232,14 @@ def test_wake_word_info_in_settings_dict():
 
     d = settings_dict(Config(anthropic_api_key="sk-test"))
     assert "wake_word_info" in d
-    # The official models are present and green (they ship in wakewords/).
-    assert d["wake_word_info"]["hey_jarvis"]["tier"] == "green"
-    assert d["wake_word_info"]["alexa"]["tier"] == "green"
+    info = d["wake_word_info"]
+    # Official models are present and green (0.9 prior).
+    assert info["hey_jarvis"]["tier"] == "green"
+    assert info["alexa"]["tier"] == "green"
+    # Self-trained maziko reads RED by default (0.3 prior) — the empirical fix.
+    assert info["maziko"]["tier"] == "red"
+    # Contract carries the data-driven fields.
+    assert {"reliability", "tested", "measured"} <= set(info["maziko"])
 
 
 def test_from_env(monkeypatch):
