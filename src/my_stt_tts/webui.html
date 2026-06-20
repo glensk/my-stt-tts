@@ -397,6 +397,92 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .play-last.playing{border-color:var(--green); color:var(--green); box-shadow:0 0 12px -4px var(--green)}
 .play-last svg{width:11px; height:11px}
 
+/* ---------- WAKE-DEBUG visualizations (gauge · gain-sweep · score-trace · stats) ----------
+   Added on every mic + wake result row to debug a dead wake word: is the int16
+   level even in range for the model, does the score climb with gain, and what does
+   the per-frame score trace look like under the waveform. */
+/* level-vs-model gauge — the at-a-glance "is the level in range for the wake model".
+   Red for too-quiet (raise gain) / clipping, green when OK. Shows int16 peak/rms. */
+.lvl-gauge{display:inline-flex; align-items:center; gap:7px; padding:3px 10px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; font-size:9.5px; letter-spacing:.4px;
+  color:var(--ink-dim); text-transform:none; line-height:1.3}
+.lvl-gauge .gdot{width:7px; height:7px; border-radius:50%; flex:0 0 auto; background:var(--ink-faint)}
+.lvl-gauge .gmsg{font-weight:600}
+.lvl-gauge .gnum{color:var(--ink); font-weight:600; letter-spacing:.6px}
+.lvl-gauge.g-low{border-color:var(--red); background:rgba(255,77,94,.07)}
+.lvl-gauge.g-low .gdot{background:var(--red); box-shadow:0 0 8px -1px var(--red)}
+.lvl-gauge.g-low .gmsg{color:var(--red)}
+.lvl-gauge.g-high{border-color:var(--red); background:rgba(255,77,94,.07)}
+.lvl-gauge.g-high .gdot{background:var(--red); box-shadow:0 0 8px -1px var(--red)}
+.lvl-gauge.g-high .gmsg{color:var(--red)}
+.lvl-gauge.g-ok{border-color:var(--green); background:rgba(61,255,166,.06)}
+.lvl-gauge.g-ok .gdot{background:var(--green); box-shadow:0 0 8px -1px var(--green)}
+.lvl-gauge.g-ok .gmsg{color:var(--green)}
+/* extra stat chips (SNR · true-peak · crest · DC offset · LUFS) — same look as .check-meta .kv */
+.stat-chips{display:flex; flex-wrap:wrap; gap:5px 7px; font-size:9.5px; letter-spacing:.4px}
+.stat-chips:empty{display:none}
+.stat-chips .kv{display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; color:var(--ink-dim)}
+.stat-chips .kv b{color:var(--cyan); font-weight:600}
+/* 🔍 score-this-clip button — same pill family as ▶ play-last, in violet */
+.score-clip{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+  border:1px solid var(--violet); background:rgba(157,123,255,.07); color:var(--violet);
+  font-size:10px; letter-spacing:.5px; cursor:pointer; transition:.15s; text-transform:none}
+.score-clip:hover{box-shadow:0 0 12px -4px var(--violet)}
+.score-clip:disabled{opacity:.5; cursor:default; box-shadow:none}
+.score-clip.busy{animation:blink .9s steps(2) infinite}
+.score-clip svg{width:11px; height:11px}
+.score-clip-out{font-size:9.5px; letter-spacing:.4px; color:var(--ink-dim)}
+.score-clip-out b{font-weight:600}
+.score-clip-out.fired b{color:var(--green)} .score-clip-out.miss b{color:var(--red)}
+/* 🔎 find-gain button — kicks the gain sweep; amber (it's the "your level is probably the bug" path) */
+.find-gain{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+  border:1px solid var(--amber); background:rgba(255,182,72,.07); color:var(--amber);
+  font-size:10px; letter-spacing:.5px; cursor:pointer; transition:.15s; text-transform:none}
+.find-gain:hover{box-shadow:0 0 12px -4px var(--amber)}
+.find-gain:disabled{opacity:.5; cursor:default; box-shadow:none}
+.find-gain.busy{animation:blink .9s steps(2) infinite}
+.find-gain svg{width:11px; height:11px}
+/* gain-sweep chart — confidence (y 0..1) vs gain (x, log-ish). Threshold rule + the
+   first gain that fires is marked. The whole point: score climbs as gain rises. */
+.gain-sweep{display:flex; flex-direction:column; gap:5px; width:100%}
+.gain-sweep svg{display:block; width:300px; max-width:92vw; height:96px;
+  border:1px solid var(--line2); border-radius:7px; background:#060c12}
+.gain-sweep .gs-axis{stroke:var(--line2); stroke-width:1; vector-effect:non-scaling-stroke}
+.gain-sweep .gs-thr{stroke:var(--amber); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.8}
+.gain-sweep .gs-line{fill:none; stroke:var(--cyan); stroke-width:1.6; vector-effect:non-scaling-stroke}
+.gain-sweep .gs-dot{fill:var(--cyan)}
+.gain-sweep .gs-dot.fired{fill:var(--green)}
+.gain-sweep .gs-fire{stroke:var(--green); stroke-width:1; stroke-dasharray:2 2; vector-effect:non-scaling-stroke}
+.gain-sweep .gs-lbl{fill:var(--ink-faint); font-size:7px; letter-spacing:.3px}
+.gain-sweep .gs-thr-lbl{fill:var(--amber); font-size:7px; letter-spacing:.3px}
+.gain-sweep .gs-cap{font-size:9px; letter-spacing:.4px; color:var(--ink-dim)}
+.gain-sweep .gs-cap b{color:var(--green); font-weight:600}
+/* per-frame score-trace — drawn directly UNDER the level sparkline, same 148px width,
+   time-aligned. Threshold horizontal rule; the line is green where score ≥ threshold. */
+.score-trace{display:flex; align-items:center; gap:7px}
+.score-trace svg{display:block; width:148px; max-width:46vw; height:26px;
+  border:1px solid var(--line2); border-radius:6px; background:#060c12}
+.score-trace .st-thr{stroke:var(--amber); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.85}
+.score-trace .st-line{fill:none; stroke:var(--ink-dim); stroke-width:1.3; vector-effect:non-scaling-stroke}
+.score-trace .st-line.hot{stroke:var(--green)}
+.score-trace .st-cap{font-size:8.5px; letter-spacing:.5px; color:var(--ink-faint); white-space:nowrap}
+/* browser AGC/NS/EC A/B toggle — flip the processing chain OFF and re-run without a reload */
+.ab-toggle{display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; font-size:9.5px; letter-spacing:.4px;
+  color:var(--ink-dim); text-transform:none; cursor:pointer; transition:.15s}
+.ab-toggle:hover{border-color:var(--cyan-dim)}
+.ab-toggle .ab-sw{width:26px; height:14px; border-radius:999px; background:#0a141d; border:1px solid var(--line2);
+  position:relative; flex:0 0 auto; transition:.15s}
+.ab-toggle .ab-sw::after{content:""; position:absolute; top:1px; left:1px; width:10px; height:10px;
+  border-radius:50%; background:var(--ink-faint); transition:.15s}
+.ab-toggle.raw{border-color:var(--amber); color:var(--amber)}
+.ab-toggle.raw .ab-sw{background:rgba(255,182,72,.18); border-color:var(--amber)}
+.ab-toggle.raw .ab-sw::after{left:13px; background:var(--amber)}
+.ab-ab{font-size:9.5px; letter-spacing:.4px; color:var(--ink-dim)}
+.ab-ab b{color:var(--ink); font-weight:600}
+.ab-ab .ab-raw b{color:var(--amber)}
+
 /* ---------- transcript ---------- */
 .transcript-card{flex:1; min-height:280px; display:flex; flex-direction:column}
 .transcript-card .body{flex:1; display:flex; flex-direction:column; padding:0; min-height:0}
@@ -675,6 +761,17 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                 <span class="zone" aria-hidden="true"></span>
                 <span class="zone-label">target level</span>
               </span>
+            </div>
+            <!-- AGC/NS/EC A/B toggle: flip the browser's audio processing OFF and re-run
+                 the check (re-getUserMedia with raw constraints) WITHOUT a page reload,
+                 so processed-vs-raw peaks are directly comparable. -->
+            <div class="check-row" style="margin-top:7px">
+              <button class="ab-toggle" id="micBrowserAB" type="button" role="switch" aria-checked="false"
+                      title="Flip browser AGC / NS / EC OFF and re-run the check — compare the raw vs processed peak">
+                <span class="ab-sw" aria-hidden="true"></span>
+                <span id="micBrowserABLabel">processed (AGC/NS/EC on)</span>
+              </button>
+              <span class="ab-ab" id="micBrowserABOut" hidden></span>
             </div>
             <!-- result chip — identical pattern to the server mic check -->
             <div class="mic-result" id="micBrowserResult" role="status" aria-live="polite" hidden>
@@ -1001,13 +1098,24 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <input class="ctrl" id="wake" autocomplete="off"
                      aria-label="Custom wake phrase" placeholder="wake phrase">
             </div>
-            <div class="field" style="margin-bottom:0">
+            <div class="field">
               <label for="wakeThreshold">Wake sensitivity <span class="v" id="wakeThresholdVal">0.40</span>
                 <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake sensitivity"
                       aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0–1) the wake word must clear to fire. <b>Lower</b> = triggers more easily / more false-positives; <b>higher</b> = stricter (may miss a quiet "maziko"). Default 0.40.</span></span>
               </label>
               <input type="range" id="wakeThreshold" data-key="wake_threshold" data-val="wakeThresholdVal"
                      min="0" max="1" step="0.01" aria-label="Wake sensitivity threshold">
+            </div>
+            <!-- ★ Wake gain — the LIVE-LOOP fix knob (1–10×). Boosts the audio fed to
+                 the wake model so a quiet "maziko" clears the threshold. The Find-gain
+                 sweep on each recall row tells you what value to set here. -->
+            <div class="field" style="margin-bottom:0">
+              <label for="wakeGain">Wake gain <span class="v" id="wakeGainVal">1.00×</span>
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake gain"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Capture gain applied to the audio fed to the <b>live wake loop</b> (1–10×). The usual cure for a dead wake word: a quiet mic never clears the threshold, so boost it here. Use <b>🔎 Find gain</b> on a recall row to see how the score climbs with gain, then set this. Default 1.0×.</span></span>
+              </label>
+              <input type="range" id="wakeGain" data-key="wake_gain" data-val="wakeGainVal" data-suffix="×"
+                     min="1" max="10" step="0.5" aria-label="Wake-loop capture gain">
             </div>
           </div>
 
@@ -1555,6 +1663,12 @@ function populate(s){
   settings.mic_gain = mg;
   $("#micGain").value = mg;
   $("#micGainVal").textContent = mg.toFixed(2) + "×";
+  // Wake-loop capture gain (float, settings.wake_gain, 1–10×) — the live-loop fix knob.
+  let wg = parseFloat(settings.wake_gain);
+  if(isNaN(wg)) wg = 1.0;
+  settings.wake_gain = wg;
+  const wgEl = $("#wakeGain"); if(wgEl) wgEl.value = wg;
+  const wgVal = $("#wakeGainVal"); if(wgVal) wgVal.textContent = wg.toFixed(2) + "×";
   updateVoiceNote();
   setVoiceControls(settings);
   applyHostApp(settings.host_app);
@@ -2147,10 +2261,323 @@ async function playWavUrl(url){
   return new Promise(resolve=>{ node.onended = ()=> resolve(); node.start(); });
 }
 
+/* ============================================================
+   WAKE-DEBUG helpers — gauge · stat chips · gain-sweep chart · score-trace ·
+   score-this-clip · AGC A/B. All inline-SVG / DOM, CSP-clean (no external libs).
+   Consume the SHARED CONTRACT fields the backend now carries on every result:
+     int16_peak, int16_rms, expected_level("low"|"ok"|"high"), crest_db, dc_offset,
+     true_peak_db, snr_db|null, lufs|null, and (wake only) score_trace[0..1].
+   ============================================================ */
+// The wake model's current decision threshold (settings.wake_threshold, 0..1).
+function wakeThreshold(){
+  const t = parseFloat(settings && settings.wake_threshold);
+  return (isNaN(t) || t < 0 || t > 1) ? 0.4 : t;
+}
+// Registry of the last result `d` per row — lets ▶ Find-gain / 🔍 Score-this-clip
+// re-issue an action for the SAME word/hash a row was rendered from (offline-safe).
+const lastResult = {};
+
+// Derive a contract-shaped `result` (int16_peak/rms, expected_level, crest_db,
+// dc_offset, true_peak_db) from a locally-captured Float32 PCM block — so the
+// BROWSER checks (which never get a server event) still show the gauge + stat
+// chips. expected_level mirrors the wake-model's usable window: ~10–80% peak = ok,
+// below = too quiet (raise gain), at/above clipping = high.
+function localStats(pcm, peakOpt){
+  const peak = (typeof peakOpt === "number") ? peakOpt : pcmPeak(pcm);
+  const rms = pcmRms(pcm);
+  let dc = 0; for(let i=0;i<(pcm?pcm.length:0);i++){ dc += pcm[i]; } dc = pcm && pcm.length ? dc/pcm.length : 0;
+  const exp = peak < 0.10 ? "low" : (peak >= 0.985 ? "high" : "ok");
+  const db = v => v > 0 ? 20*Math.log10(v) : -120;
+  return {
+    int16_peak: Math.round(Math.min(1, peak) * 32767),
+    int16_rms:  Math.round(Math.min(1, rms) * 32767),
+    expected_level: exp,
+    crest_db: (rms > 0) ? Math.max(0, db(peak) - db(rms)) : 0,
+    dc_offset: dc,
+    true_peak_db: db(peak),
+    snr_db: null, lufs: null,
+  };
+}
+
+// LEVEL-vs-MODEL gauge: the at-a-glance "is the level even in range for the wake
+// model". `expected_level` is the authority (low → too quiet, raise gain; high →
+// clipping; ok → good); int16 peak/rms are shown as the evidence.
+function buildLevelGauge(d){
+  const exp = (d && typeof d.expected_level === "string") ? d.expected_level.toLowerCase() : null;
+  if(exp == null && typeof (d && d.int16_peak) !== "number") return null;   // nothing to show
+  const g = document.createElement("span"); g.className = "lvl-gauge";
+  const dot = document.createElement("span"); dot.className = "gdot"; g.appendChild(dot);
+  let cls = "", msg = "";
+  if(exp === "low"){ cls = "g-low"; msg = "⚠ too quiet for the wake model — raise gain"; }
+  else if(exp === "high"){ cls = "g-high"; msg = "⚠ clipping"; }
+  else if(exp === "ok"){ cls = "g-ok"; msg = "level OK for wake"; }
+  else { msg = "level"; }                                   // unknown expected_level
+  if(cls) g.classList.add(cls);
+  const m = document.createElement("span"); m.className = "gmsg"; m.textContent = msg; g.appendChild(m);
+  // int16 evidence (peak / rms) — the absolute numbers the model actually sees.
+  const bits = [];
+  if(typeof d.int16_peak === "number") bits.push("pk " + Math.round(d.int16_peak));
+  if(typeof d.int16_rms === "number")  bits.push("rms " + Math.round(d.int16_rms));
+  if(bits.length){
+    const num = document.createElement("span"); num.className = "gnum";
+    num.textContent = bits.join(" · ") + " /32767";
+    g.appendChild(num);
+  }
+  return g;
+}
+
+// EXTRA STAT CHIPS — SNR · true-peak (dBTP) · crest (dB) · DC offset (+ LUFS if set).
+function buildStatChips(d){
+  const wrap = document.createElement("div"); wrap.className = "stat-chips";
+  const fmt = (v, unit, dp)=> (v<0?"−":"") + Math.abs(v).toFixed(dp==null?1:dp) + (unit||"");
+  [["SNR",       (typeof d.snr_db==="number") ? fmt(d.snr_db," dB") : null],
+   ["true-peak", (typeof d.true_peak_db==="number") ? fmt(d.true_peak_db," dBTP") : null],
+   ["crest",     (typeof d.crest_db==="number") ? fmt(d.crest_db," dB") : null],
+   ["DC offset", (typeof d.dc_offset==="number") ? fmt(d.dc_offset*1000,"", 2)+"e‑3" : null],
+   ["LUFS",      (typeof d.lufs==="number") ? fmt(d.lufs,"") : null]
+  ].forEach(([k,v])=>{
+    if(v==null) return;
+    const kv = document.createElement("span"); kv.className = "kv";
+    kv.appendChild(document.createTextNode(k+" "));
+    const b = document.createElement("b"); b.textContent = v; kv.appendChild(b);
+    wrap.appendChild(kv);
+  });
+  return wrap.children.length ? wrap : null;
+}
+
+// PER-FRAME SCORE-TRACE — drawn DIRECTLY BENEATH the level sparkline, same 148px
+// width + time-aligned, with the wake threshold as a horizontal rule. The line is
+// green where score ≥ threshold. Shape classifies the failure: flat = level/dtype;
+// bumps-below = margin; bump-at-wrong-time = framing.
+function buildScoreTrace(trace, thr){
+  const NS = "http://www.w3.org/2000/svg";
+  const wrap = document.createElement("span"); wrap.className = "score-trace";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 26");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "per-frame wake score over time");
+  const T = (typeof thr === "number") ? Math.max(0, Math.min(1, thr)) : 0.4;
+  const yOf = v => 25 - Math.max(0, Math.min(1, v)) * 24;     // 1px floor padding
+  // threshold rule
+  const thrLine = document.createElementNS(NS, "line");
+  thrLine.setAttribute("class", "st-thr");
+  thrLine.setAttribute("x1", "0"); thrLine.setAttribute("x2", "100");
+  thrLine.setAttribute("y1", yOf(T).toFixed(1)); thrLine.setAttribute("y2", yOf(T).toFixed(1));
+  svg.appendChild(thrLine);
+  const n = (trace && trace.length) ? trace.length : 1;
+  const pt = i => {
+    const x = n===1 ? 0 : (i/(n-1))*100;
+    return [x, yOf(trace && trace[i]!=null ? trace[i] : 0)];
+  };
+  // Draw the line in segments so the part ≥ threshold is green (.hot), the rest dim.
+  let seg = [], segHot = null;
+  const flush = ()=>{
+    if(seg.length < 2){ seg = seg.slice(-1); return; }
+    const line = document.createElementNS(NS, "polyline");
+    line.setAttribute("class", "st-line" + (segHot ? " hot" : ""));
+    line.setAttribute("points", seg.map(p=> p[0].toFixed(1)+","+p[1].toFixed(1)).join(" "));
+    svg.appendChild(line);
+    seg = seg.slice(-1);                                     // keep last point to bridge
+  };
+  for(let i=0;i<n;i++){
+    const v = (trace && trace[i]!=null) ? trace[i] : 0;
+    const hot = v >= T;
+    if(segHot !== null && hot !== segHot){ flush(); }
+    segHot = hot; seg.push(pt(i));
+  }
+  flush();
+  wrap.appendChild(svg);
+  const cap = document.createElement("span"); cap.className = "st-cap"; cap.textContent = "score · per-frame";
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+// GAIN-SWEEP CHART — confidence (y 0..1) vs gain (x, log-ish so 1×→16× spreads
+// evenly). Threshold rule; the first gain that `fired` is marked. The whole point:
+// score climbs as gain rises ⇒ the cure for a dead wake word is more gain.
+function buildGainSweepChart(points, thr){
+  const NS = "http://www.w3.org/2000/svg";
+  const wrap = document.createElement("div"); wrap.className = "gain-sweep";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 300 96");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "wake confidence versus capture gain");
+  const T = (typeof thr === "number") ? Math.max(0, Math.min(1, thr)) : 0.4;
+  const PL = 26, PR = 8, PT = 8, PB = 16;                    // padding (room for axis labels)
+  const W = 300, H = 96;
+  const pts = (Array.isArray(points) ? points : []).filter(p=> p && typeof p.gain === "number");
+  const gains = pts.map(p=> Math.max(0.0001, p.gain));
+  const logMin = Math.log2(Math.min.apply(null, gains.length?gains:[1]));
+  const logMax = Math.log2(Math.max.apply(null, gains.length?gains:[16]));
+  const xOf = g => {
+    if(logMax === logMin) return PL + (W-PL-PR)/2;
+    return PL + (Math.log2(Math.max(0.0001,g)) - logMin)/(logMax-logMin) * (W-PL-PR);
+  };
+  const yOf = c => PT + (1 - Math.max(0, Math.min(1, c))) * (H-PT-PB);
+  // y-axis + x-axis baselines
+  const ax = (x1,y1,x2,y2,cls)=>{ const l=document.createElementNS(NS,"line");
+    l.setAttribute("class",cls||"gs-axis"); l.setAttribute("x1",x1); l.setAttribute("y1",y1);
+    l.setAttribute("x2",x2); l.setAttribute("y2",y2); svg.appendChild(l); };
+  ax(PL, PT, PL, H-PB); ax(PL, H-PB, W-PR, H-PB);
+  // y gridline labels 0 / threshold / 1
+  const txt = (x,y,s,cls)=>{ const t=document.createElementNS(NS,"text");
+    t.setAttribute("class",cls||"gs-lbl"); t.setAttribute("x",x); t.setAttribute("y",y);
+    t.textContent=s; svg.appendChild(t); return t; };
+  txt(2, yOf(1)+3, "1.0"); txt(2, yOf(0)+3, "0");
+  // threshold rule + its label
+  ax(PL, yOf(T), W-PR, yOf(T), "gs-thr");
+  const thrLbl = txt(W-PR-2, yOf(T)-2, "thr "+T.toFixed(2), "gs-thr-lbl");
+  thrLbl.setAttribute("text-anchor","end");
+  // confidence polyline + per-point dots
+  if(pts.length){
+    const linePts = pts.map(p=> xOf(p.gain).toFixed(1)+","+yOf(p.confidence).toFixed(1)).join(" ");
+    const line = document.createElementNS(NS, "polyline");
+    line.setAttribute("class","gs-line"); line.setAttribute("points", linePts);
+    svg.appendChild(line);
+    let firstFireMarked = false;
+    pts.forEach(p=>{
+      const cx = xOf(p.gain), cy = yOf(p.confidence);
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("class", "gs-dot" + (p.fired ? " fired" : ""));
+      dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1));
+      dot.setAttribute("r", p.fired ? "3.4" : "2.4");
+      svg.appendChild(dot);
+      // x label (the gain) under the baseline
+      txt(cx, H-PB+11, p.gain+"×", "gs-lbl").setAttribute("text-anchor","middle");
+      // mark the FIRST gain that fired with a vertical rule
+      if(p.fired && !firstFireMarked){
+        firstFireMarked = true;
+        ax(cx, PT, cx, H-PB, "gs-fire");
+      }
+    });
+  }
+  wrap.appendChild(svg);
+  // caption — name the first firing gain when present
+  const firstFire = pts.find(p=> p.fired);
+  const cap = document.createElement("span"); cap.className = "gs-cap";
+  if(firstFire){
+    cap.innerHTML = "score climbs with gain ⇒ raise wake gain — fires at <b>"+firstFire.gain+"×</b>";
+  }else{
+    cap.textContent = "score climbs with gain ⇒ raise wake gain (none fired in this sweep)";
+  }
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+// Demo gain-sweep — rising confidence so the chart is visible offline.
+// Per the brief: 1×→0.04, 2×→0.18, 4×→0.55 (fired), then keeps climbing.
+function demoGainSweep(word, hash){
+  const map = {1:0.04, 2:0.18, 4:0.55, 8:0.78, 16:0.9};
+  const T = wakeThreshold();
+  const points = [1,2,4,8,16].map(g=>{
+    const c = map[g] != null ? map[g] : Math.min(1, 0.04*g);
+    return {gain: g, confidence: Math.max(0, Math.min(1, c)), fired: c >= T};
+  });
+  return {type:"wake_gain_sweep_result", word: word||"maziko", hash: hash||null, points: points};
+}
+// Demo score-this-clip result.
+function demoScoreClip(word, hash){
+  const conf = (word === "maziko") ? 0.83 : 0.41;
+  return {type:"score_clip_result", word: word||"maziko", hash: hash||null,
+    confidence: conf, fired: conf >= wakeThreshold(), int16_peak: 18250,
+    message: "scored saved clip @16 kHz (demo)"};
+}
+
+// 🔎 FIND-GAIN button + the chart it reveals. Lives on each wake-recall row.
+// POSTs {action:"wake_gain_sweep", word, hash, gains:[…]}; the wake_gain_sweep_result
+// event renders the chart into `chartHost`. Offline → seed the rising demo sweep.
+const SWEEP_GAINS = [1,2,4,8,16];
+const gainSweepHost = {};                  // word → chart container element
+function buildFindGain(word, hash, chartHost){
+  gainSweepHost[word] = chartHost;
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "btn find-gain";
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Find gain</span>';
+  btn.title = "Sweep capture gain ("+SWEEP_GAINS.join("× ")+"×) and chart how the wake score climbs";
+  btn.addEventListener("click", ()=>{
+    btn.classList.add("busy");
+    chartHost.innerHTML = "";
+    if(DEMO){
+      setTimeout(()=>{ showGainSweepResult(demoGainSweep(word, hash)); }, 500);
+    }else{
+      postAction({action:"wake_gain_sweep", word, hash: hash||null, gains: SWEEP_GAINS});
+    }
+  });
+  return btn;
+}
+// Render a wake_gain_sweep_result into its row's chart host (clears the busy state).
+function showGainSweepResult(d){
+  const word = d.word || "";
+  const host = gainSweepHost[word];
+  const btn = host && host.parentNode && host.parentNode.querySelector(".find-gain");
+  if(btn) btn.classList.remove("busy");
+  if(!host) return;
+  host.innerHTML = "";
+  host.appendChild(buildGainSweepChart(d.points, wakeThreshold()));
+  const first = (Array.isArray(d.points) ? d.points : []).find(p=> p && p.fired);
+  log("🔎 gain sweep ["+word+"]: "
+        + (first ? "fires at "+first.gain+"× — raise wake gain" : "no gain fired in sweep"),
+        first ? "evt" : "info");
+}
+
+// 🔍 SCORE-THIS-CLIP button — re-scores a SAVED recording (predict_clip) for the
+// capture-vs-model fork. POSTs {action:"score_clip", word, hash}; the
+// score_clip_result event shows confidence / fired. Offline → demo result.
+const scoreClipOut = {};                   // clipKey → output span
+const scoreClipByHash = {};                // hash(8) → clipKey — resolves the real round-trip
+function buildScoreClip(word, hash, clipKey){
+  const wrap = document.createElement("span"); wrap.style.display = "inline-flex";
+  wrap.style.alignItems = "center"; wrap.style.gap = "7px";
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "score-clip";
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="12" cy="12" r="2.4" stroke="currentColor" stroke-width="1.5"/></svg><span>Score this clip</span>';
+  btn.title = "Re-score this saved recording against the wake model (capture-vs-model fork)";
+  const out = document.createElement("span"); out.className = "score-clip-out";
+  const hash8 = String(hash||"").slice(0,8);
+  scoreClipOut[clipKey] = out;
+  if(hash8) scoreClipByHash[hash8] = clipKey;          // so the result event finds this row by hash
+  btn.addEventListener("click", ()=>{
+    btn.classList.add("busy"); out.textContent = "";
+    if(DEMO){
+      setTimeout(()=>{ const r = demoScoreClip(word, hash8); r._clipKey = clipKey; showScoreClipResult(r); }, 500);
+    }else{
+      postAction({action:"score_clip", word: word||"", hash: hash8||null, _clipKey: clipKey});
+    }
+  });
+  wrap.appendChild(btn); wrap.appendChild(out);
+  return wrap;
+}
+// Consume a score_clip_result → write confidence / fired into the row's output span.
+// Resolve the target row by: explicit _clipKey (echoed/seeded) → hash → word substring.
+function showScoreClipResult(d){
+  const hash8 = String(d.hash||"").slice(0,8);
+  let out = d._clipKey ? scoreClipOut[d._clipKey] : null;
+  if(!out && hash8 && scoreClipByHash[hash8]) out = scoreClipOut[scoreClipByHash[hash8]];
+  if(!out){
+    const k = Object.keys(scoreClipOut).find(key=> key.indexOf((d.word||"")) >= 0);
+    out = k ? scoreClipOut[k] : null;
+  }
+  // Clear any busy button next to the matched output.
+  if(out){ const b = out.parentNode && out.parentNode.querySelector(".score-clip"); if(b) b.classList.remove("busy"); }
+  if(!out) return;
+  const conf = typeof d.confidence === "number" ? d.confidence : 0;
+  const pct = Math.round(Math.max(0, Math.min(1, conf))*100);
+  out.className = "score-clip-out " + (d.fired ? "fired" : "miss");
+  out.innerHTML = (d.fired ? "⚡ " : "· ") + "score <b>"+pct+"%</b> — "
+                + (d.fired ? "would fire" : "would not fire")
+                + (typeof d.int16_peak === "number" ? " · pk "+Math.round(d.int16_peak) : "");
+  log((d.fired?"⚡ ":"· ")+"score clip ["+(d.word||"")+"]: "+pct+"% "
+        + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
+}
+
 // Build/refresh the UNIFORM extras row for a check into its `.check-extras` div.
 // `d` is a contract-shaped result (mic_check_result / wake_test_result). `opts`:
 //   { dur, peakPct, sampleRate, levels, processing:{agc,ns,ec,gain}, hash,
-//     wav_url, pcm:Float32Array|null, sr, clipKey } — any missing field is omitted.
+//     wav_url, pcm:Float32Array|null, sr, clipKey,
+//     // wake-debug additions (all optional):
+//     wake (bool — show Find-gain + the gain-sweep chart host), word, scoreTrace[],
+//     scoreClip (bool — show 🔍 Score-this-clip), result:d (raw event → gauge+stats) }
 function renderResultExtras(extrasId, opts){
   const host = $("#"+extrasId); if(!host) return;
   host.innerHTML = "";
@@ -2210,19 +2637,50 @@ function renderResultExtras(extrasId, opts){
   chips.appendChild(ht);
   host.appendChild(chips);
 
+  // --- LEVEL-vs-MODEL gauge (task 1) — the at-a-glance "is the level in range for
+  // the wake model" indicator, driven by the raw event's expected_level + int16. ---
+  const res = o.result || {};
+  const gauge = buildLevelGauge(res);
+  if(gauge){ const grow = document.createElement("div"); grow.className = "row"; grow.appendChild(gauge); host.appendChild(grow); }
+
   // --- row 2: level-over-time sparkline (coloured by levelClass(peak)) + ▶ play-last ---
   const row2 = document.createElement("div"); row2.className = "row";
+  // The sparkline + the per-frame score-trace are stacked vertically so the trace
+  // sits DIRECTLY BENEATH the waveform, same width + time-aligned (task 3).
+  const stack = document.createElement("span"); stack.style.display = "inline-flex";
+  stack.style.flexDirection = "column"; stack.style.gap = "4px";
   const spark = document.createElement("span"); spark.className = "spark " + lvlCls;
   spark.appendChild(buildSparkline(lvls, lvlCls));
   const cap = document.createElement("span"); cap.className = "spark-cap"; cap.textContent = "level · 2 s";
   spark.appendChild(cap);
-  row2.appendChild(spark);
+  stack.appendChild(spark);
+  if(Array.isArray(o.scoreTrace) && o.scoreTrace.length){
+    stack.appendChild(buildScoreTrace(o.scoreTrace, wakeThreshold()));
+  }
+  row2.appendChild(stack);
 
   // record the clip for play-last, then build the button
   const key = o.clipKey || extrasId;
   lastClip[key] = { wav_url: o.wav_url || null, pcm: o.pcm || null, sr: o.sr || o.sampleRate || 16000 };
   row2.appendChild(buildPlayLast(key));
+  // --- 🔍 Score-this-clip (task 4) — re-score the saved recording (capture-vs-model). ---
+  if(o.scoreClip){ row2.appendChild(buildScoreClip(o.word || "", hash, key)); }
   host.appendChild(row2);
+
+  // --- extra stat chips (task 6): SNR · true-peak · crest · DC offset (+ LUFS). ---
+  const stats = buildStatChips(res);
+  if(stats){ const srow = document.createElement("div"); srow.className = "row"; srow.appendChild(stats); host.appendChild(srow); }
+
+  // --- ★ Gain sweep (task 2) — Find-gain button + the confidence-vs-gain chart it
+  // reveals, only on wake rows (the gain is the likely cure for a dead wake word). ---
+  if(o.wake){
+    const grow = document.createElement("div"); grow.className = "row";
+    const chartHost = document.createElement("div"); chartHost.style.flex = "1 1 100%";
+    grow.appendChild(buildFindGain(o.word || "", hash, chartHost));
+    grow.appendChild(chartHost);
+    host.appendChild(grow);
+  }
+  lastResult[key] = res;
 }
 
 // Inline SVG sparkline of a 0..1 levels array. 100×30 viewBox, smooth polyline +
@@ -2365,6 +2823,9 @@ function showMicResult(d, opts){
     pcm: opts.pcm || d._demoPcm || null,   // demo seed carries an audible tone for ▶ play-last
     sr: d.sample_rate,
     clipKey: "micServerExtras",
+    result: d,                             // wake-debug: level-vs-model gauge + stat chips
+    scoreClip: true,                       // 🔍 re-score this saved clip against the wake model
+    word: (settings && settings.wake_phrase) || "",
   });
   // Keep the device/permission detail line (server-specific extras).
   setCheckMeta("#micServerMeta", [
@@ -2462,6 +2923,26 @@ const micBrowserResultMeter = $("#micBrowserResultMeter"), micBrowserResultBar =
 let browserMicCtx = null, browserMicStream = null, browserMicRAF = 0, browserMicOn = false;
 let browserMicSmoothed = 0, browserMicPeak = 0, browserMicProc = null;
 let browserMicTimer = null;
+// A/B toggle (task 5): when `browserMicRaw` is true the next browser-mic run requests
+// the mic with AGC/NS/EC explicitly OFF — so the raw vs processed peak is comparable
+// without a page reload. Last measured peak% is remembered per mode for the readout.
+let browserMicRaw = false;
+const browserMicABPeak = {processed: null, raw: null};
+// getUserMedia audio constraints for the current A/B mode.
+function browserMicConstraints(){
+  return browserMicRaw
+    ? {audio:{autoGainControl:false, noiseSuppression:false, echoCancellation:false}}
+    : {audio:true};
+}
+// Re-render the A/B comparison readout (processed peak vs raw peak).
+function refreshBrowserAB(){
+  const out = $("#micBrowserABOut"); if(!out) return;
+  const pr = browserMicABPeak.processed, rw = browserMicABPeak.raw;
+  if(pr == null && rw == null){ out.hidden = true; out.innerHTML = ""; return; }
+  out.hidden = false;
+  const seg = (lbl, v, cls)=> '<span class="'+(cls||"")+'">'+lbl+' <b>'+(v==null?"—":v+"%")+'</b></span>';
+  out.innerHTML = "A/B · " + seg("processed", pr) + " vs " + seg("raw", rw, "ab-raw");
+}
 function setBrowserResult(cls, msg, level){
   micBrowserResult.hidden = false;
   micBrowserResult.classList.remove("ok","bad","warn","testing");
@@ -2495,7 +2976,7 @@ micBrowserBtn.addEventListener("click", async ()=>{
     micBrowserBtn.classList.remove("on"); micBrowserBtn.setAttribute("aria-pressed","false");
   }
   try{
-    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    stream = await navigator.mediaDevices.getUserMedia(browserMicConstraints());
   }catch(e){
     setBrowserResult("bad", "✗ Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
     setCheckBusy("#checkBrowser", false);
@@ -2547,6 +3028,22 @@ micBrowserBtn.addEventListener("click", async ()=>{
   };
   tick();
 });
+// A/B toggle: flip the processing mode, then immediately re-run the browser-mic
+// check with the new constraints (re-getUserMedia) so raw vs processed is directly
+// comparable WITHOUT a page reload.
+const micBrowserAB = $("#micBrowserAB");
+if(micBrowserAB){
+  micBrowserAB.addEventListener("click", ()=>{
+    if(browserMicOn) return;                  // a capture is running — let it finish first
+    browserMicRaw = !browserMicRaw;
+    micBrowserAB.classList.toggle("raw", browserMicRaw);
+    micBrowserAB.setAttribute("aria-checked", String(browserMicRaw));
+    const lbl = $("#micBrowserABLabel");
+    if(lbl) lbl.textContent = browserMicRaw ? "raw (AGC/NS/EC off)" : "processed (AGC/NS/EC on)";
+    log("A/B browser mic → "+(browserMicRaw?"RAW (AGC/NS/EC off)":"PROCESSED (AGC/NS/EC on)")+" — re-running check", "info");
+    micBrowserBtn.click();                     // re-run with the new constraints
+  });
+}
 // Finish a browser-mic run: gain → measure → graph → uniform row → POST to server.
 function finishBrowserMic(chunks, srcRate, cleanup){
   if(!browserMicOn) return;
@@ -2568,6 +3065,9 @@ function finishBrowserMic(chunks, srcRate, cleanup){
   const peak = pcmPeak(gained);
   const pct = Math.round(Math.min(1, peak) * 100);
   const levels = computeLevels(gained, 48);
+  // Remember the peak for the active A/B mode → processed-vs-raw comparison readout.
+  browserMicABPeak[browserMicRaw ? "raw" : "processed"] = pct;
+  refreshBrowserAB();
   const heard = total > 0 && peak > 0.02;
 
   // Downsample to 16 kHz for the contract POST; keep the captured PCM for play-last.
@@ -2594,6 +3094,9 @@ function finishBrowserMic(chunks, srcRate, cleanup){
     pcm: gained,                       // kept client PCM → play-last needs no server
     sr: srcRate,
     clipKey: "micBrowserExtras",
+    result: localStats(gained, peak),  // wake-debug: level-vs-model gauge + stat chips (derived locally)
+    scoreClip: true,                   // 🔍 re-score this saved clip against the wake model
+    word: (settings && settings.wake_phrase) || "",
   });
   log((cls==="ok"?"✓ ":"⚠ ") + "mic check [browser]: peak "+pct+"% · AGC "+(proc.agc?"on":"off")
         +" NS "+(proc.ns?"on":"off")+" EC "+(proc.ec?"on":"off")+" gain "+gain+"×",
@@ -2839,6 +3342,12 @@ function showWakeResult(d){
   const proc = d.processing || loc.processing || {gain: micGain()};
   const dur = (typeof d.duration_s === "number") ? d.duration_s : (CHECK_MS/1000);
   const sampleRate = d.sample_rate || loc.sr || WAKE_TEST_SR;
+  // Wake-debug `result` for the gauge + stat chips: take the contract fields from
+  // the event; for the BROWSER path fill any missing int16/expected_level/stats
+  // from the kept local capture so the gauge is meaningful even pre-backend.
+  const wakeResult = (source === "browser" && loc.pcm)
+    ? Object.assign(localStats(loc.pcm), d)   // local stats as the floor, event overrides
+    : d;
   renderResultExtras("wakeExtras-"+word, {
     dur: dur, peakPct: peak, sampleRate: sampleRate, levels: levels,
     processing: proc, hash: d.hash, wav_url: d.wav_url,
@@ -2846,6 +3355,11 @@ function showWakeResult(d){
     pcm: (source === "browser" ? (loc.pcm || null) : null) || d._demoPcm || null,
     sr: (source === "browser" ? (loc.sr || sampleRate) : sampleRate),
     clipKey: "wakeExtras-"+word,
+    result: wakeResult,                  // wake-debug: level-vs-model gauge + stat chips
+    scoreTrace: d.score_trace,           // ★ per-frame score trace under the waveform (task 3)
+    wake: true,                          // ★ show 🔎 Find-gain + the gain-sweep chart (task 2)
+    word: word,
+    scoreClip: true,                     // 🔍 re-score this saved clip against the wake model (task 4)
   });
   // any green wake result also confirms the mic is working
   if(cls === "fired" || cls === "high") confirmMicWorking();
@@ -3054,6 +3568,12 @@ function handleEvent(raw){
     case "wake_test_result":
       // Scored wake-word recall (maziko/nexus × browser/server) → confidence + bar.
       showWakeResult(d); break;
+    case "wake_gain_sweep_result":
+      // ★ Gain sweep — confidence-vs-gain points → the mini chart on the wake row.
+      showGainSweepResult(d); break;
+    case "score_clip_result":
+      // 🔍 Score-this-clip — re-scored saved recording → confidence / fired on the row.
+      showScoreClipResult(d); break;
     case "music":
       // NOW-PLAYING panel: playing/paused/resumed/stopped + (hybrid+local) video.
       handleMusic(d); break;
@@ -3213,6 +3733,7 @@ const DEMO_SETTINGS = {
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
+  wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
   wake_words:["alexa","computer","jarvis","maziko","nexus"],
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
@@ -3274,7 +3795,7 @@ function enterDemo(){
   }
   if(!settings.brain_presets) populate(DEMO_SETTINGS);
   // Seed the new UI so EVERY new element (graph, processing badge, ▶ play-last,
-  // hash) is visible offline without clicking:
+  // hash, level-vs-model gauge, stat chips, score-trace) is visible offline:
   //  • a server mic_check_result (uniform row: chips + raw·gain badge + graph + hash + ▶),
   //  • a scored wake_test_result per word (maziko fires green/browser, nexus amber/server),
   //  • a "music playing" event (server playback + hybrid video iframe when local).
@@ -3282,6 +3803,12 @@ function enterDemo(){
   showWakeResult(demoWakeResult("maziko", "browser"));
   showWakeResult(demoWakeResult("nexus", "server"));
   handleMusic(DEMO_MUSIC_EVENT);
+  // ★ Also seed the gain-sweep chart on "nexus" (the amber/quiet row — its score
+  // climbs with gain and fires by 4×) and a score-clip result on "maziko", so the
+  // chart + score-clip output are VISIBLE offline without having to click.
+  showGainSweepResult(demoGainSweep("nexus", shortHash("wake|nexus|server|demo")));
+  showScoreClipResult(Object.assign(demoScoreClip("maziko", shortHash("wake|maziko|browser|demo")),
+                                     {_clipKey: "wakeExtras-maziko"}));
   demoStep = 0;
   runDemoStep();
 }
@@ -3363,9 +3890,22 @@ function demoTonePcm(freq){
   }
   return out;
 }
+// A believable per-frame wake score-trace (0..1 × n): a baseline of near-zero with
+// a single bump near the spoken word. When `over` is true the bump peaks above the
+// threshold (fired); otherwise it stays just below (the margin-fail shape).
+function demoScoreTrace(over, n){
+  const B = n || 48, out = new Array(B), thr = wakeThreshold();
+  const peakV = over ? Math.min(1, thr + 0.35) : Math.max(0, thr - 0.06);
+  const center = Math.round(B*0.62), wdt = B*0.16;
+  for(let i=0;i<B;i++){
+    const bump = peakV * Math.exp(-((i-center)*(i-center))/(2*wdt*wdt));
+    out[i] = Math.max(0, Math.min(1, bump + Math.random()*0.04));
+  }
+  return out;
+}
 // Demo server mic_check_result — full contract shape so the uniform row (chips +
-// processing badge + level graph + hash + ▶ play-last) is exercised offline. The
-// kept demo PCM makes play-last audible without a backend.
+// processing badge + level graph + hash + ▶ play-last + level-vs-model gauge +
+// stat chips) is exercised offline. The kept demo PCM makes play-last audible.
 function demoMicCheckResult(source){
   const peak = 0.62 + (Math.random()*0.06 - 0.03);
   return {type:"mic_check_result", source: source||"server", ok:true,
@@ -3376,15 +3916,21 @@ function demoMicCheckResult(source){
     wav_url: "/recordings/mic_"+(source||"server")+"_demo.wav",
     device:"MacBook Pro Microphone", permission:"authorized",
     message:"Microphone OK — level "+Math.round(peak*100)+"% (demo)",
+    // SHARED CONTRACT level fields — drive the gauge + stat chips offline.
+    int16_peak: Math.round(peak*32767), int16_rms: Math.round(peak*0.55*32767),
+    expected_level: "ok", crest_db: 11.2, dc_offset: 0.0008, true_peak_db: -3.6,
+    snr_db: 22.5, lufs: -19.8,
     _demoPcm: demoTonePcm(280)};
 }
 // Demo wake-test result: a believable per-word/per-source score AND the full
-// contract extras (peak/levels/processing/hash/wav_url) so the new wake UI is
-// fully exercised offline. "maziko" fires confidently; "nexus" lands amber.
+// contract extras (peak/levels/processing/hash/wav_url + int16/expected_level/
+// stats/score_trace) so the new wake UI is fully exercised offline. "maziko" fires
+// confidently (trace bumps over threshold); "nexus" lands amber (bump just under).
 function demoWakeResult(word, source){
-  const base = (word === "maziko") ? 0.86 : 0.42;
+  const fires = (word === "maziko");
+  const base = fires ? 0.86 : 0.42;
   const conf = Math.max(0, Math.min(1, base + (Math.random()*0.08 - 0.04)));
-  const peak = (word === "maziko") ? 0.71 : 0.38;
+  const peak = fires ? 0.71 : 0.38;
   return {type:"wake_test_result", word, source, confidence:conf, fired: conf >= 0.5,
     peak: peak, level: Math.round(peak*100), duration_s: 2.0,
     sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
@@ -3395,7 +3941,13 @@ function demoWakeResult(word, source){
     message: "scored "+(word)+" @16 kHz (demo)",
     wav_url: "/recordings/wake_"+word+"_"+source+"_demo.wav",
     wav_path: "/tmp/wake_"+word+"_"+source+"_demo.wav",
-    _demoPcm: demoTonePcm(word === "maziko" ? 360 : 240)};
+    // SHARED CONTRACT level + trace fields — drive the gauge, stat chips, score-trace.
+    int16_peak: Math.round(peak*32767), int16_rms: Math.round(peak*0.5*32767),
+    expected_level: fires ? "ok" : "low",      // nexus reads "too quiet for the wake model"
+    crest_db: fires ? 10.4 : 8.1, dc_offset: 0.0006, true_peak_db: fires ? -3.0 : -8.4,
+    snr_db: fires ? 19.5 : 11.2, lufs: fires ? -20.1 : -27.6,
+    score_trace: demoScoreTrace(fires),
+    _demoPcm: demoTonePcm(fires ? 360 : 240)};
 }
 function demoAction(action, payload){
   if(action==="music_stop"){ handleMusic({type:"music", status:"stopped"}); return; }
