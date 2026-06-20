@@ -43,7 +43,7 @@ from .config import (
     ConfigError,
     available_wake_words,
 )
-from .events import bus
+from .events import bus, install_log_bridge
 from .interrupt import InterruptGate, make_interrupt_predictor
 from .metrics import TurnMetrics
 from .text import SentenceChunker, strip_non_spoken
@@ -2002,6 +2002,13 @@ def main(argv: list[str] | None = None) -> int:
         print(list_voice_presets())
         return 0
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(message)s")
+    # Sink B: bridge the Python logging library (+ captured warnings) onto the event
+    # bus so the GUI EVENT LOG / file sink become a superset of library + app logs
+    # (onnxruntime / Hugging Face warnings, httpx requests, our own logging). Installed
+    # ONCE here at startup for every run mode (browser, wake, terminal, transport);
+    # library/test imports never wire it. Sink A (bus -> stderr console) is auto-on
+    # whenever MSTT_EVENT_LOG is set (quickstart sets it) — no wiring needed here.
+    install_log_bridge()
     try:
         cfg = _build_config(args)
         if args.settings:

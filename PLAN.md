@@ -11,6 +11,59 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave M4: unify the two log streams (EVENT LOG ⇄ terminal)
+
+Make the GUI EVENT LOG (bus events → SSE + `logs/events-*.jsonl` file sink) and the
+terminal output captured by `quickstart.sh` (`logs/quickstart-*.log`, a tee of stderr)
+each a SUPERSET of the other. Branch `log-unify` (worktree `.worktree-logunify`),
+backend only — no README / webui.html / clients / esp32. 646 → 662 tests core (+16),
+green core-only (662 + 4 extras-gated skips) and `--extra all` (650 → 666). Lint clean
+(ruff format + check, mypy `src`, pylint — no new warnings; `main`'s pre-existing
+complexity warnings unchanged). `events.py` stays stdlib-only (core import).
+
+Two bridges close the gaps (each stream lacked things the other had):
+
+- **(A) Bus → stderr console sink** (`EventBus._write_console`, called from
+  `publish`). Every published bus event is mirrored to stderr as a concise human
+  one-liner (`[event:state] listening`, `[event:response] [final] …`,
+  `[event:music] playing "<title>"`; unknown types fall back to a `key=value` dump
+  via `render_console_line`). So the stderr tee (quickstart.log) now captures the
+  SAME state/transcript/response/music/mic_result/wake_test_result/speaker/metrics/log
+  events the EVENT LOG shows. **Skips** `type=="debug"` (already printed by
+  `_AudioDebug`) and events tagged `_log_bridge` (already on stderr via the logging
+  library — see B) → no double-print. **Gated**: ON when `MSTT_EVENT_CONSOLE` is set
+  (1/true/on), else default ON whenever the file sink is active (`MSTT_EVENT_LOG`
+  set — quickstart sets it), else silent (library/test). Thread-safe + suppressed.
+- **(B) Python logging → bus bridge** (`LogBusHandler` + `_BusBridgeFilter` +
+  `install_log_bridge`, installed ONCE in `main()` after `basicConfig`). Each log
+  record is republished as `bus.publish({"type":"log","level":…,"message":…,
+  "_log_bridge":True})`, and `logging.captureWarnings(True)` routes `warnings.warn(...)`
+  (onnxruntime CUDAExecutionProvider, Hugging Face unauthenticated-request) through it
+  too. So the EVENT LOG now also captures library/app logs + warnings (`httpx`
+  requests, our own `logging`). **Level policy** (via `_BusBridgeFilter`): bridge
+  WARNING+ from ALL loggers AND INFO+ from `my_stt_tts.*`. **Recursion guard**: a
+  thread-local re-entrancy flag drops any record produced while the handler is
+  publishing; all failures suppressed. The `_log_bridge` tag is what makes sink (A)
+  skip these (no re-print to stderr).
+
+**Net result:** quickstart.log ⊇ every EVENT-LOG event (via A); EVENT LOG ⊇ library/app
+logs + warnings (via B). **Accepted divergences (both intentional):**
+
+  1. **httpx per-request INFO** (`HTTP Request: POST … 200 OK`) is kept on stderr (raw
+     quickstart.log) but OUT of the EVENT LOG, to keep it readable — the single
+     capped-INFO divergence (`_NOISY_INFO_LOGGERS` in the filter; the loggers' own level
+     is NOT lowered, so the lines still reach stderr).
+  2. **Pre-app `uv sync` subprocess output** in quickstart.log: emitted before the bus
+     / app exist, so it cannot be in the EVENT LOG.
+
+No quickstart.sh edit needed — sink (A) defaults on because quickstart already sets
+`MSTT_EVENT_LOG`. New env vars documented in `.env.example` (`MSTT_EVENT_LOG`,
+`MSTT_EVENT_CONSOLE`). Tests in `tests/test_events.py`: console sink prints
+non-debug/non-bridge events + skips `debug` + `_log_bridge` (capsys); gating by
+`MSTT_EVENT_CONSOLE` / `MSTT_EVENT_LOG`; the handler publishes a `log` event +
+`captureWarnings` reroute; no double-print; no recursion; idempotent install; the
+level policy + httpx divergence.
+
 ## Build status (2026-06-20) — Wave M3: music_playback setting + wake-word TEST diagnostic + EVENT LOG relabel
 
 Three backend features on branch `music-server-wake` (worktree `.worktree-srv`),

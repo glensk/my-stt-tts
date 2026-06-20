@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -52,6 +53,125 @@ log = logging.getLogger("my_stt_tts.events")
 # for after-the-fact investigation (e.g. why a wake word didn't fire). Empty /
 # unset -> no file sink (default; tests + library use write nothing).
 _EVENT_LOG_ENV = "MSTT_EVENT_LOG"
+
+# Env var forcing the stderr CONSOLE sink on/off (see ``EventBus._write_console``).
+# The console sink mirrors every published bus event to stderr as a concise human
+# one-liner so quickstart.sh's stderr tee (logs/quickstart-<ts>.log) captures the
+# SAME events the GUI EVENT LOG shows. Default: ON whenever the file sink is active
+# (MSTT_EVENT_LOG set, which quickstart sets) so quickstart runs get it for free;
+# library / test use stays silent. Set MSTT_EVENT_CONSOLE to "1"/"true"/"yes"/"on"
+# to force on regardless of the file sink, or "0"/"false"/"no"/"off" to force off.
+_EVENT_CONSOLE_ENV = "MSTT_EVENT_CONSOLE"
+
+# A truthy ``_log_bridge`` field on an event marks it as having ORIGINATED from the
+# Python logging library (via the LogBusHandler bridge, sink B): it is already on
+# stderr through the root/library log handlers, so the console sink (A) must SKIP it
+# to avoid a double-print. The field is internal plumbing (it still rides the wire
+# + file sink, harmlessly) — the console sink is the only consumer that branches on it.
+_LOG_BRIDGE_FIELD = "_log_bridge"
+
+
+def _env_flag(name: str) -> bool | None:
+    """Parse an env var as an explicit on/off flag, or ``None`` when unset/blank.
+
+    ``"1"/"true"/"yes"/"on"`` -> True; ``"0"/"false"/"no"/"off"`` -> False (case-
+    insensitive); anything else (incl. unset / empty) -> ``None`` (no opinion, fall
+    back to the default policy). Used to gate the console sink via MSTT_EVENT_CONSOLE.
+    """
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
+def render_console_line(event: dict[str, Any]) -> str:
+    """Render an event dict as a concise one-line human string for the stderr sink.
+
+    Mirrors what the GUI EVENT LOG shows so the terminal log is readable: e.g.
+    ``[event:state] listening``, ``[event:response] hello`` (final responses only),
+    ``[event:music] playing "Song"``. Falls back to a compact key=value dump for
+    types without a bespoke formatter so nothing is silently lost.
+    """
+    etype = str(event.get("type", "?"))
+    body = _CONSOLE_FORMATTERS.get(etype, _console_default)(event)
+    return f"[event:{etype}] {body}".rstrip()
+
+
+def _console_default(event: dict[str, Any]) -> str:
+    """Compact ``key=value`` dump for event types without a bespoke formatter."""
+    skip = {"type", _LOG_BRIDGE_FIELD}
+    return " ".join(f"{k}={v}" for k, v in event.items() if k not in skip)
+
+
+def _fmt_state(e: dict[str, Any]) -> str:
+    state = str(e.get("state", ""))
+    detail = str(e.get("detail", "")).strip()
+    return f"{state} ({detail})" if detail else state
+
+
+def _fmt_transcript(e: dict[str, Any]) -> str:
+    tag = "partial" if e.get("partial") else "final"
+    src = str(e.get("source", "")).strip()
+    head = f"{tag}:{src}" if src else tag
+    return f"[{head}] {e.get('text', '')}"
+
+
+def _fmt_response(e: dict[str, Any]) -> str:
+    tag = "final" if e.get("final") else "delta"
+    model = str(e.get("model", "")).strip()
+    head = f"{tag}:{model}" if model else tag
+    return f"[{head}] {e.get('text', '')}"
+
+
+def _fmt_music(e: dict[str, Any]) -> str:
+    status = str(e.get("status", ""))
+    title = str(e.get("title", "")).strip()
+    return f'{status} "{title}"' if title else status
+
+
+def _fmt_log(e: dict[str, Any]) -> str:
+    return f"{e.get('level', 'info')}: {e.get('message', '')}"
+
+
+def _fmt_speaker(e: dict[str, Any]) -> str:
+    name = str(e.get("name", "")).strip()
+    return name if name else "(guest)"
+
+
+def _fmt_mic_result(e: dict[str, Any]) -> str:
+    return f"{e.get('verdict', '')} level={e.get('level', 0)} — {e.get('message', '')}".rstrip()
+
+
+def _fmt_wake_test_result(e: dict[str, Any]) -> str:
+    fired = "FIRED" if e.get("fired") else "no-fire"
+    return f"{e.get('word', '')} {fired} conf={e.get('confidence', 0)} ({e.get('source', '')})"
+
+
+def _fmt_metrics(e: dict[str, Any]) -> str:
+    return f"speech_id={e.get('speech_id', '')} stages_ms={e.get('stages_ms', {})}"
+
+
+def _fmt_wake(_e: dict[str, Any]) -> str:
+    return "fired"
+
+
+# Per-type one-line renderers for the stderr console sink (everything else falls
+# back to ``_console_default``). ``debug`` is intentionally absent — those events
+# are skipped wholesale (already printed to stderr by ``_AudioDebug``).
+_CONSOLE_FORMATTERS = {
+    "state": _fmt_state,
+    "transcript": _fmt_transcript,
+    "response": _fmt_response,
+    "music": _fmt_music,
+    "log": _fmt_log,
+    "speaker": _fmt_speaker,
+    "mic_result": _fmt_mic_result,
+    "wake_test_result": _fmt_wake_test_result,
+    "metrics": _fmt_metrics,
+    "wake": _fmt_wake,
+}
 
 # State machine the UI renders (the order a turn flows through):
 STATES = (
@@ -222,6 +342,7 @@ class EventBus:
         self._sink: IO[str] | None = None
         self._sink_lock = threading.Lock()
         self._sink_checked = False  # lazy one-time auto-attach from $MSTT_EVENT_LOG
+        self._console_lock = threading.Lock()
 
     def attach_file_sink(self, path: str) -> None:
         """Append every published event (as JSON Lines) to ``path`` from now on.
@@ -257,11 +378,40 @@ class EventBus:
         with self._sink_lock, contextlib.suppress(OSError, ValueError):
             self._sink.write(line + "\n")
 
+    def _console_enabled(self) -> bool:
+        """Whether the stderr console sink (A) is active for this run.
+
+        Explicit ``MSTT_EVENT_CONSOLE`` wins (on/off); otherwise default to ON
+        whenever the file sink is active (``MSTT_EVENT_LOG`` set / a sink attached),
+        so quickstart runs mirror every EVENT-LOG event to the stderr tee for free
+        while library / test use (no env, no sink) stays silent. Read every publish
+        (cheap) so a late ``attach_file_sink`` / env change takes effect."""
+        flag = _env_flag(_EVENT_CONSOLE_ENV)
+        if flag is not None:
+            return flag
+        return self._sink is not None or bool(os.environ.get(_EVENT_LOG_ENV, "").strip())
+
+    def _write_console(self, event: dict[str, Any]) -> None:
+        """Mirror one event to stderr as a concise human one-liner (sink A).
+
+        SKIPS ``debug`` events (``_AudioDebug`` already prints those to stderr) and
+        events tagged ``_log_bridge`` (already on stderr via the logging library, see
+        sink B) so nothing double-prints. Thread-safe + failure-suppressed like the
+        file sink — the console mirror must never break the bus."""
+        if event.get("type") == "debug" or event.get(_LOG_BRIDGE_FIELD):
+            return
+        if not self._console_enabled():
+            return
+        line = render_console_line(event)
+        with self._console_lock, contextlib.suppress(Exception):
+            print(line, file=sys.stderr)
+
     def publish(self, event: dict[str, Any]) -> None:
         """Classify + fan out an event dict to all subscribers (G2 priority rules)."""
         if event.get("type") == "state":
             self._last_state = json.dumps(event, ensure_ascii=False)
-        self._write_sink(event)
+        self._write_sink(event)  # may lazily attach the file sink -> gates the console sink
+        self._write_console(event)
         frame = Frame.of(event)
         with self._lock:
             subs = list(self._subs)
@@ -445,3 +595,136 @@ class EventBus:
 
 # Shared singleton used by the loop and the web UI.
 bus = EventBus()
+
+
+# --- Sink B: Python logging -> bus bridge ----------------------------------------
+# Library output that currently only reaches stderr — the onnxruntime
+# CUDAExecutionProvider UserWarning, Hugging Face "unauthenticated requests" notes,
+# httpx per-request lines, and the app's own ``logging`` — never appears in the GUI
+# EVENT LOG. ``LogBusHandler`` republishes each LogRecord as a bus ``log`` event so
+# the EVENT LOG becomes a superset of those messages, while the ``_log_bridge`` tag
+# keeps the stderr console sink (A) from re-printing them (they're already on stderr
+# via the root/library handlers).
+
+# Logger-name prefix for the app's own loggers — bridged at INFO+ (everything else
+# only at WARNING+, see ``_BusBridgeFilter`` / ``install_log_bridge``).
+_APP_LOGGER_PREFIX = "my_stt_tts"
+
+# Third-party loggers whose INFO stream is too chatty for the EVENT LOG: their INFO
+# is NOT mirrored into the bus (only their WARNING+). This is the SINGLE intentional
+# divergence between the two streams — httpx's per-request "HTTP Request: POST ... 200
+# OK" INFO lines stay on stderr (raw quickstart.log via the root handler) but are kept
+# OUT of the EVENT LOG to keep it readable. We do NOT lower these loggers' own level,
+# so the lines still reach stderr — only the bridge filter drops them. Documented in PLAN.md.
+_NOISY_INFO_LOGGERS = ("httpx", "httpcore")
+
+
+class _BusBridgeFilter(logging.Filter):
+    """Per-handler filter implementing the bridge's level policy (sink B).
+
+    Pass a record onto the bus when EITHER it is WARNING+ (from *any* logger) OR it is
+    INFO+ from one of the app's own ``my_stt_tts.*`` loggers — EXCEPT records from the
+    chatty third-party INFO loggers below WARNING (``httpx`` / ``httpcore``), which are
+    dropped from the bus while still reaching stderr (the one intentional divergence).
+    Records the bridge itself produces are tagged ``my_stt_tts.events`` WARNING and are
+    handled by the handler's own re-entrancy guard, not here.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        if record.levelno < logging.INFO:
+            return False
+        name = record.name
+        if any(name == n or name.startswith(n + ".") for n in _NOISY_INFO_LOGGERS):
+            return False  # chatty third-party INFO: stderr only, kept out of the EVENT LOG
+        return name == _APP_LOGGER_PREFIX or name.startswith(_APP_LOGGER_PREFIX + ".")
+
+
+class LogBusHandler(logging.Handler):
+    """A ``logging.Handler`` that republishes each record onto the event bus (sink B).
+
+    Each emitted record becomes ``bus.publish({"type":"log","level":<lvl>,
+    "message":<msg>,"_log_bridge":True})`` so library/app logs + captured warnings
+    show up in the GUI EVENT LOG / file sink. The ``_log_bridge`` tag stops sink (A)
+    from re-printing it to stderr (already there via the library handlers).
+
+    Recursion guard: events the bus emits while handling a record (the file/console
+    sinks, or a subscriber) must NOT loop back through this handler. A thread-local
+    re-entrancy flag drops any record produced while we are already publishing, and
+    every failure is suppressed — a logging bridge must never raise into the caller
+    or wedge the logging machinery.
+    """
+
+    def __init__(self, target: EventBus) -> None:
+        super().__init__()
+        self._bus = target
+        self._busy = threading.local()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(self._busy, "active", False):
+            return  # re-entrant: a record produced while we publish -> drop, no loop
+        self._busy.active = True
+        try:
+            self._bus.publish(
+                {
+                    "type": "log",
+                    "level": record.levelname.lower(),
+                    "message": record.getMessage(),
+                    _LOG_BRIDGE_FIELD: True,
+                }
+            )
+        except Exception:  # pylint: disable=broad-exception-caught  # noqa: BLE001
+            # Never let a logging bridge raise into the caller / logging machinery.
+            with contextlib.suppress(Exception):
+                self.handleError(record)
+        finally:
+            self._busy.active = False
+
+
+_log_bridge_installed = False
+_log_bridge_lock = threading.Lock()
+
+
+def install_log_bridge(target: EventBus | None = None) -> LogBusHandler | None:
+    """Install the logging->bus bridge ONCE (idempotent); return the handler (B).
+
+    Wires :class:`LogBusHandler` onto the root logger so library + app logs flow into
+    the bus, and calls :func:`logging.captureWarnings` so ``warnings.warn(...)``
+    (onnxruntime's CUDAExecutionProvider note, Hugging Face's unauthenticated-request
+    warning, …) becomes ``py.warnings`` log records that are bridged too.
+
+    Level policy (the streams' agreed contract), enforced by :class:`_BusBridgeFilter`:
+      * WARNING+ from *every* logger is bridged into the EVENT LOG;
+      * INFO+ from the app's own ``my_stt_tts.*`` loggers is bridged too;
+      * chatty third-party INFO (``httpx`` / ``httpcore`` per-request lines) is the
+        SINGLE intentional divergence — kept on stderr (raw quickstart.log) but OUT of
+        the EVENT LOG. To see those records arrive the root logger must pass INFO, so
+        we lower it to INFO (without lowering it below an existing DEBUG setting).
+
+    Idempotent: a second call is a no-op (returns the existing handler). Called once
+    at app startup from the run/browser entrypoint; library/test imports never wire it.
+    """
+    global _log_bridge_installed  # pylint: disable=global-statement
+    sink = target if target is not None else bus
+    with _log_bridge_lock:
+        if _log_bridge_installed:
+            return next(
+                (h for h in logging.getLogger().handlers if isinstance(h, LogBusHandler)),
+                None,
+            )
+        handler = LogBusHandler(sink)
+        handler.setLevel(logging.INFO)  # INFO+ reaches the handler; the filter narrows it
+        handler.addFilter(_BusBridgeFilter())
+        root = logging.getLogger()
+        # INFO records must reach the handler: drop the root threshold to INFO unless it
+        # is already more verbose (DEBUG via --debug). basicConfig sets it to INFO/DEBUG.
+        if root.level == logging.NOTSET or root.level > logging.INFO:
+            root.setLevel(logging.INFO)
+        # The app's own loggers surface INFO (basicConfig already lets root pass it, but
+        # be explicit so an app INFO line is captured regardless of root threshold).
+        logging.getLogger(_APP_LOGGER_PREFIX).setLevel(logging.INFO)
+        root.addHandler(handler)
+        logging.captureWarnings(True)  # warnings.warn(...) -> 'py.warnings' log records
+        _log_bridge_installed = True
+        return handler
