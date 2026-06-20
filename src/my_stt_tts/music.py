@@ -130,6 +130,62 @@ _FROM_YOUTUBE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- STT-robust play detection -------------------------------------------------
+# Speech-to-text routinely garbles the leading "play" verb: "Playform Tool
+# lateralis" (play + form fused), "play for …", "play from …", a stray "plays" /
+# "playing". So in addition to the strict _PLAY_QUERY_RE, we treat ANY utterance
+# whose FIRST token starts with "play" (or the DE/FR play verbs) as a play intent
+# and take the remainder as the query. This is the fix for the false "I'll play
+# Lateralus" with no playback — the garbled transcript now reaches the player.
+
+# A first token that means "play" once STT noise is allowed: EN play* (play,
+# plays, playing, playform, …); DE spiel* (spiel, spiele, spielt, spielst, …);
+# FR joue/joues/jouez and mets/met. ``mach`` is handled separately (mach <X> an).
+_PLAY_FIRST_TOKEN_RE = re.compile(
+    r"^(?:play\w*|spiel\w*|joue\w*|mets)$",
+    re.IGNORECASE,
+)
+# Common English NOUNS that begin with "play" but are NOT the play verb — so
+# "playground equipment", "playlist of the day", "player stats" aren't mis-routed
+# as a play command. (A real "play my playlist" still works: the FIRST token is the
+# bare verb "play", and the remainder "my playlist" carries the noun.)
+_PLAY_FALSE_FRIENDS = frozenset(
+    {
+        "playground",
+        "playgrounds",
+        "playlist",
+        "playlists",
+        "player",
+        "players",
+        "playstation",
+        "playoff",
+        "playoffs",
+        "playwright",
+        "playboy",
+        "playmate",
+        "playpen",
+        "playhouse",
+        "playtime",
+        "playback",
+        "playdate",
+        "playbook",
+    }
+)
+# Leading filler the GARBLED play verb may have fused in front of the song:
+# "play for me <X>" / "play from <X>" (STT misreads of "play <X>" / "play form
+# <X>"). Restricted to verb-fusion words + "me/us" — deliberately NOT articles
+# ("a"/"the"), which can be part of a real title ("A Horse With No Name").
+_PLAY_FILLER_RE = re.compile(
+    r"^(?:for|from|me|us|mir|uns|moi|nous)\s+",
+    re.IGNORECASE,
+)
+# DE "mach <X> an" / "mach mal <X> an" — the song sits between mach and the
+# trailing "an" (the generic "mach Musik an" is matched earlier).
+_MACH_AN_RE = re.compile(
+    r"^\s*mach\s+(?:mal\s+)?(?P<query>.+?)\s+an\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
 
 def _strip_politeness(text: str) -> str:
     """Drop a trailing politeness / filler clause ("please" / "bitte" / "now" …).
@@ -145,6 +201,54 @@ def _clean_query(raw: str) -> str:
     """Strip a trailing 'from youtube' clause + punctuation from a play query."""
     cleaned = _FROM_YOUTUBE_RE.sub("", raw).strip()
     return cleaned.strip(" .!? ")
+
+
+def _strip_play_filler(query: str) -> str:
+    """Drop a leading verb-fusion filler ("for me" / "from" …) a garbled play absorbed.
+
+    "play for me X" / "play from X" (an STT misread of "play X" / "play form X") leave
+    a stray "for"/"from"/"me" in front of the song; this trims it so the query is just
+    the song. Restricted to verb-fusion words (never articles) so a real title like
+    "A Horse With No Name" is untouched.
+    """
+    remainder = query
+    while True:
+        stripped = _PLAY_FILLER_RE.sub("", remainder, count=1).strip()
+        if stripped == remainder:
+            return remainder
+        remainder = stripped
+
+
+def _match_play_prefix(text: str) -> str | None:
+    """STT-robust play detection: a leading 'play'-ish token -> the remaining query.
+
+    Returns the cleaned query when the FIRST token starts with a play verb (EN
+    ``play*`` incl. garble like ``playform``; DE ``spiel*``; FR ``joue*``/``mets``),
+    or for the DE ``mach <X> an`` form. Returns ``""`` for a bare verb with no song
+    (so the caller can fall to the generic play), or ``None`` when it is not a play
+    utterance at all. Pure string work — the remainder after the verb (minus a
+    leading filler like "for"/"from"/"me"/"mir"/"moi" and a trailing "from youtube")
+    becomes the query, so "Playform Tool lateralis" -> "Tool lateralis".
+    """
+    # DE "mach <X> an" (the song between mach and the trailing an).
+    mach = _MACH_AN_RE.match(text)
+    if mach:
+        return _clean_query(mach.group("query"))
+    # Optional polite lead-ins ("please" / "can you" / "bitte" / "kannst du" / "peux-tu").
+    body = re.sub(
+        r"^\s*(?:please|can\s+you|could\s+you|bitte|kannst\s+du|peux[- ]tu|pourrais[- ]tu)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not body:
+        return None
+    parts = body.split(None, 1)
+    first = parts[0]
+    if first.lower() in _PLAY_FALSE_FRIENDS or not _PLAY_FIRST_TOKEN_RE.match(first):
+        return None
+    remainder = parts[1] if len(parts) > 1 else ""
+    return _clean_query(_strip_play_filler(remainder))
 
 
 def match_music_intent(text: str) -> dict[str, str] | None:
@@ -174,9 +278,18 @@ def match_music_intent(text: str) -> dict[str, str] | None:
         return {"action": "play", "query": ""}
     m = _PLAY_QUERY_RE.match(stripped)
     if m:
-        query = _clean_query(m.group("query"))
+        # Strip a leading verb-fusion filler too ("play for me X" / "play from X"),
+        # so the strict path matches the STT-robust path's query.
+        query = _clean_query(_strip_play_filler(m.group("query")))
         if query:
             return {"action": "play", "query": query}
+    # STT-robust fallback: a leading "play"-ish token (incl. garble like
+    # "Playform"), DE "spiel*" / "mach <X> an", or FR "joue*" / "mets" — take the
+    # remainder as the query so an STT-garbled verb still plays the song instead of
+    # the LLM falsely claiming "I'll play …". An empty remainder = play some music.
+    prefix = _match_play_prefix(stripped)
+    if prefix is not None:
+        return {"action": "play", "query": prefix} if prefix else {"action": "play", "query": ""}
     return None
 
 
