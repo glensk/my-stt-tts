@@ -150,9 +150,13 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are a calm, concise voice assistant. Your reply is spoken aloud and the "
     "user never sees text: no markdown, lists, code, emoji, or URLs. Speak in one "
     "to three short sentences, spell numbers and dates as words, reply in the "
-    "language the user spoke, and use metric units and ISO-8601 dates. You can play "
-    "music from YouTube — when the user asks to play a song it will be handled, so "
-    "never say you cannot play music."
+    "language the user spoke, and use metric units and ISO-8601 dates. You cannot "
+    "play, stream, or output audio or media yourself — music is played only by the "
+    "system, automatically, when the user literally says 'play <song>'. So never "
+    "claim that you will play something: do not say 'I'll play …', 'Playing …', or "
+    "'Now playing …' for any song or media, since you have no way to do it and it "
+    "would be a lie when no sound follows. If asked to play music, briefly tell the "
+    "user to say 'play' followed by the song name so the system can handle it."
 )
 
 
@@ -308,6 +312,12 @@ class Config:
     wake_phases: int = 8
     follow_up_seconds: float = 8.0
     sample_rate: int = 16000
+    # Software input gain applied to SERVER-captured mic audio (mic_check / wake_test
+    # diagnostics) before scoring/saving, clip-protected to ±1.0. A quiet built-in
+    # mic often peaks at ~10–20%; 2.0 lifts it to a usable level without the wake/STT
+    # models ever seeing wrapped samples. Reported to the GUI as processing.gain.
+    # Must be > 0 and ≤ 10. Env: MIC_GAIN.
+    mic_gain: float = 2.0
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
     vad_silence_seconds: float = 0.7
@@ -660,6 +670,8 @@ class Config:
             cfg.vad_threshold = float(env["VAD_THRESHOLD"])
         if env.get("VAD_SILENCE_SECONDS"):
             cfg.vad_silence_seconds = float(env["VAD_SILENCE_SECONDS"])
+        if env.get("MIC_GAIN"):
+            cfg.mic_gain = float(env["MIC_GAIN"])
         if env.get("AEC_NLMS_TAPS"):
             cfg.aec_nlms_taps = int(env["AEC_NLMS_TAPS"])
         if env.get("AEC_NLMS_MU"):
@@ -731,6 +743,8 @@ class Config:
             errors.append("location must not be empty")
         if self.sample_rate <= 0:
             errors.append(f"sample_rate must be > 0; got {self.sample_rate}")
+        if not 0.0 < self.mic_gain <= 10.0:
+            errors.append(f"mic_gain must be in (0, 10]; got {self.mic_gain}")
         if not 0.0 < self.speaker_threshold < 1.0:
             errors.append(f"speaker_threshold must be in (0, 1); got {self.speaker_threshold}")
         if self.requests_per_minute <= 0:
