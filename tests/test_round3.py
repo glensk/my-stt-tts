@@ -104,25 +104,30 @@ def test_streamed_first_frame_latency_beats_full_sentence(monkeypatch):
     router = object.__new__(tts_mod.TTSRouter)
     router.cfg = cfg
     router._cloud = None
-    synth = _SlowSynth(delay=0.05)  # 50 ms per clause
+    synth = _SlowSynth(delay=0.1)  # 100 ms per clause (headroom so CI noise can't close the gap)
     router.synth_pcm = synth.synth_pcm  # type: ignore[method-assign]
 
     pb, written = _make_streaming_playback(monkeypatch)
     monkeypatch.setattr(tts_mod, "StreamingPlayback", lambda *a, **k: pb)
 
-    text = "One, two, three, four, five, six."  # six clauses -> ~300 ms total synth
+    text = "One, two, three, four, five, six."  # six clauses -> ~600 ms total synth
     t0 = time.monotonic()
     handle = router.start_speaking_stream(text)
     # Wait for the FIRST chunk to reach the player.
-    deadline = t0 + 2.0
+    deadline = t0 + 3.0
     while not written and time.monotonic() < deadline:
         time.sleep(0.005)
     first_audio = time.monotonic() - t0
     handle.wait()
-    # First audio within ~one clause (50 ms) + slack, well under the ~300 ms full
-    # sentence — this is the whole point of streamed playout.
+    total = time.monotonic() - t0
+    # The point of streamed playout: the first frame reaches the player well before
+    # the full sentence finishes. Assert that RELATIVELY (first frame is a fraction
+    # of total playout) instead of a brittle absolute threshold that flakes on a
+    # loaded CI runner (the old `< 0.2 s` hit 0.227 s on CI).
     assert written, "no audio was ever played"
-    assert first_audio < 0.2, f"first-frame latency too high: {first_audio:.3f}s"
+    assert first_audio < total * 0.6, (
+        f"first-frame latency {first_audio:.3f}s not clearly ahead of full playout {total:.3f}s"
+    )
     assert len(synth.clauses) >= 5
 
 

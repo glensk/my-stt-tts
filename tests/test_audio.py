@@ -29,7 +29,11 @@ def test_micgate_gate_then_release():
     gate.gate()
     assert not gate.open
     gate.release()
-    time.sleep(0.05)
+    # release() reopens via a background Timer after the tail; poll rather than a
+    # fixed sleep so a CI runner slow to schedule the timer thread isn't flaky.
+    deadline = time.monotonic() + 2.0
+    while not gate.open and time.monotonic() < deadline:
+        time.sleep(0.005)
     assert gate.open
 
 
