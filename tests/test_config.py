@@ -64,8 +64,106 @@ def test_missing_anthropic_key_message_points_at_fixes():
         Config().validate()
     msg = str(exc.value)
     assert "quickstart.sh" in msg
-    assert "haiku-sub" in msg
+    # The hint now points at the DEFAULT key-free brain (opus-sub) first.
+    assert "opus-sub" in msg
     assert "ollama" in msg.lower()
+
+
+def test_default_brain_preset_is_opus_sub():
+    from my_stt_tts.config import BRAIN_PRESETS, DEFAULT_BRAIN_PRESET
+
+    assert DEFAULT_BRAIN_PRESET == "opus-sub"
+    assert BRAIN_PRESETS[DEFAULT_BRAIN_PRESET] == ("claude-cli", "opus")
+
+
+# --- exact model + reasoning-level label (GUI contract) ------------------------
+
+
+def test_model_label_claude_cli_opus_is_exact_with_reasoning():
+    from my_stt_tts.config import model_label
+
+    # The shared contract: claude-cli Opus -> "claude-cli / opus-4.8 · think".
+    assert model_label("claude-cli", "opus") == "claude-cli / opus-4.8 · think"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("claude-cli", "opus", "claude-cli / opus-4.8 · think"),
+        ("claude-cli", "sonnet", "claude-cli / sonnet-4.6 · think"),
+        ("claude-cli", "haiku", "claude-cli / haiku-4.5 · think"),
+        # API ids resolve to the same marketing version (no CLI reasoning suffix).
+        ("anthropic", "claude-opus-4-8", "anthropic / opus-4.8"),
+        ("anthropic", "claude-haiku-4-5", "anthropic / haiku-4.5"),
+        # Non-Anthropic providers pass the model through unchanged.
+        ("ollama", "llama3.1", "ollama / llama3.1"),
+        ("codex-cli", "gpt-5-codex", "codex-cli / gpt-5-codex"),
+    ],
+)
+def test_model_label_maps_versions_and_reasoning(provider, model, expected):
+    from my_stt_tts.config import model_label
+
+    assert model_label(provider, model) == expected
+
+
+def test_model_version_label_unknown_passes_through():
+    from my_stt_tts.config import model_version_label
+
+    assert model_version_label("claude-opus-4-8") == "opus-4.8"
+    assert model_version_label("some-future-model") == "some-future-model"
+
+
+# --- wake-word reliability metadata (GUI contract) -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("word", "tier", "recall"),
+    [
+        # Official -> always green, recall unmeasured (None).
+        ("alexa", "green", None),
+        ("hey_jarvis", "green", None),
+        ("hey_mycroft", "green", None),
+        # Self-trained by recall band: >=0.70 green, [0.50,0.70) orange, <0.50 red.
+        ("maziko", "green", 0.76),
+        ("orion", "green", 0.70),  # 0.70 is the green boundary (inclusive)
+        ("computer", "orange", 0.64),
+        ("luna", "orange", 0.52),
+        ("sage", "red", 0.45),
+        # Self-trained, unrecorded recall -> red.
+        ("nexus", "red", None),
+        ("jarvis", "red", None),
+    ],
+)
+def test_wake_word_tier_rules(word, tier, recall):
+    from my_stt_tts.config import wake_word_tier
+
+    got_tier, note, got_recall = wake_word_tier(word)
+    assert got_tier == tier
+    assert got_recall == recall
+    assert note  # always a non-empty human reason
+
+
+def test_wake_word_info_shape_for_available_models():
+    from my_stt_tts.config import available_wake_words, wake_word_info
+
+    info = wake_word_info()
+    # One entry per available model, each with the contract keys.
+    assert set(info) == set(available_wake_words())
+    for _word, meta in info.items():
+        assert set(meta) == {"tier", "note", "recall"}
+        assert meta["tier"] in {"green", "orange", "red"}
+        assert isinstance(meta["note"], str) and meta["note"]
+        assert meta["recall"] is None or isinstance(meta["recall"], float)
+
+
+def test_wake_word_info_in_settings_dict():
+    from my_stt_tts.webui import settings_dict
+
+    d = settings_dict(Config(anthropic_api_key="sk-test"))
+    assert "wake_word_info" in d
+    # The official models are present and green (they ship in wakewords/).
+    assert d["wake_word_info"]["hey_jarvis"]["tier"] == "green"
+    assert d["wake_word_info"]["alexa"]["tier"] == "green"
 
 
 def test_from_env(monkeypatch):

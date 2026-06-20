@@ -11,7 +11,7 @@
 # What it does:
 #   1. checks for `uv` (prints an install hint and exits if missing),
 #   2. runs `uv sync --extra all` to install the project + optional extras,
-#   3. auto-detects a key-free brain (claude CLI -> ollama -> codex CLI),
+#   3. auto-detects a key-free brain (claude CLI/Opus -> ollama -> codex CLI),
 #   4. launches `./mstt --browser --wake` if the wake model exists (voice live),
 #      else `./mstt --browser --type` (typed, no mic). If no brain is found,
 #      prints how to enable one.
@@ -29,7 +29,7 @@ What it does:
   1. Checks that `uv` is installed (prints an install hint if it is not).
   2. Runs `uv sync --extra all` to create .venv and install all extras.
   3. Auto-detects a key-free brain, in this order:
-       - the `claude` CLI (claude.ai/code)         -> --brain haiku-sub
+       - the `claude` CLI (claude.ai/code)         -> --brain opus-sub (Opus)
        - `ollama` + an installed model             -> LLM_PROVIDER=ollama
        - the OpenAI `codex` CLI                     -> --brain codex
   4. Opens the web control room:
@@ -105,8 +105,8 @@ ollama_first_model() {
 }
 
 if command -v claude >/dev/null 2>&1; then
-	echo "quickstart: using the Claude CLI brain (no API key needed)."
-	ARGS=(--brain haiku-sub)
+	echo "quickstart: using the Claude CLI brain — Opus (no API key needed)."
+	ARGS=(--brain opus-sub)
 elif command -v ollama >/dev/null 2>&1 && [ -n "$(ollama_first_model)" ]; then
 	model="$(ollama_first_model)"
 	echo "quickstart: using the local Ollama brain '${model}' (no API key needed)."

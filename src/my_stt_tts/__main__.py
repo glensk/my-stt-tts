@@ -42,6 +42,7 @@ from .config import (
     Config,
     ConfigError,
     available_wake_words,
+    model_label,
 )
 from .events import bus, install_log_bridge
 from .interrupt import InterruptGate, make_interrupt_predictor
@@ -218,7 +219,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
     agent_ws = cfg.agent_workspace or "(disabled — set AGENT_WORKSPACE)"
     rows = [
         "current settings (override via .env or flags):",
-        f"  brain      {blue}{cfg.llm_provider} / {cfg.llm_model}{reset}  (deep: {cfg.llm_model_deep})"
+        f"  brain      {blue}{model_label(cfg.llm_provider, cfg.llm_model)}{reset}"
+        f"  (deep: {cfg.llm_model_deep})"
         f"  memory {blue}{cfg.memory_store or 'in-memory'}{reset}",
         f"  voice      en={blue}{cfg.tts_voices.get('en')}{reset}"
         f"  de={cfg.tts_voices.get('de')}  fr={cfg.tts_voices.get('fr')}"
@@ -695,11 +697,14 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
 
 
 def _model_label(cfg: Config) -> str:
-    """Human label for the active model (e.g. ``claude-cli / haiku``) for the UI.
+    """Exact model + reasoning-level label for the active brain (e.g.
+    ``claude-cli / opus-4.8 · think``) for the UI.
 
     Carried on the ``llm_request`` state detail and the final ``response`` event so
-    the page can show an "ASSISTANT · <model>" label."""
-    return f"{cfg.llm_provider} / {cfg.llm_model}"
+    the page can show an "ASSISTANT · <model>" label. Delegates to
+    :func:`config.model_label` so the bare CLI alias / pinned API id resolves to the
+    precise marketing version and the claude-cli reasoning level is appended."""
+    return model_label(cfg.llm_provider, cfg.llm_model)
 
 
 def _set_speaker(brain: Brain, speaker_id: object | None, clip: np.ndarray | None) -> None:

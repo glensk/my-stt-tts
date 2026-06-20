@@ -481,8 +481,14 @@ def test_response_event_omits_model_when_blank() -> None:
 
 
 def test_model_label_format() -> None:
+    # The label is now the EXACT model + reasoning level (GUI contract): the
+    # version id maps to its marketing version and claude-cli appends its reasoning
+    # level (`· think`). See config.model_label.
     cfg = Config(llm_provider="claude-cli", llm_model="claude-haiku-4-5")
-    assert main_mod._model_label(cfg) == "claude-cli / claude-haiku-4-5"
+    assert main_mod._model_label(cfg) == "claude-cli / haiku-4.5 · think"
+    # The default brain (opus-sub) renders exactly as the contract specifies.
+    opus = Config(llm_provider="claude-cli", llm_model="opus")
+    assert main_mod._model_label(opus) == "claude-cli / opus-4.8 · think"
 
 
 # --------------------------------------------------------------------------- #

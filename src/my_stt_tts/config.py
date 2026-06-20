@@ -44,6 +44,75 @@ def available_wake_words(wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR) 
     return sorted(p.stem for p in directory.glob("*.onnx") if p.is_file())
 
 
+# --- Wake-word reliability metadata (GUI contract: settings_dict.wake_word_info).
+# A wake word is GREEN (recommended) when it is an official extensively-trained
+# model OR its measured recall is >= 0.70; ORANGE for recall in [0.50, 0.70);
+# RED for recall < 0.50, or an unknown recall on a self-trained model.
+
+# openWakeWord's official, extensively-trained models (shipped via
+# scripts/fetch_official_wakewords.py). Always GREEN — the recommended reliable
+# choice. Recall is unmeasured here (null) because they are trained/validated
+# upstream on far more data than this repo's self-trained set.
+OFFICIAL_WAKE_WORDS: frozenset[str] = frozenset({"alexa", "hey_jarvis", "hey_mycroft"})
+
+# Measured recall of the self-trained models (from wakewords/WAKEWORD.md training
+# runs). Words absent here are self-trained with UNRECORDED recall -> RED.
+SELF_TRAINED_RECALL: dict[str, float] = {
+    "maziko": 0.76,
+    "nova": 0.71,
+    "athena": 0.71,
+    "orion": 0.70,
+    "computer": 0.64,
+    "luna": 0.52,
+    "sage": 0.45,
+}
+
+# Recall tier thresholds (inclusive lower bounds): >= GREEN -> green; >= ORANGE
+# (and < GREEN) -> orange; below ORANGE -> red.
+WAKE_TIER_GREEN = 0.70
+WAKE_TIER_ORANGE = 0.50
+
+
+def wake_word_tier(word: str) -> tuple[str, str, float | None]:
+    """Reliability ``(tier, note, recall)`` for a wake word (GUI contract).
+
+    ``tier`` is ``"green" | "orange" | "red"`` per the rule above; ``note`` is a
+    short human reason; ``recall`` is the measured recall (``float``) or ``None``
+    when unknown (official models, or self-trained words with no recorded recall).
+    Pure + dependency-free so it is cheap and trivially testable.
+    """
+    if word in OFFICIAL_WAKE_WORDS:
+        return ("green", "official, trained on large data", None)
+    recall = SELF_TRAINED_RECALL.get(word)
+    if recall is None:
+        return ("red", "self-trained, recall not measured", None)
+    if recall >= WAKE_TIER_GREEN:
+        tier = "green"
+    elif recall >= WAKE_TIER_ORANGE:
+        tier = "orange"
+    else:
+        tier = "red"
+    return (tier, f"self-trained, recall {recall:.2f}", recall)
+
+
+def wake_word_info(
+    wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR,
+) -> dict[str, dict[str, object]]:
+    """Per-available-wake-word reliability metadata for ``settings_dict``.
+
+    Returns ``{"<word>": {"tier": "green"|"orange"|"red", "note": str,
+    "recall": float | None}}`` for every wake word present on disk (see
+    :func:`available_wake_words`). Consumed by the GUI to colour the wake-word
+    picker by reliability and steer users toward the green (official / high-recall)
+    models. Empty dict when no models are present.
+    """
+    info: dict[str, dict[str, object]] = {}
+    for word in available_wake_words(wakewords_dir):
+        tier, note, recall = wake_word_tier(word)
+        info[word] = {"tier": tier, "note": note, "recall": recall}
+    return info
+
+
 # Measurement systems the assistant can answer in (see Config.units). Injected into
 # the system prompt so temperatures/distances/etc. come back in the right system,
 # and consumed by the get_weather tool to pick °C/km·h vs °F/mph.
@@ -144,6 +213,65 @@ BRAIN_PRESETS: dict[str, tuple[str, str]] = {
     "ollama": ("ollama", "llama3.1"),  # also set LLM_BASE_URL=http://localhost:11434/v1
     "codex": ("codex-cli", "gpt-5-codex"),  # OpenAI codex CLI (no API key, `codex exec`)
 }
+
+# The recommended key-free DEFAULT brain: Opus via the Claude Code CLI (no API
+# key). quickstart.sh launches with this preset, and the missing-key hint points
+# at it. Opus is the strongest reply quality; the CLI subscription path makes it
+# free-of-API-cost and the default everyone gets without configuration.
+DEFAULT_BRAIN_PRESET = "opus-sub"
+
+# --- Exact model + reasoning-level label (the GUI/transcript "ASSISTANT · …"
+# label and settings_text). The bare CLI aliases (opus/sonnet/haiku) and the
+# pinned API ids both resolve to a precise marketing version like ``opus-4.8`` so
+# the user sees EXACTLY which model spoke, not a vague "opus".
+
+# Map a concrete Anthropic model id to its short marketing version. Keyed on the
+# pinned ids in BRAIN_PRESETS / the Config defaults; an unknown id passes through
+# unchanged so a future/overridden model still shows something sensible.
+_MODEL_VERSION_LABELS: dict[str, str] = {
+    "claude-opus-4-8": "opus-4.8",
+    "claude-sonnet-4-6": "sonnet-4.6",
+    "claude-haiku-4-5": "haiku-4.5",
+}
+
+# The bare ``claude --model`` aliases the claude-cli brain uses, resolved to the
+# concrete id they currently point at so the label carries the real version. Kept
+# in sync with the "-api" presets above (opus -> claude-opus-4-8, …).
+_CLI_ALIAS_TO_ID: dict[str, str] = {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
+}
+
+# Reasoning / thinking level the claude-cli brain runs at. The CLI is invoked
+# without an explicit thinking flag (brain._stream_claude_cli), so it uses the
+# CLI's standard thinking budget — labelled ``think`` per the shared GUI contract.
+CLAUDE_CLI_REASONING = "think"
+
+
+def model_version_label(model: str) -> str:
+    """Short marketing version for a model id/alias (e.g. ``claude-opus-4-8`` ->
+    ``opus-4.8``; the bare CLI alias ``opus`` -> ``opus-4.8``). Unknown -> unchanged."""
+    resolved = _CLI_ALIAS_TO_ID.get(model, model)
+    return _MODEL_VERSION_LABELS.get(resolved, resolved)
+
+
+def model_label(provider: str, model: str) -> str:
+    """The EXACT model + reasoning-level label for the active brain.
+
+    Used for the ``bus.response(model=…)`` string the GUI renders as
+    "ASSISTANT · <label>" and for ``settings_text``. Resolves a bare CLI alias or a
+    pinned API id to its marketing version (``opus-4.8``) and, for the claude-cli
+    brain, appends the reasoning level it runs at (``· think``) — so the user sees
+    precisely which model + thinking budget produced the reply, e.g.
+    ``claude-cli / opus-4.8 · think``. Other providers show ``provider / version``.
+    Pure string work — no imports, trivially testable.
+    """
+    version = model_version_label(model)
+    if provider == "claude-cli":
+        return f"{provider} / {version} · {CLAUDE_CLI_REASONING}"
+    return f"{provider} / {version}"
+
 
 # Fallback if the editable repo's prompts/system_prompt.md can't be found.
 _DEFAULT_SYSTEM_PROMPT = (
@@ -736,8 +864,9 @@ class Config:
             errors.append(
                 "ANTHROPIC_API_KEY is required for provider 'anthropic'. No API key? "
                 "Run ./quickstart.sh to auto-pick a key-free brain, or use "
-                "--brain haiku-sub (Claude CLI), or set LLM_PROVIDER=ollama "
-                "(with a local model), or --brain codex (OpenAI codex CLI)."
+                f"--brain {DEFAULT_BRAIN_PRESET} (Claude CLI), or --brain haiku-sub "
+                "for a faster CLI brain, or set LLM_PROVIDER=ollama (with a local "
+                "model), or --brain codex (OpenAI codex CLI)."
             )
         if self.llm_provider == "openai" and not self.openai_api_key:
             errors.append("OPENAI_API_KEY is required for provider 'openai'")
