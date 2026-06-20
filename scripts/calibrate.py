@@ -23,7 +23,11 @@ import argparse
 import wave
 from pathlib import Path
 
-import numpy as np
+from _bootstrap import ensure_venv
+
+ensure_venv(["audio", "speaker"])
+
+import numpy as np  # noqa: E402  (after the venv re-exec guarantees it's installed)
 
 
 def _read_wav(path: Path) -> tuple[np.ndarray, int]:

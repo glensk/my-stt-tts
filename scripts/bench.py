@@ -17,7 +17,11 @@ import shutil
 import subprocess
 import time
 
-import numpy as np
+from _bootstrap import ensure_venv
+
+ensure_venv(["all"])  # bench whichever backends are installed in the full venv
+
+import numpy as np  # noqa: E402  (after the venv re-exec guarantees it's installed)
 
 
 def _time_ms(func) -> float:  # noqa: ANN001
