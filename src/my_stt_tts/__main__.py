@@ -1088,11 +1088,14 @@ class _WakeController:
         bus.state("idle")
 
     def push_to_talk(self) -> None:
-        """Run one server-side push-to-talk capture + respond in a worker thread."""
+        """Run one server-side push-to-talk capture + respond in a worker thread.
+
+        Works whether or not the always-listen wake loop is running: if the loop
+        holds the mic it is PAUSED for the duration of the capture+respond and
+        RESTORED afterwards (the same pattern :meth:`mic_record_replay` uses), so
+        the user lands back listening. Re-entrancy is guarded — a second push while
+        one is in flight is refused, so two captures never fight over the device."""
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                bus.log("push-to-talk unavailable while the wake loop is listening", "error")
-                return
             if self._ptt_busy:
                 bus.log("push-to-talk already capturing", "error")
                 return
@@ -1156,25 +1159,10 @@ class _WakeController:
 
     def _ptt_target(self) -> None:
         try:
-            captured = _capture_ptt(self._cfg, self._stt, self._gate, debug=self._debug)
-            if not captured.text:
-                # macOS: a blank capture is most often an ungranted mic permission.
-                bus.log(
-                    "no audio captured — check the microphone permission "
-                    "(macOS prompts the Terminal/app on first capture)",
-                    "error",
-                )
-                return
-            _respond(
-                self._cfg,
-                self._brain,
-                self._tts,
-                self._gate,
-                captured.text,
-                speaker_id=self._speaker_id,
-                clip=captured.clip,
-                turn_source=SOURCE_PTT,
-            )
+            # Own the mic for the whole capture+respond: if the wake loop is
+            # listening it is paused first and restored after, so push-to-talk works
+            # even under --browser --wake (which auto-starts the loop).
+            self._with_paused_wake(self._capture_and_respond)
         except Exception as exc:
             log.error("push-to-talk error: %s", exc)
             bus.log(f"push-to-talk error: {exc}", "error")
@@ -1182,6 +1170,28 @@ class _WakeController:
             with self._lock:
                 self._ptt_busy = False
             bus.state("idle")
+
+    def _capture_and_respond(self) -> None:
+        """One push-to-talk capture + respond (called with the mic already owned)."""
+        captured = _capture_ptt(self._cfg, self._stt, self._gate, debug=self._debug)
+        if not captured.text:
+            # macOS: a blank capture is most often an ungranted mic permission.
+            bus.log(
+                "no audio captured — check the microphone permission "
+                "(macOS prompts the Terminal/app on first capture)",
+                "error",
+            )
+            return
+        _respond(
+            self._cfg,
+            self._brain,
+            self._tts,
+            self._gate,
+            captured.text,
+            speaker_id=self._speaker_id,
+            clip=captured.clip,
+            turn_source=SOURCE_PTT,
+        )
 
 
 def _run_mic_test(cfg: Config) -> None:
@@ -1235,17 +1245,21 @@ def _run_mic_record_replay(cfg: Config, *, seconds: float = 3.0) -> None:
         )
         bus.state("idle")
         return
-    stats = audio.capture_stats(clip, cfg.sample_rate)
+    # The clip is RAW at the device rate (record_fixed does not resample for the
+    # human replay), so duration + playback both use device_rate — playing it at
+    # any other rate (e.g. the 24 kHz chime rate) is what made the replay sped-up
+    # and high-pitched. Same rate in, same rate out -> faithful pitch + duration.
+    stats = audio.capture_stats(clip, device_rate)
     peak = float(stats["peak"])
     level = int(round(min(1.0, max(0.0, peak)) * 100))
     ok = clip.size > 0 and peak >= audio._SILENCE_PEAK  # noqa: SLF001 — shared silence floor
     if ok:
         bus.log(
-            f"playing back your recording ({stats['duration_s']}s @ {cfg.sample_rate} Hz, "
-            f"device {device_rate} Hz, level {level}%)…"
+            f"playing back your recording ({stats['duration_s']}s @ {device_rate} Hz, "
+            f"level {level}%)…"
         )
         try:
-            _play(clip)
+            audio.play(clip, device_rate)  # play at the capture rate (faithful pitch/speed)
         except Exception as exc:  # noqa: BLE001 — playback backend missing/failed
             log.error("mic replay playback error: %s", exc)
             bus.log(f"recorded OK but playback failed: {exc}", "error")
