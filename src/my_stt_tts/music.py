@@ -69,6 +69,20 @@ _MUSIC_NOUNS = (
     r"(?:the\s+music|the\s+song|music|die\s+musik|der\s+song|das\s+lied|la\s+musique|la\s+chanson)"
 )
 
+# Trailing politeness / filler a control phrase may carry, in EN/DE/FR, stripped
+# before matching so "stop the music please" / "stopp die Musik bitte" / "arrête
+# la musique s'il te plaît" still route locally (the root cause of a stop reaching
+# the LLM was the trailing "please"). Also absorbs a trailing "now"/"jetzt"/
+# "maintenant". Matched as a whole trailing clause, repeatable ("stop now please").
+_POLITENESS = (
+    r"(?:please|bitte|now|jetzt|maintenant|"
+    r"s['’ ]?il\s+te\s+pla[îi]t|s['’ ]?il\s+vous\s+pla[îi]t|stp|svp)"
+)
+_TRAILING_POLITENESS_RE = re.compile(
+    rf"(?:[\s,]+{_POLITENESS})+\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
 _STOP_RE = re.compile(
     rf"^\s*(?:stop|halt|stopp|arr[êe]te|arr[êe]tez)(?:\s+{_MUSIC_NOUNS})?\s*[.!]?\s*$",
     re.IGNORECASE,
@@ -117,6 +131,16 @@ _FROM_YOUTUBE_RE = re.compile(
 )
 
 
+def _strip_politeness(text: str) -> str:
+    """Drop a trailing politeness / filler clause ("please" / "bitte" / "now" …).
+
+    Applied only when classifying CONTROL phrases so "stop the music please" and
+    "pause bitte" route to the local intent router instead of falling through to
+    the LLM. Pure string work; leaves play queries untouched (the politeness lives
+    only on bare control commands)."""
+    return _TRAILING_POLITENESS_RE.sub("", text).strip()
+
+
 def _clean_query(raw: str) -> str:
     """Strip a trailing 'from youtube' clause + punctuation from a play query."""
     cleaned = _FROM_YOUTUBE_RE.sub("", raw).strip()
@@ -136,12 +160,15 @@ def match_music_intent(text: str) -> dict[str, str] | None:
         return None
     stripped = text.strip()
     # Control commands first: they are exact whole-utterance phrases, so a play
-    # request like "play stop by …" is not mis-read as a stop command.
-    if _STOP_RE.match(stripped):
+    # request like "play stop by …" is not mis-read as a stop command. Strip a
+    # trailing politeness clause ("please" / "bitte" / "s'il te plaît" / "now" …)
+    # so "stop the music please" still routes locally and never reaches the LLM.
+    control = _strip_politeness(stripped)
+    if _STOP_RE.match(control):
         return {"action": "stop"}
-    if _PAUSE_RE.match(stripped):
+    if _PAUSE_RE.match(control):
         return {"action": "pause"}
-    if _RESUME_RE.match(stripped):
+    if _RESUME_RE.match(control):
         return {"action": "resume"}
     if _PLAY_GENERIC_RE.match(stripped):
         return {"action": "play", "query": ""}
@@ -158,10 +185,15 @@ def match_music_intent(text: str) -> dict[str, str] | None:
 
 @dataclass
 class Track:
-    """A resolved YouTube result: the page URL + a human title."""
+    """A resolved YouTube result: the page URL + a human title + the video id.
+
+    ``video_id`` is the 11-char YouTube id (when resolvable) so the GUI can embed
+    the player (``https://www.youtube.com/embed/<id>``); it is ``""`` when unknown.
+    """
 
     url: str
     title: str
+    video_id: str = ""
 
 
 def yt_dlp_available() -> bool:
@@ -209,11 +241,33 @@ def _ytdlp_extract(query: str, *, want_stream: bool) -> dict[str, Any] | None:
     return info if isinstance(info, dict) else None
 
 
+# YouTube id from a watch/embed/youtu.be URL (11 chars of [A-Za-z0-9_-]).
+_VIDEO_ID_RE = re.compile(
+    r"(?:v=|/embed/|/shorts/|youtu\.be/|/v/)([A-Za-z0-9_-]{11})",
+)
+
+
+def _extract_video_id(info: dict[str, Any], url: str) -> str:
+    """The 11-char YouTube video id from a yt-dlp info dict or a URL, else ''.
+
+    Prefers yt-dlp's own ``id`` field (already the bare id for a YouTube result);
+    falls back to parsing the page URL. Pure string work — used so the GUI can
+    embed the playing video.
+    """
+    raw = info.get("id")
+    if isinstance(raw, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", raw):
+        return raw
+    match = _VIDEO_ID_RE.search(url)
+    return match.group(1) if match else ""
+
+
 def search(query: str) -> Track | None:
-    """Resolve ``query`` to the best YouTube match (page URL + title), or ``None``.
+    """Resolve ``query`` to the best YouTube match (page URL + title + id), or ``None``.
 
     Uses yt-dlp ``ytsearch1:`` with no download. Returns ``None`` when yt-dlp is
     not installed or nothing matches — the caller turns that into a spoken reason.
+    The 11-char ``video_id`` is extracted (from yt-dlp's ``id`` or the URL) so the
+    GUI music event can carry it for an embed.
     """
     info = _ytdlp_extract(query, want_stream=False)
     if not info:
@@ -222,7 +276,7 @@ def search(query: str) -> Track | None:
     title = info.get("title") or query
     if not url:
         return None
-    return Track(url=str(url), title=str(title))
+    return Track(url=str(url), title=str(title), video_id=_extract_video_id(info, str(url)))
 
 
 # --- the player ----------------------------------------------------------------
@@ -240,6 +294,8 @@ class PlayResult:
     ok: bool
     title: str = ""
     reason: str = ""
+    video_id: str = ""
+    url: str = ""
 
 
 def _which_player(preference: str) -> str | None:
@@ -285,6 +341,9 @@ class MusicPlayer:
     _ipc_path: str | None = field(default=None, init=False, repr=False)
     _backend: str = field(default="", init=False, repr=False)
     _title: str = field(default="", init=False, repr=False)
+    _video_id: str = field(default="", init=False, repr=False)
+    _url: str = field(default="", init=False, repr=False)
+    _paused: bool = field(default=False, init=False, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     # -- queries --------------------------------------------------------------
@@ -298,6 +357,23 @@ class MusicPlayer:
         """Title of the current track, or '' when nothing is playing."""
         with self._lock:
             return self._title if self.is_playing() else ""
+
+    def status(self) -> dict[str, str]:
+        """Live playback snapshot for events / the system-state line.
+
+        Returns ``{"status": "playing"|"paused"|"stopped", "title", "video_id",
+        "url"}``. ``status`` is ``"stopped"`` when nothing is loaded, ``"paused"``
+        when a track is loaded but paused (mpv only), else ``"playing"``.
+        """
+        with self._lock:
+            if not self.is_playing():
+                return {"status": "stopped", "title": "", "video_id": "", "url": ""}
+            return {
+                "status": "paused" if self._paused else "playing",
+                "title": self._title,
+                "video_id": self._video_id,
+                "url": self._url,
+            }
 
     # -- control --------------------------------------------------------------
 
@@ -335,7 +411,10 @@ class MusicPlayer:
                     reason="I found the song but couldn't start the player. Install mpv or ffmpeg.",
                 )
             self._title = track.title
-            return PlayResult(ok=True, title=track.title)
+            self._video_id = track.video_id
+            self._url = track.url
+            self._paused = False
+            return PlayResult(ok=True, title=track.title, video_id=track.video_id, url=track.url)
 
     def stop(self) -> bool:
         """Stop the current track (kill the backing process). True if one was playing."""
@@ -362,14 +441,20 @@ class MusicPlayer:
         with self._lock:
             if not self.is_playing() or self._backend != "mpv":
                 return False
-            return self._mpv_command({"command": ["set_property", "pause", True]})
+            sent = self._mpv_command({"command": ["set_property", "pause", True]})
+            if sent:
+                self._paused = True
+            return sent
 
     def resume(self) -> bool:
         """Best-effort resume (mpv IPC only). Returns True when the resume was sent."""
         with self._lock:
             if not self.is_playing() or self._backend != "mpv":
                 return False
-            return self._mpv_command({"command": ["set_property", "pause", False]})
+            sent = self._mpv_command({"command": ["set_property", "pause", False]})
+            if sent:
+                self._paused = False
+            return sent
 
     # -- internals ------------------------------------------------------------
 
@@ -496,6 +581,9 @@ class MusicPlayer:
         self._ipc_path = None
         self._backend = ""
         self._title = ""
+        self._video_id = ""
+        self._url = ""
+        self._paused = False
 
 
 class _ThreadProc:
@@ -548,3 +636,23 @@ def reset_player() -> None:
         with contextlib.suppress(Exception):
             _DEFAULT_PLAYER.stop()
     _DEFAULT_PLAYER = None
+
+
+def music_state_line() -> str:
+    """A single 'System state: …' sentence describing live music playback.
+
+    Injected into the LLM system prompt on EVERY turn (next to the current-time
+    line) so even LLM-routed turns know the live state — not just the conversation
+    history. Reads the shared process-wide player WITHOUT constructing one (so it
+    is cheap and side-effect-free when no music has ever played): when the singleton
+    is absent or idle it reports "no music is playing"; while a track is loaded it
+    names the title (and notes a paused track). The assistant can therefore answer
+    "what's playing?" correctly regardless of which brain handled the turn."""
+    player = _DEFAULT_PLAYER
+    if player is None or not player.is_playing():
+        return "System state: no music is playing."
+    snap = player.status()
+    title = snap.get("title") or "an unknown track"
+    if snap.get("status") == "paused":
+        return f'System state: music is paused: "{title}".'
+    return f'System state: music is currently playing: "{title}".'
