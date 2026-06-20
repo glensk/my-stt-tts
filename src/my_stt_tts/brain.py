@@ -42,6 +42,7 @@ from typing import Any
 from .agent import AgentError, dispatch_to_agent
 from .config import Config, current_time_line, locale_prompt_line
 from .memory import ContextAggregator, make_memory_store
+from .music import music_state_line
 from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
 
@@ -114,19 +115,23 @@ class Brain:
         return self.context.assemble(self.speaker)
 
     def _system_prompt(self) -> str:
-        """System prompt for the backend: the editable base + locale + current time.
+        """System prompt for the backend: base + locale + current time + system state.
 
         Keeps ``prompts/system_prompt.md`` (``cfg.system_prompt``) as the editable
         base and appends (a) a locale line so weather/distance/temperature answers
-        use the configured place and measurement system, and (b) a fresh
+        use the configured place and measurement system, (b) a fresh
         'Current local time: …' line on EVERY turn so the assistant can tell the
-        time. The time line is in the prompt *text* (not behind a tool) precisely so
-        it works for ``claude-cli`` too, which has no tool access in this loop. The
-        timezone is derived from ``cfg.location`` (Lausanne → Europe/Zurich) via
-        stdlib ``zoneinfo``, falling back to the system local tz.
+        time, and (c) a 'System state: …' line reflecting live music playback so the
+        assistant can answer "what's playing?" correctly even on LLM-routed turns
+        (the music intent router handles play/stop locally, but a *question* about
+        playback reaches the model — which must see the live state, not just the
+        chat history). All three are in the prompt *text* (not behind a tool)
+        precisely so they work for ``claude-cli`` too, which has no tool access in
+        this loop. The timezone is derived from ``cfg.location`` (Lausanne →
+        Europe/Zurich) via stdlib ``zoneinfo``, falling back to the system local tz.
         """
         base = locale_prompt_line(self.cfg.system_prompt, self.cfg.location, self.cfg.units)
-        return f"{base.rstrip()}\n\n{current_time_line(self.cfg.location)}"
+        return f"{base.rstrip()}\n\n{current_time_line(self.cfg.location)}\n{music_state_line()}"
 
     def _home_dispatch(self, command: str) -> str:
         """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).
