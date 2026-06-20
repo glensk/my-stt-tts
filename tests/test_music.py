@@ -103,6 +103,38 @@ def test_case_insensitive():
     assert music.match_music_intent("STOP")["action"] == "stop"
 
 
+@pytest.mark.parametrize(
+    ("text", "action"),
+    [
+        ("stop the music please", "stop"),
+        ("stop please", "stop"),
+        ("stop now", "stop"),
+        ("stop, please", "stop"),
+        ("pause please", "pause"),
+        ("resume please", "resume"),
+        ("stopp die Musik bitte", "stop"),
+        ("pausiere bitte", "pause"),
+        ("weiter bitte", "resume"),
+        ("arrête la musique s'il te plaît", "stop"),
+        ("pause s'il vous plaît", "pause"),
+        ("stop svp", "stop"),
+    ],
+)
+def test_control_intent_strips_trailing_politeness(text, action):
+    """The root-cause fix at the router: trailing politeness must not break the
+    match (so "stop the music please" routes locally instead of to the LLM)."""
+    assert music.match_music_intent(text) == {"action": action}
+
+
+def test_politeness_does_not_hijack_a_play_query():
+    # "please" only LEADS a play ("please play X"); a song literally named with a
+    # trailing word is still a play, never mis-classified as a control command.
+    assert music.match_music_intent("play stop this train") == {
+        "action": "play",
+        "query": "stop this train",
+    }
+
+
 # --- search (yt-dlp mocked) ----------------------------------------------------
 
 
@@ -150,6 +182,25 @@ def test_search_handles_entries_list(monkeypatch):
     )
     track = music.search("song")
     assert track is not None and track.url == "https://youtu.be/xyz"
+
+
+def test_search_extracts_video_id_from_yt_dlp_id(monkeypatch):
+    _patch_ytdlp(
+        monkeypatch,
+        {"id": "dQw4w9WgXcQ", "webpage_url": "https://youtu.be/dQw4w9WgXcQ", "title": "Song"},
+    )
+    track = music.search("song")
+    assert track is not None and track.video_id == "dQw4w9WgXcQ"
+
+
+def test_search_extracts_video_id_from_watch_url(monkeypatch):
+    # No bare `id`; the 11-char id is parsed out of a watch?v= URL.
+    _patch_ytdlp(
+        monkeypatch,
+        {"webpage_url": "https://www.youtube.com/watch?v=abc12345678", "title": "Song"},
+    )
+    track = music.search("song")
+    assert track is not None and track.video_id == "abc12345678"
 
 
 def test_search_no_result_returns_none(monkeypatch):
@@ -310,6 +361,89 @@ def test_get_player_is_shared_singleton():
     assert p1.player == "mpv"
 
 
+# --- system-state line + status snapshot ---------------------------------------
+
+
+def test_music_state_line_when_idle():
+    # No player constructed yet -> idle, side-effect-free.
+    assert music.music_state_line() == "System state: no music is playing."
+
+
+def test_music_state_line_reflects_playing(monkeypatch):
+    _patch_ytdlp(monkeypatch, {"webpage_url": "https://youtu.be/abc", "title": "Thriller"})
+    monkeypatch.setattr(music.shutil, "which", lambda name: "/usr/bin/mpv")
+    monkeypatch.setattr(music.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    player = music.get_player(player="mpv")  # the SAME singleton music_state_line() reads
+    player.play("thriller")
+    line = music.music_state_line()
+    assert "currently playing" in line and "Thriller" in line
+
+
+def test_music_state_line_reflects_paused(monkeypatch):
+    _patch_ytdlp(monkeypatch, {"webpage_url": "https://youtu.be/abc", "title": "Song"})
+    monkeypatch.setattr(music.shutil, "which", lambda name: "/usr/bin/mpv")
+    monkeypatch.setattr(music.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    monkeypatch.setattr(music.MusicPlayer, "_mpv_command", lambda self, payload: True)
+    player = music.get_player(player="mpv")
+    player.play("song")
+    player.pause()
+    assert "paused" in music.music_state_line()
+
+
+def test_status_snapshot_carries_video_id(monkeypatch):
+    _patch_ytdlp(
+        monkeypatch,
+        {"id": "dQw4w9WgXcQ", "webpage_url": "https://youtu.be/dQw4w9WgXcQ", "title": "Song"},
+    )
+    monkeypatch.setattr(music.shutil, "which", lambda name: "/usr/bin/mpv")
+    monkeypatch.setattr(music.subprocess, "Popen", lambda *a, **k: _FakeProc())
+    player = music.MusicPlayer(player="mpv")
+    player.play("song")
+    snap = player.status()
+    assert snap["status"] == "playing"
+    assert snap["video_id"] == "dQw4w9WgXcQ"
+    assert snap["url"] == "https://youtu.be/dQw4w9WgXcQ"
+
+
+# --- GUI control actions (_music_action) ---------------------------------------
+
+
+def test_music_action_stop_emits_event(monkeypatch):
+    from my_stt_tts import __main__ as main_mod
+    from my_stt_tts.events import bus
+
+    monkeypatch.setattr(music.MusicPlayer, "stop", lambda self: True)
+    sub = bus.subscribe()
+    try:
+        main_mod._music_action("music_stop")
+        events = _drain_bus_events(sub)
+    finally:
+        bus.unsubscribe(sub)
+    assert any(e.get("type") == "music" and e["status"] == "stopped" for e in events)
+
+
+def test_music_action_pause_resume_emit_events(monkeypatch):
+    from my_stt_tts import __main__ as main_mod
+    from my_stt_tts.events import bus
+
+    monkeypatch.setattr(music.MusicPlayer, "pause", lambda self: True)
+    monkeypatch.setattr(music.MusicPlayer, "resume", lambda self: True)
+    monkeypatch.setattr(
+        music.MusicPlayer,
+        "status",
+        lambda self: {"status": "paused", "title": "Song", "video_id": "id", "url": "u"},
+    )
+    sub = bus.subscribe()
+    try:
+        main_mod._music_action("music_pause")
+        main_mod._music_action("music_resume")
+        events = _drain_bus_events(sub)
+    finally:
+        bus.unsubscribe(sub)
+    statuses = {e["status"] for e in events if e.get("type") == "music"}
+    assert {"paused", "resumed"} <= statuses
+
+
 # --- the turn hook -------------------------------------------------------------
 
 
@@ -339,14 +473,16 @@ def test_turn_hook_handles_play(monkeypatch):
 
     def _fake_play(self, q):
         played["q"] = q
-        return music.PlayResult(ok=True, title="We Will Rock You")
+        return music.PlayResult(ok=True, title="We Will Rock You", video_id="abc12345678")
 
     monkeypatch.setattr(music.MusicPlayer, "play", _fake_play)
     cfg = Config(anthropic_api_key="sk-test")
     handled = main_mod.maybe_handle_music(cfg, tts, _NullGate(), "play We Will Rock You by Queen")
     assert handled is True
     assert played["q"] == "We Will Rock You by Queen"
+    # The glyph-free SPOKEN line never contains the ▶ symbol (it must not be read aloud).
     assert any("Playing We Will Rock You" in s for s in tts.spoken)
+    assert all("▶" not in s for s in tts.spoken)
 
 
 def test_turn_hook_handles_stop(monkeypatch):
@@ -373,6 +509,108 @@ def test_turn_hook_speaks_reason_on_failure(monkeypatch):
     cfg = Config(anthropic_api_key="sk-test")
     assert main_mod.maybe_handle_music(cfg, tts, _NullGate(), "play anything") is True
     assert any("yt-dlp" in s for s in tts.spoken)
+
+
+def _drain_bus_events(sub) -> list[dict]:
+    """Collect every JSON event currently queued on a bus subscriber."""
+    import json
+    import queue
+
+    out: list[dict] = []
+    while True:
+        try:
+            out.append(json.loads(sub.get_nowait()))
+        except queue.Empty:
+            break
+    return out
+
+
+def test_turn_hook_play_emits_assistant_response_and_music_event(monkeypatch):
+    """ALWAYS-RESPOND: a play turn must emit a final bus.response (the transcript
+    bubble) AND a structured `music` event carrying the video_id/url."""
+    from my_stt_tts import __main__ as main_mod
+    from my_stt_tts.events import bus
+
+    monkeypatch.setattr(
+        music.MusicPlayer,
+        "play",
+        lambda self, q: music.PlayResult(
+            ok=True, title="Thriller", video_id="dQw4w9WgXcQ", url="https://youtu.be/dQw4w9WgXcQ"
+        ),
+    )
+    sub = bus.subscribe()
+    try:
+        cfg = Config(anthropic_api_key="sk-test")
+        assert main_mod.maybe_handle_music(cfg, _RecordingTTS(), _NullGate(), "play Thriller")
+        events = _drain_bus_events(sub)
+    finally:
+        bus.unsubscribe(sub)
+    # A final assistant response with the glyph + the active model label (the bubble).
+    responses = [e for e in events if e.get("type") == "response" and e.get("final")]
+    assert responses, "play must emit a final bus.response so the transcript shows a bubble"
+    assert "▶ Playing: Thriller." in responses[0]["text"]
+    assert responses[0]["model"]  # "ASSISTANT · <model>" label
+    # The structured music event the GUI consumes, with the embeddable id + url.
+    music_events = [e for e in events if e.get("type") == "music"]
+    assert music_events and music_events[0]["status"] == "playing"
+    assert music_events[0]["video_id"] == "dQw4w9WgXcQ"
+    assert music_events[0]["url"] == "https://youtu.be/dQw4w9WgXcQ"
+
+
+def test_turn_hook_stop_emits_response_and_stopped_event(monkeypatch):
+    from my_stt_tts import __main__ as main_mod
+    from my_stt_tts.events import bus
+
+    monkeypatch.setattr(music.MusicPlayer, "stop", lambda self: True)
+    sub = bus.subscribe()
+    try:
+        cfg = Config(anthropic_api_key="sk-test")
+        assert main_mod.maybe_handle_music(cfg, _RecordingTTS(), _NullGate(), "stop the music")
+        events = _drain_bus_events(sub)
+    finally:
+        bus.unsubscribe(sub)
+    responses = [e for e in events if e.get("type") == "response" and e.get("final")]
+    assert any("Stopped the music" in e["text"] for e in responses)
+    assert any(e.get("type") == "music" and e["status"] == "stopped" for e in events)
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "stop the music please",
+        "stop music",
+        "stop, please",
+        "stop now",
+        "pause please",
+        "stopp die Musik bitte",
+        "arrête la musique s'il te plaît",
+        "pause s'il vous plaît",
+    ],
+)
+def test_control_with_trailing_politeness_never_reaches_llm(monkeypatch, phrase):
+    """ROOT-CAUSE FIX: a control phrase with trailing politeness ("…please") must
+    be handled locally (returns True) and never fall through to the LLM."""
+    from my_stt_tts import __main__ as main_mod
+
+    # Player control is faked so nothing real runs; the point is that the router
+    # OWNS the turn (returns True) for every politeness-suffixed control phrase.
+    monkeypatch.setattr(music.MusicPlayer, "stop", lambda self: True)
+    monkeypatch.setattr(music.MusicPlayer, "pause", lambda self: True)
+    monkeypatch.setattr(music.MusicPlayer, "is_playing", lambda self: True)
+    cfg = Config(anthropic_api_key="sk-test")
+    assert main_mod.maybe_handle_music(cfg, _RecordingTTS(), _NullGate(), phrase) is True
+
+
+def test_stop_with_nothing_playing_is_answered_by_router(monkeypatch):
+    """A stop with nothing playing must be answered BY THE ROUTER ("Nothing is
+    playing right now."), not handed to the LLM (which hallucinated)."""
+    from my_stt_tts import __main__ as main_mod
+
+    tts = _RecordingTTS()
+    monkeypatch.setattr(music.MusicPlayer, "stop", lambda self: False)
+    cfg = Config(anthropic_api_key="sk-test")
+    assert main_mod.maybe_handle_music(cfg, tts, _NullGate(), "stop the music please") is True
+    assert any("Nothing is playing" in s for s in tts.spoken)
 
 
 def test_turn_hook_passes_non_music_through():
