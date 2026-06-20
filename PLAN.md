@@ -11,6 +11,46 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave K: PTT under wake, replay rate fix, host-app label
+
+Three backend fixes (branch `backend-fixes2`, worktree `.worktree-fixes2`).
+490 → 502 tests (+12), green with `--extra all` and core-only (500 + 2
+extras-gated skips). Lint clean (ruff check + format, mypy).
+
+- **(1) Push-to-talk works WHILE the wake loop is listening.** `--browser --wake`
+  auto-starts the wake loop (holding the mic), so the GUI `ptt` action was REFUSED
+  with "push-to-talk unavailable while the wake loop is listening." Fix: removed the
+  refusal; `_WakeController.push_to_talk` now runs its capture+respond inside
+  `_with_paused_wake(...)` — the SAME pause→run→restore pattern the record-replay
+  diagnostic uses. The running wake loop is paused (stop event + thread join), PTT
+  owns the mic for the capture+respond, then the loop is restarted so the user lands
+  back listening. Re-entrancy is still guarded (`_ptt_busy`): a second PTT while one
+  is in flight is refused. PTT also still works with wake off (nothing to pause).
+  `_ptt_target` now delegates to a new `_capture_and_respond` helper.
+- **(2) Record-and-replay no longer plays back sped-up / high-pitched.** Classic
+  record-rate ≠ playback-rate bug: `audio.record_fixed` recorded at the device rate
+  (commonly 48 kHz) but RESAMPLED the clip to 16 kHz, and `_run_mic_record_replay`
+  then played it via `_play` (the 24 kHz chime rate). A 16 kHz clip played at 24/48
+  kHz plays 1.5×/3× too fast. Fix: `record_fixed` now returns the RAW clip at
+  `device_rate` (no resample — the 16 kHz resample is only for STT/wake), and the
+  replay plays it with `audio.play(clip, device_rate)` at that SAME rate, so a 3 s
+  recording replays as 3 s with faithful pitch. Duration/stats are computed at
+  `device_rate` too (the old code reported 3× too long).
+- **(3) Server-mic host-app detection.** New `platform.host_app_name(env=None) ->
+  str` maps `TERM_PROGRAM` to the friendly app whose macOS mic permission governs
+  the SERVER capture (`iTerm.app`→"iTerm", `Apple_Terminal`→"Terminal",
+  `vscode`→"VS Code", `ghostty`→"Ghostty", `WezTerm`, `Hyper`, `Tabby`,
+  `Alacritty`, `Warp`, …; unknown values title-cased, unset → "your terminal app";
+  case-insensitive). Exposed as `host_app` in `webui.settings_dict` so the GUI can
+  label the server mic "uses <App>'s microphone permission".
+- **Tests (+12):** PTT pause→capture→resume around an active wake loop, PTT with
+  wake off, PTT re-entrancy refusal (`test_gui_voice.py`); `record_fixed` raw-at-
+  device-rate + same-rate replay round-trip + duration-at-device-rate
+  (`test_backend_fixes.py`); `host_app_name` mapping/case/unknown/unset + `host_app`
+  in `settings_dict` (`test_platform.py`, `test_gui_voice.py`). Updated the two
+  pre-existing replay tests to assert `audio.play` rate == record rate. Audio /
+  device / wake loop all mocked.
+
 ## Build status (2026-06-19) — Wave J: startup audio preflight HARD STOP
 
 The user hit a control room that opened and *silently recorded nothing*: capture
