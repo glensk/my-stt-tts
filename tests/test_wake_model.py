@@ -45,9 +45,9 @@ def test_build_model_uses_modern_api_when_supported(monkeypatch: pytest.MonkeyPa
             seen["framework"] = inference_framework
 
     _install_fake_openwakeword(monkeypatch, ModernModel)
-    w = WakeWord("wakewords/maziko.onnx")
+    w = WakeWord("wakewords/maziko.onnx")  # default phases=1 -> one model
     w._ensure()
-    assert isinstance(w._model, ModernModel)
+    assert isinstance(w._models[0], ModernModel)
     assert seen == {"paths": ["wakewords/maziko.onnx"], "framework": "onnx"}
 
 
@@ -69,9 +69,9 @@ def test_build_model_falls_back_to_0_4_0_api(monkeypatch: pytest.MonkeyPatch) ->
             seen["paths"] = wakeword_model_paths
 
     _install_fake_openwakeword(monkeypatch, LegacyModel)
-    w = WakeWord("wakewords/maziko.onnx")
+    w = WakeWord("wakewords/maziko.onnx")  # default phases=1 -> one model
     w._ensure()
-    assert isinstance(w._model, LegacyModel)
+    assert isinstance(w._models[0], LegacyModel)
     # Fell back to the 0.4.0 kwarg name, no inference_framework passed.
     assert seen == {"paths": ["wakewords/maziko.onnx"]}
 
@@ -89,10 +89,10 @@ def test_detect_reads_score_values_above_threshold(monkeypatch: pytest.MonkeyPat
             return {"maziko": self.score}
 
     _install_fake_openwakeword(monkeypatch, StemKeyModel)
-    w = WakeWord("wakewords/maziko.onnx", threshold=0.5)
+    w = WakeWord("wakewords/maziko.onnx", threshold=0.5)  # default phases=1
     frame = np.zeros(1280, dtype=np.float32)
     assert w.detect(frame) is False  # 0.0 < 0.5
-    w._model.score = 0.9
+    w._models[0].score = 0.9
     assert w.detect(frame) is True  # value read regardless of the "maziko" key
 
 

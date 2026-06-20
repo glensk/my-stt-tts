@@ -488,12 +488,16 @@ def test_model_label_format() -> None:
 def test_wake_detect_tracks_last_score() -> None:
     from my_stt_tts.wake import WakeWord
 
-    w = WakeWord("wakewords/maziko.onnx", threshold=0.5)
-    w._model = MagicMock()
-    w._model.predict.return_value = {"maziko": 0.72}
+    w = WakeWord("wakewords/maziko.onnx", threshold=0.5)  # default phases=1 -> one model
+    # Pre-seed the (single) phase model + its buffer so _ensure() skips construction
+    # (no openwakeword wheel needed in core-only test runs).
+    mock = MagicMock()
+    w._models = [mock]
+    w._reset_pending()
+    mock.predict.return_value = {"maziko": 0.72}
     assert w.detect(np.ones(1280, dtype=np.float32)) is True
     assert w.last_score == 0.72
-    w._model.predict.return_value = {"maziko": 0.10}
+    mock.predict.return_value = {"maziko": 0.10}
     assert w.detect(np.ones(1280, dtype=np.float32)) is False
     assert w.last_score == 0.10
 

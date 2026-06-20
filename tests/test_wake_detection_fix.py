@@ -377,3 +377,191 @@ def test_signal_mic_confirmed_noop_on_silence() -> None:
     main_mod._signal_mic_confirmed(np.zeros(8000, dtype=np.float32), 16000)
     assert sub.empty()  # silence proves nothing -> no signal
     bus.unsubscribe(sub)
+
+
+# --------------------------------------------------------------------------- #
+# (6) Phase-diverse detection: the "fires offline, never live" recall fix     #
+# --------------------------------------------------------------------------- #
+class _PhaseModel:
+    """Fake openWakeWord model that scores high ONLY when a frame captures the
+    ENTIRE wake "spike" (every sample non-zero) — i.e. only when the 1280-frame
+    grid lands exactly on the word. This models openWakeWord's real phase
+    sensitivity: a frame straddling the word's edge (half zeros) scores ~0. Only a
+    detector whose grid phase aligns with the word sees a clean, all-on frame."""
+
+    def __init__(self, **_kwargs: Any) -> None:
+        pass
+
+    def predict(self, frame: np.ndarray) -> dict[str, float]:
+        return {"maziko": 0.9 if np.all(frame != 0) else 0.0}
+
+    def reset(self) -> None:
+        return None
+
+
+def test_phases_default_one_preserves_single_detector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare WakeWord(...) defaults to ONE phase model (back-compat)."""
+    _install_fake_openwakeword(monkeypatch, _PhaseModel)
+    w = WakeWord("wakewords/maziko.onnx")
+    w._ensure()
+    assert w.phases == 1
+    assert len(w._models) == 1
+
+
+def test_phase_diversity_fires_when_single_phase_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With phases>1, a wake word that lands on an unlucky frame phase for the
+    canonical grid still fires via one of the staggered detectors — the live-recall
+    fix. The signal is offset by half a frame so phase-0's grid straddles it."""
+    _install_fake_openwakeword(monkeypatch, _PhaseModel)
+    # A 1280-sample wake "spike" placed at offset 640 (half a frame). The phases=1
+    # grid only ever sees frames [0:1280] and [1280:2560] — each straddles the spike
+    # edge (half zeros) -> 0.0, so it NEVER fires. A detector offset by +640 samples
+    # sees frame [640:1920] = the full spike -> fires. Trailing zeros flush the grids.
+    stream = np.concatenate(
+        [
+            np.zeros(640, dtype=np.float32),
+            np.full(1280, 0.5, dtype=np.float32),
+            np.zeros(1280, dtype=np.float32),
+        ]
+    )
+
+    def run(phases: int) -> bool:
+        w = WakeWord("wakewords/maziko.onnx", threshold=0.5, phases=phases)
+        w.reset()
+        pending, fired = stream.copy(), False
+        while pending.size >= 1280:
+            frame, pending = pending[:1280], pending[1280:]
+            if w.detect(frame):
+                fired = True
+        return fired
+
+    assert run(1) is False  # single phase straddles the spike edge -> never fires
+    assert run(8) is True  # a staggered phase lands cleanly on the spike -> fires
+
+
+def test_phase_models_all_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reset() must clear every phase model's state AND re-prime the offset buffers."""
+    reset_calls = {"n": 0}
+
+    class CountingReset(_PhaseModel):
+        def reset(self) -> None:
+            reset_calls["n"] += 1
+
+    _install_fake_openwakeword(monkeypatch, CountingReset)
+    w = WakeWord("wakewords/maziko.onnx", phases=4)
+    w._ensure()
+    w.reset()
+    assert reset_calls["n"] == 4  # one per phase model
+    # Buffers re-primed with staggered lead zeros: 0, 320, 640, 960 samples.
+    assert [b.size for b in w._pending] == [0, 320, 640, 960]
+
+
+# --------------------------------------------------------------------------- #
+# (7) Wake-debug recorder: dumps the EXACT 16 kHz frames + logs stats/score    #
+# --------------------------------------------------------------------------- #
+def test_wake_debug_recorder_writes_wav_and_logs(tmp_path) -> None:  # noqa: ANN001
+    """The recorder taps the first N s of 16 kHz frames, writes a mono 16 kHz WAV,
+    and logs sample rate / #samples / duration / rms / peak / max+mean score."""
+    import wave
+
+    from my_stt_tts.audio import WakeDebugRecorder
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    def on_debug(stage: str, **fields: Any) -> None:
+        events.append((stage, fields))
+
+    path = tmp_path / "wake-debug.wav"
+    # 0.16 s window at 16 kHz = 2560 samples = exactly two 1280 frames.
+    rec = WakeDebugRecorder(str(path), 16000, 0.16, on_debug=on_debug)
+    frame = (np.sin(np.linspace(0, 20, 1280)) * 0.5).astype(np.float32)
+    rec.feed(frame, 0.2)
+    assert not rec.done  # one frame is below the window -> still filling
+    rec.feed(frame, 0.6)
+    assert rec.done  # window full -> flushed once
+    rec.feed(frame, 0.9)  # post-flush feed is a no-op (no second write)
+
+    # A valid 16 kHz mono 16-bit WAV exists.
+    with wave.open(str(path), "rb") as w:
+        assert w.getframerate() == 16000
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2
+        assert w.getnframes() == 2560
+
+    # A single wake_debug event carrying the right telemetry.
+    wake_dbg = [f for s, f in events if s == "wake_debug"]
+    assert len(wake_dbg) == 1
+    f = wake_dbg[0]
+    assert f["sample_rate"] == 16000
+    assert f["samples"] == 2560
+    assert f["duration_s"] == pytest.approx(0.16, abs=1e-3)
+    assert f["peak"] > 0.4  # 0.5 full-scale sine
+    assert f["level_pct"] == 50
+    assert f["max_score"] == 0.6  # NOT the post-flush 0.9 (window closed)
+    assert f["mean_score"] == pytest.approx(0.4, abs=1e-3)  # mean(0.2, 0.6)
+    assert str(path) in str(f["path"])
+
+
+def test_wake_debug_recorder_silent_capture_reports_low_level(tmp_path) -> None:  # noqa: ANN001
+    """A near-silent capture is flagged by level_pct≈0 — the capture-problem signal
+    (wrong rate / no mic permission) vs a model-recall problem (good audio, low score)."""
+    from my_stt_tts.audio import WakeDebugRecorder
+
+    events: list[dict[str, Any]] = []
+    rec = WakeDebugRecorder(
+        str(tmp_path / "silent.wav"),
+        16000,
+        0.08,
+        on_debug=lambda _s, **f: events.append(f),
+    )
+    rec.feed(np.zeros(1280, dtype=np.float32), 0.001)
+    assert rec.done
+    assert events[0]["level_pct"] == 0  # near-silent -> capture problem, not recall
+    assert events[0]["max_score"] == 0.001
+
+
+def test_listen_for_wake_feeds_exact_frames_to_recorder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The recorder gets the SAME post-resample frames the model scores — not a
+    separate capture (proves the WAV is the real wake-model input)."""
+    import threading
+
+    from my_stt_tts import audio
+    from my_stt_tts.audio import WakeDebugRecorder
+
+    # Two contiguous 1280 frames worth of a known ramp at the device (=pipeline) rate.
+    blocks = [np.linspace(0.1, 0.9, 2560, dtype=np.float32)]
+    fed_to_model: list[np.ndarray] = []
+    stop = threading.Event()
+
+    class RecordingWake:
+        threshold = 0.5
+        model_name = "maziko"
+        last_score = 0.0
+
+        def reset(self) -> None:
+            return None
+
+        def detect(self, frame: np.ndarray) -> bool:
+            fed_to_model.append(np.asarray(frame).copy())
+            if len(fed_to_model) >= 2:
+                stop.set()
+            return False
+
+    captured: list[np.ndarray] = []
+
+    class TapRecorder(WakeDebugRecorder):
+        def feed(self, frame: np.ndarray, score: float) -> None:  # noqa: D102
+            captured.append(np.asarray(frame).copy())
+
+    sd = MagicMock()
+    sd.InputStream.side_effect = lambda **kw: _FakeStream(blocks, kw["callback"])
+    monkeypatch.setattr(audio, "_sd", lambda: sd)
+    monkeypatch.setattr(audio, "_supported_capture_rate", lambda _sd, r: r)
+
+    rec = TapRecorder("/tmp/_unused.wav", 16000, 5.0)
+    audio.listen_for_wake(RecordingWake(), 16000, poll_seconds=0.01, stop=stop, recorder=rec)
+
+    # The recorder saw exactly the frames the model saw, in order.
+    assert len(captured) == len(fed_to_model) == 2
+    for cap, fed in zip(captured, fed_to_model, strict=True):
+        assert np.array_equal(cap, fed)
