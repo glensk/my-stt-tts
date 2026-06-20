@@ -32,6 +32,7 @@ from .config import (
     UNITS,
     Config,
     available_wake_words,
+    wake_word_info,
 )
 from .events import bus
 from .tts import _VOICE_NOTES, VOICE_PRESETS
@@ -92,6 +93,10 @@ def settings_dict(
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
+        # Per-wake-word reliability metadata so the page can colour the picker by
+        # tier and steer users to the reliable (green) models. Shape (GUI contract):
+        # {"<word>": {"tier": "green"|"orange"|"red", "note": str, "recall": float|null}}.
+        "wake_word_info": wake_word_info(),
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),
         # clip-protected to ±1.0. Reported back to the page as processing.gain.
         "mic_gain": cfg.mic_gain,

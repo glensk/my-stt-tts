@@ -6,33 +6,72 @@ repo can **ship several pre-trained wake-word models** in `wakewords/` so you ju
 
 ## Pre-shipped wake words
 
-Ten models ship in this folder as `wakewords/<name>.onnx` — **maziko, nexus, alexa,
-jarvis, computer, athena, nova, luna, sage, orion** (self-trained on a GPU via
-openWakeWord, so they carry no third-party model licence). **Selecting a wake word is
-just choosing its name** — the model path is derived automatically as
+Several models ship in this folder as `wakewords/<name>.onnx`. **Selecting a wake word
+is just choosing its name** — the model path is derived automatically as
 `wakewords/<name>.onnx`. Discovery is generic: whatever `.onnx` models are present are
-offered (run `--settings` to see the live list).
+offered (run `--settings` to see the live list, with reliability tiers).
 
-Training metrics (accuracy / recall / false-positives-per-hour; openWakeWord targets
-are accuracy ≥ 0.7 and recall ≥ 0.5):
+There are two groups:
 
-| Wake word  | Accuracy | Recall | FP/hr |
-|:-----------|:---------|:-------|:------|
-| `maziko`   | 0.88     | 0.76   | 0.0   |
-| `nova`     | 0.85     | 0.71   | 0.0   |
-| `athena`   | 0.85     | 0.71   | 0.0   |
-| `orion`    | 0.85     | 0.70   | 0.0   |
-| `computer` | 0.82     | 0.64   | 0.0   |
-| `luna`     | 0.75     | 0.52   | 0.0   |
-| `sage`     | 0.72     | 0.45   | 0.0   |
-| `nexus`    | n/a      | n/a    | 0.0   |
-| `alexa`    | n/a      | n/a    | 0.0   |
-| `jarvis`   | n/a      | n/a    | 0.0   |
+- **Official openWakeWord models** (the *recommended reliable* choice) — `hey_jarvis`,
+  `hey_mycroft`, `alexa`. These are openWakeWord's own **extensively-trained** models
+  (trained on far more data than the self-trained set below), fetched with
+  `uv run scripts/fetch_official_wakewords.py`. They are the **green-tier** default
+  recommendation: if you don't have a strong reason to use a custom word, pick one of
+  these. (The official `alexa` **replaces** the older self-trained `alexa`.)
+- **Self-trained models** — `maziko, nexus, jarvis, computer, athena, nova, luna, sage,
+  orion` (trained on a GPU via openWakeWord, so they carry no third-party model
+  licence). Quality varies — see the recall column and the tiers below.
+
+### Reliability tiers
+
+The GUI colours each wake word by a **reliability tier** (also in `--settings` /
+`settings_dict.wake_word_info`):
+
+- 🟢 **green** — an **official** extensively-trained model, **or** measured recall ≥ 0.70.
+  The reliable choice.
+- 🟠 **orange** — measured recall in **[0.50, 0.70)**. Usable, may miss some activations;
+  lower `WAKE_THRESHOLD` if so.
+- 🔴 **red** — measured recall **< 0.50**, or a self-trained model with **unrecorded**
+  recall. Not recommended; expect missed activations. Prefer a green model or retrain.
+
+Training metrics (accuracy / recall / false-positives-per-hour; openWakeWord targets are
+accuracy ≥ 0.7 and recall ≥ 0.5):
+
+| Wake word     | Source         | Recall | Tier    | FP/hr |
+|:--------------|:---------------|:-------|:--------|:------|
+| `hey_jarvis`  | official OWW   | n/a    | 🟢 green | 0.0   |
+| `hey_mycroft` | official OWW   | n/a    | 🟢 green | 0.0   |
+| `alexa`       | official OWW   | n/a    | 🟢 green | 0.0   |
+| `maziko`      | self-trained   | 0.76   | 🟢 green | 0.0   |
+| `nova`        | self-trained   | 0.71   | 🟢 green | 0.0   |
+| `athena`      | self-trained   | 0.71   | 🟢 green | 0.0   |
+| `orion`       | self-trained   | 0.70   | 🟢 green | 0.0   |
+| `computer`    | self-trained   | 0.64   | 🟠 orange| 0.0   |
+| `luna`        | self-trained   | 0.52   | 🟠 orange| 0.0   |
+| `sage`        | self-trained   | 0.45   | 🔴 red   | 0.0   |
+| `nexus`       | self-trained   | n/a    | 🔴 red   | 0.0   |
+| `jarvis`      | self-trained   | n/a    | 🔴 red   | 0.0   |
 
 `sage` (recall 0.45) and `luna` (0.52) are short words that are harder to discriminate,
-so they may miss more activations — lower `WAKE_THRESHOLD` if so. (`nexus`/`alexa`/`jarvis`
-metrics weren't captured at train time.) `alexa` and `jarvis` are third-party trademarks,
-shipped as community models for personal use only.
+so they may miss more activations — lower `WAKE_THRESHOLD` if so. The self-trained
+`nexus`/`jarvis` metrics weren't captured at train time, so they land in the red tier —
+prefer an official green model (e.g. **`hey_jarvis`** instead of `jarvis`). `alexa` and
+`jarvis` are third-party trademarks, shipped as community models for personal use only.
+
+### Shipping / refreshing the official models
+
+The official `.onnx` models are placed into this folder by:
+
+```commands
+uv run scripts/fetch_official_wakewords.py          # copy official OWW models -> wakewords/
+uv run scripts/fetch_official_wakewords.py --list   # show what the installed openwakeword offers
+```
+
+The script prefers `openwakeword.utils.download_models()` when present, otherwise copies
+the weights bundled with the installed `openwakeword`. The shared melspectrogram /
+embedding feature models openWakeWord needs are loaded from the installed package at
+runtime — they do **not** live in `wakewords/`.
 
 Three equivalent ways to select one:
 

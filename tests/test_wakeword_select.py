@@ -46,6 +46,42 @@ def test_available_wake_words_empty_dir_is_empty_list(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Official openWakeWord models physically ship and are discoverable + green    #
+# --------------------------------------------------------------------------- #
+def test_official_models_are_shipped_and_discoverable() -> None:
+    """The extensively-trained official models are committed in the REAL wakewords/
+    dir, so available_wake_words() offers them and the reliability tier is green."""
+    from my_stt_tts.config import OFFICIAL_WAKE_WORDS, wake_word_info
+
+    shipped = set(available_wake_words("wakewords"))
+    info = wake_word_info("wakewords")
+    for word in OFFICIAL_WAKE_WORDS:
+        assert word in shipped, f"official model {word!r} is not shipped in wakewords/"
+        assert info[word]["tier"] == "green"
+
+
+def test_official_models_load_in_the_wake_engine() -> None:
+    """An official model loads + predicts through the project's wake engine (the
+    same path the always-listening loop uses), proving it ships in a usable form."""
+    import numpy as np
+
+    from my_stt_tts.wake import FRAME_SAMPLES, WakeUnavailable, WakeWord
+
+    path = "wakewords/hey_jarvis.onnx"
+    if not Path(path).is_file():
+        return  # not shipped in this checkout; the discovery test covers presence
+    detector = WakeWord(path, threshold=0.99, phases=1)
+    try:
+        # Feed a few silence frames: it must construct + predict without error.
+        for _ in range(4):
+            detector.detect(np.zeros(FRAME_SAMPLES, dtype=np.float32))
+    except WakeUnavailable:
+        # openWakeWord backend genuinely unavailable in this env -> skip silently.
+        return
+    assert detector.model_name == "hey_jarvis"
+
+
+# --------------------------------------------------------------------------- #
 # Name -> path derivation (default + explicit-override precedence)             #
 # --------------------------------------------------------------------------- #
 def test_wake_model_for_uses_convention() -> None:

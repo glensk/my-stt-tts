@@ -71,7 +71,11 @@ voices/
 
 # Trained wake-word models (generated; see wakewords/WAKEWORD.md). User-trained
 # models stay ignored, but the small pre-shipped set IS committed so the repo ships
-# selectable wake words out of the box (~200 KB each).
+# selectable wake words out of the box. Two groups:
+#   * self-trained (~200 KB each): maziko, nexus, computer, athena, nova, …
+#   * official openWakeWord, extensively-trained (the RELIABLE green-tier choice;
+#     fetch/refresh with scripts/fetch_official_wakewords.py): alexa, hey_jarvis,
+#     hey_mycroft. The official alexa REPLACES the self-trained one (preferred).
 wakewords/*.onnx
 wakewords/*.tflite
 !wakewords/maziko.onnx
@@ -84,6 +88,9 @@ wakewords/*.tflite
 !wakewords/luna.onnx
 !wakewords/sage.onnx
 !wakewords/orion.onnx
+# Official openWakeWord models (extensively trained; green tier):
+!wakewords/hey_jarvis.onnx
+!wakewords/hey_mycroft.onnx
 
 # Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run)
 models/
