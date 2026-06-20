@@ -387,6 +387,106 @@ def test_pause_resume_use_mpv_ipc(monkeypatch):
     assert {"command": ["set_property", "pause", False]} in ipc_calls
 
 
+# --- the IPC fix: _mpv_command retries connect + confirms mpv's reply ----------
+
+
+class _FakeSocket:
+    """A socket.socket stand-in for mpv's Unix IPC.
+
+    ``fail_connects`` connect attempts raise ConnectionRefusedError (mpv's listener
+    not up yet) before one succeeds, proving :meth:`MusicPlayer._mpv_command` polls
+    the real connect instead of giving up after one try. After connecting, ``recv``
+    yields ``reply`` (mpv's JSON ack line) so the ack-parsing path is exercised.
+    """
+
+    _attempt = 0
+
+    def __init__(self, fail_connects: int, reply: bytes) -> None:
+        self._fail_connects = fail_connects
+        self._reply = reply
+        self.sent: list[bytes] = []
+
+    def settimeout(self, _t: float) -> None:
+        pass
+
+    def connect(self, _addr: str) -> None:
+        type(self)._attempt += 1
+        # fail_connects < 0 means "always refuse" (socket never becomes connectable).
+        if self._fail_connects < 0 or type(self)._attempt <= self._fail_connects:
+            raise ConnectionRefusedError("mpv listener not up yet")
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _n: int) -> bytes:
+        out, self._reply = self._reply, b""
+        return out
+
+    def __enter__(self) -> "_FakeSocket":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def _patch_socket(monkeypatch, *, fail_connects: int, reply: bytes) -> _FakeSocket:
+    """Make ``socket.socket(...)`` in music.py return a shared _FakeSocket."""
+    _FakeSocket._attempt = 0
+    fake = _FakeSocket(fail_connects, reply)
+    monkeypatch.setattr(music.socket, "socket", lambda *a, **k: fake)
+    monkeypatch.setattr(music.time, "sleep", lambda _s: None)  # don't really wait between retries
+    return fake
+
+
+def test_mpv_command_retries_connect_until_socket_is_up(monkeypatch):
+    """ROOT-CAUSE FIX: the socket may not accept on the first connect (cold mpv /
+    YouTube URL still resolving) — _mpv_command must RETRY connect within the budget
+    instead of no-oping after one attempt (the old "pause does nothing" bug)."""
+    player = music.MusicPlayer(player="mpv")
+    player._ipc_path = "/tmp/fake-mpv.sock"
+    fake = _patch_socket(monkeypatch, fail_connects=3, reply=b'{"error":"success"}\n')
+    assert player._mpv_command({"command": ["set_property", "pause", True]}) is True
+    # It connected only after several failures, then sent exactly the command.
+    assert _FakeSocket._attempt == 4
+    assert fake.sent and b'"set_property"' in fake.sent[0]
+
+
+def test_mpv_command_reports_error_reply_as_failure(monkeypatch):
+    """A non-success ack from mpv (e.g. property unavailable) is reported as False,
+    not a false 'it worked' — the send-only old code could not tell the difference."""
+    player = music.MusicPlayer(player="mpv")
+    player._ipc_path = "/tmp/fake-mpv.sock"
+    _patch_socket(monkeypatch, fail_connects=0, reply=b'{"error":"property unavailable"}\n')
+    assert player._mpv_command({"command": ["set_property", "pause", True]}) is False
+
+
+def test_mpv_command_quiet_mpv_send_counts_as_success(monkeypatch):
+    """Some mpv builds send no parseable reply (e.g. on quit); a clean send to a
+    live socket still counts as success so control isn't lost on a quiet build."""
+    player = music.MusicPlayer(player="mpv")
+    player._ipc_path = "/tmp/fake-mpv.sock"
+    _patch_socket(monkeypatch, fail_connects=0, reply=b"")
+    assert player._mpv_command({"command": ["quit"]}) is True
+
+
+def test_mpv_command_gives_up_when_socket_never_connects(monkeypatch):
+    """If the socket never becomes connectable within the budget, return False
+    (don't hang the turn) — pause/resume then degrade gracefully."""
+    player = music.MusicPlayer(player="mpv")
+    player._ipc_path = "/tmp/fake-mpv.sock"
+    # Always-refuse connect (fail_connects=-1); shrink the budget so it's instant.
+    monkeypatch.setattr(music, "_IPC_WAIT_S", 0.2)
+    _patch_socket(monkeypatch, fail_connects=-1, reply=b"")
+    assert player._mpv_command({"command": ["set_property", "pause", True]}) is False
+
+
+def test_mpv_command_no_ipc_path_is_false():
+    """No IPC socket configured (ffplay/download backend) -> immediate False."""
+    player = music.MusicPlayer(player="mpv")
+    player._ipc_path = None
+    assert player._mpv_command({"command": ["set_property", "pause", True]}) is False
+
+
 def test_pause_resume_no_op_without_mpv(monkeypatch):
     # ffplay backend: pause/resume are best-effort no-ops (stop only).
     _patch_ytdlp(

@@ -49,9 +49,17 @@ log = logging.getLogger("my_stt_tts.music")
 
 # yt-dlp can take a while on a cold network; never hang a turn forever.
 _SEARCH_TIMEOUT = 20.0
-# How long to wait for mpv's IPC socket to appear before giving up on IPC control
-# (mpv still plays; we just lose pause/resume and fall back to process-kill stop).
-_IPC_WAIT_S = 3.0
+# How long to wait for mpv's IPC socket to become CONNECTABLE before giving up on
+# IPC control (mpv still plays; we just lose pause/resume and fall back to
+# process-kill stop). Generous because a COLD first mpv launch — and especially
+# one resolving a YouTube page URL through mpv's bundled yt-dlp hook — can take a
+# few seconds to bring its IPC listener up; a too-short budget was THE reason pause
+# "did nothing" (the socket file did not exist / was not accepting yet when the
+# single connect attempt ran). We poll the real connect(), not just os.path.exists.
+_IPC_WAIT_S = 8.0
+# Per-connect socket timeout once the socket is up (send a command + read mpv's
+# JSON reply). Short: a live mpv answers an IPC command within a few ms.
+_IPC_CONNECT_TIMEOUT = 2.0
 
 
 # --- intent router -------------------------------------------------------------
@@ -666,24 +674,65 @@ class MusicPlayer:
             log.warning("could not play downloaded file %s: %s", path, exc)
 
     def _mpv_command(self, payload: dict[str, Any]) -> bool:
-        """Send one JSON command to mpv's IPC socket. True on a successful send."""
+        """Send one JSON command to mpv's IPC socket and confirm it was accepted.
+
+        THE pause fix: the old code only waited for the socket *file* to exist and
+        then made a SINGLE connect — so on a cold mpv launch (or one still resolving
+        a YouTube URL) the listener was not accepting yet and pause silently no-oped.
+        Here we poll a real :meth:`socket.connect` until it succeeds (up to
+        ``_IPC_WAIT_S``), send the command, and READ mpv's JSON reply so the return
+        value reflects whether mpv actually ran it (``{"error":"success"}``), not
+        merely that bytes were written. Returns ``True`` only on a confirmed-success
+        reply (or, defensively, a clean send when mpv sends no parseable reply)."""
         ipc = self._ipc_path
         if not ipc:
             return False
         deadline = time.time() + _IPC_WAIT_S
-        while not os.path.exists(ipc) and time.time() < deadline:
-            time.sleep(0.05)
-        if not os.path.exists(ipc):
-            return False
+        while time.time() < deadline:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(_IPC_CONNECT_TIMEOUT)
+                    sock.connect(ipc)
+                    sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+                    return self._read_ipc_ack(sock)
+            except (OSError, ConnectionError) as exc:
+                # Socket not up / not accepting yet — retry until the deadline so a
+                # cold or URL-resolving mpv still gets the command once it is ready.
+                log.debug("mpv IPC not ready (%s); retrying", exc)
+                time.sleep(0.1)
+        log.debug("mpv IPC never became connectable within %.1fs", _IPC_WAIT_S)
+        return False
+
+    @staticmethod
+    def _read_ipc_ack(sock: socket.socket) -> bool:
+        """Read mpv's reply to a command and report whether it succeeded.
+
+        mpv answers every IPC command with a line like ``{"error":"success"}``. We
+        read until we see one carrying an ``error`` field: ``"success"`` -> True, any
+        other error -> False. If mpv sends nothing parseable before the read times
+        out (some builds stay quiet on ``quit``), we treat the clean send as success
+        so control still works — the connect already proved the listener is live."""
+        buf = b""
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(_IPC_WAIT_S)
-                sock.connect(ipc)
-                sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            return True
-        except OSError as exc:
-            log.debug("mpv IPC command failed: %s", exc)
-            return False
+            while b"\n" in buf or not buf:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                for line in buf.split(b"\n"):
+                    if not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if "error" in obj:
+                        return bool(obj["error"] == "success")
+        except OSError:
+            pass
+        # No parseable {"error": …} reply — the command was written to a live
+        # socket, so report success (avoids false-negatives on quiet mpv builds).
+        return True
 
     def _cleanup(self) -> None:
         """Drop process/IPC references (assumes the lock is held)."""
