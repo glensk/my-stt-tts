@@ -209,11 +209,25 @@ header.bar{
   box-shadow:0 0 16px -5px var(--green)}
 .btn.held{background:linear-gradient(180deg,#3a0f2c,#2a0b22); border-color:var(--mag); color:#fff;
   box-shadow:0 0 20px -3px var(--mag)}
+/* PUSH-TO-TALK is a neutral control by default (the .btn base style). Its colour is
+   driven by the pipeline `state` events: red while recording ("Listening…"),
+   orange while transcribing ("Transcribing…"), then back to neutral when idle. */
+.btn.ptt-rec{background:linear-gradient(180deg,#3a1115,#2a0c0f); border-color:var(--red); color:#fff;
+  box-shadow:0 0 20px -3px var(--red)}
+.btn.ptt-rec:hover{border-color:var(--red); color:#fff; box-shadow:0 0 18px -3px var(--red)}
+.btn.ptt-stt{background:linear-gradient(180deg,#3a2a0f,#2a1e0b); border-color:var(--amber); color:#fff;
+  box-shadow:0 0 20px -3px var(--amber)}
+.btn.ptt-stt:hover{border-color:var(--amber); color:#fff; box-shadow:0 0 18px -3px var(--amber)}
 .btn:disabled{opacity:.4; cursor:not-allowed; box-shadow:none}
 .btn[aria-disabled="true"]{opacity:.4; cursor:not-allowed; box-shadow:none}
 .btn[aria-disabled="true"]:hover{border-color:var(--line2); color:var(--ink)}
 .voice-note{margin-top:2px; font-size:10px; letter-spacing:.5px; color:var(--amber);
   display:flex; align-items:center; gap:7px}
+/* The .voice-note class sets display:flex, which (being a class selector) outranks
+   the UA [hidden]{display:none} rule — so a plain `hidden` attribute would NOT hide
+   it. This class+attribute selector restores `hidden`, so the macOS mic-permission
+   hint (and the voice-off note) actually disappear when toggled hidden in JS. */
+.voice-note[hidden]{display:none}
 .voice-note::before{content:"⚠"; color:var(--amber)}
 .voice-note code{font-size:10px; padding:1px 5px; border:1px solid var(--line2);
   border-radius:4px; color:var(--ink); background:#060c12}
@@ -645,11 +659,15 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <button class="btn" id="wakeBtn" type="button" aria-pressed="false" title="Start/stop wake-word listening">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 5.5a9 9 0 0 0 0 13M18.5 5.5a9 9 0 0 1 0 13M8 8a5 5 0 0 0 0 8M16 8a5 5 0 0 1 0 8" stroke="currentColor" stroke-width="1.4"/></svg>
               <span id="wakeLabel">Start Wake</span>
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About start wake"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Starts the always-listening wake loop; say the wake word to trigger a turn. Click again to stop listening.</span></span>
             </button>
-            <button class="btn mag" id="pttBtn" type="button" aria-pressed="false"
+            <button class="btn ptt" id="pttBtn" type="button" aria-pressed="false"
                     title="Capture one turn: click, or press/hold Space. Release to send.">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" stroke="currentColor" stroke-width="1.5"/></svg>
-              Push-to-Talk <kbd>SPACE</kbd>
+              <span id="pttLabel">Push-to-Talk</span> <kbd>SPACE</kbd>
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About push-to-talk"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Hold (or click) to record one request; pauses the wake loop while it captures, then resumes. Or press/hold <kbd>SPACE</kbd>.</span></span>
             </button>
             <button class="btn" id="liveAudioBtn" type="button" aria-pressed="false" hidden
                     title="Open-mic conversation: streams your browser mic continuously to the server and plays TTS back. Click to start streaming, click again to stop.">
@@ -661,10 +679,14 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <button class="btn danger" id="resetBtn" type="button" title="Clear conversation">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.4M20 5v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Reset
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About reset"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Clears the conversation transcript and resets the assistant's memory for a fresh start. Does not change your settings.</span></span>
             </button>
             <button class="btn" id="listVoicesBtn" type="button" title="Refresh voice list">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h10M4 12h16M4 17h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               List Voices
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About list voices"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Re-scans the installed TTS voices and refreshes the Voice dropdown — use it after adding a new voice model.</span></span>
             </button>
           </div>
           <div class="voice-note" id="voiceNoteRow" role="status" aria-live="polite" hidden></div>
@@ -1250,11 +1272,22 @@ function fillSelect(sel, items, valueOf, labelOf, currentVal){
     sel.appendChild(o);
   });
 }
+// The backend reports no "current preset", so a settings refresh would otherwise
+// snap the Brain-preset dropdown back to its launch value. Remember the user's
+// last EXPLICIT pick and re-assert it across populate()/refreshes (a preset is a
+// one-shot that sets provider+model server-side — the page must keep showing the
+// chosen preset, not revert).
+let lastPickedPreset = "";
 function populate(s){
   settings = s || {};
   const presets = settings.brain_presets || [];
   // Brain preset is its OWN control → POST {brain_preset: ...} (NOT model).
-  fillSelect($("#brain"), presets, x=>x, x=>x, settings.brain_preset || presets[0] || "");
+  // Prefer the user's last explicit pick (if still a valid preset) so a refresh
+  // doesn't clobber it back to the backend's launch value.
+  const presetSel = (lastPickedPreset && presets.includes(lastPickedPreset))
+                      ? lastPickedPreset
+                      : (settings.brain_preset || presets[0] || "");
+  fillSelect($("#brain"), presets, x=>x, x=>x, presetSel);
   fillSelect($("#provider"), settings.providers||[], x=>x, x=>x, settings.provider);
   fillSelect($("#voice"), settings.voices||[], v=>v.id, v=> v.note ? `${v.name} — ${v.note}` : v.name, settings.voice_en);
   $("#model").value      = settings.model ?? "";
@@ -1394,7 +1427,20 @@ async function applyPatch(patch){
   const k = Object.keys(patch)[0];
   const val = patch[k];
   log(`« set ${k} = ${typeof val==="string" && val.length>40 ? val.slice(0,40)+"…" : val}`, "sys");
-  if(DEMO){ Object.assign(settings, patch); flashSaved(); return; }
+  if(DEMO){
+    Object.assign(settings, patch);
+    // Demo: a preset is a one-shot that sets provider+model server-side — mirror
+    // that locally so the Provider / Model fields reflect the chosen brain.
+    if(patch.brain_preset && DEMO_PRESET_MAP[patch.brain_preset]){
+      Object.assign(settings, DEMO_PRESET_MAP[patch.brain_preset]);
+      $("#provider").value  = settings.provider ?? "";
+      $("#model").value     = settings.model ?? "";
+      $("#modelDeep").value = settings.model_deep ?? "";
+      $("#roBrain").textContent = settings.model || settings.provider || "—";
+    }
+    flashSaved();
+    return;
+  }
   try{
     const updated = await api("/api/settings",{method:"POST",body:JSON.stringify(patch)});
     if(updated && typeof updated==="object") populate(updated);
@@ -1439,8 +1485,15 @@ document.querySelectorAll(".info .info-dot").forEach(dot=>{
 document.addEventListener("click", e=>{ if(!e.target.closest(".info")) closeInfos(null); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeInfos(null); });
 
-// Brain preset → POST {brain_preset: <value>}
-$("#brain").addEventListener("change", e=> applyPatch({brain_preset: e.target.value}));
+// Brain preset → POST {brain_preset: <value>}. Track the explicit pick so a later
+// populate()/settings refresh keeps showing it (the backend reports no current
+// preset). The apply response carries the resulting provider/model, and populate()
+// (called by applyPatch) writes them into the Provider / Model / Model(deep) fields
+// — so picking a preset updates those to reflect the new brain.
+$("#brain").addEventListener("change", e=>{
+  lastPickedPreset = e.target.value;
+  applyPatch({brain_preset: e.target.value});
+});
 
 // Each [data-key] control maps 1:1 to a contract field name.
 document.querySelectorAll("[data-key]").forEach(el=>{
@@ -1502,23 +1555,43 @@ $("#wakeBtn").addEventListener("click", ()=>{
   postAction(wakeOn ? "wake_start" : "wake_stop");
 });
 
-const pttBtn = $("#pttBtn");
+const pttBtn = $("#pttBtn"), pttLabel = $("#pttLabel");
 let pttHeld = false;
+// PTT is neutral by default; its colour/label are reconciled from the pipeline
+// `state` events (like the wake button), so it tracks the REAL capture state:
+//   recording → red "Listening…"   ·   stt → orange "Transcribing…"   ·   else neutral.
+// A press optimistically shows the recording look; live state events take over.
+function setPttVisual(mode){
+  pttBtn.classList.remove("ptt-rec","ptt-stt","held");
+  if(mode === "rec"){ pttBtn.classList.add("ptt-rec"); pttLabel.textContent = "Listening…"; pttBtn.setAttribute("aria-pressed","true"); }
+  else if(mode === "stt"){ pttBtn.classList.add("ptt-stt"); pttLabel.textContent = "Transcribing…"; pttBtn.setAttribute("aria-pressed","true"); }
+  else { pttLabel.textContent = "Push-to-Talk"; pttBtn.setAttribute("aria-pressed","false"); }
+}
+// Reconcile from a live backend state. recording → red; stt (capture stopped,
+// transcribing) → orange; any other state → neutral idle.
+function syncPttFromState(state){
+  if(state === "recording") setPttVisual("rec");
+  else if(state === "stt")  setPttVisual("stt");
+  else setPttVisual("idle");
+}
 function pttDown(){
   if(!voiceAvailable) return;       // disabled when the server can't capture audio
   if(pttHeld) return;
   pttHeld = true;
-  pttBtn.classList.add("held");
-  pttBtn.setAttribute("aria-pressed","true");
+  setPttVisual("rec");              // optimistic; live `state` events reconcile it
   postAction("ptt");
 }
 function pttUp(){
   if(!pttHeld) return;
   pttHeld = false;
-  pttBtn.classList.remove("held");
-  pttBtn.setAttribute("aria-pressed","false");
+  // Don't force neutral here — capture continues server-side into stt/llm; the live
+  // `state` events drive the colour from now on. Only revert if we're still idle.
+  if(current !== "recording" && current !== "stt") setPttVisual("idle");
 }
-pttBtn.addEventListener("pointerdown", e=>{ e.preventDefault(); pttDown(); });
+pttBtn.addEventListener("pointerdown", e=>{
+  if(e.target.closest(".info")) return;   // ⓘ popover taps must not start a capture
+  e.preventDefault(); pttDown();
+});
 ["pointerup","pointerleave","pointercancel"].forEach(ev=> pttBtn.addEventListener(ev, pttUp));
 
 $("#resetBtn").addEventListener("click", ()=>{
@@ -1590,15 +1663,26 @@ function confirmMicWorking(){
   if(checksCard){ checksCard.classList.add("passed"); }
   const tag = $("#checksTagText"); if(tag) tag.textContent = "mic confirmed working";
 }
-// The macOS permission hint shows ONLY while the mic is unconfirmed. The backend
-// reports the real grant in settings.mic_permission — "authorized" means it's
-// already good (no need to nag); a non-mac OS reports "n/a"/"unavailable".
+// The macOS permission hint shows ONLY when the OS has NOT already granted mic
+// access. The backend reports the real grant (we DO check TCC) in
+// settings.mic_permission. HIDE the hint when access is "authorized" (already
+// good — don't nag) or on a non-mac OS that reports "n/a"/"unavailable". SHOW it
+// only for the states that mean access isn't (yet) granted:
+// denied / notDetermined / restricted / unknown / missing.
+const MIC_PERM_OK = new Set(["authorized", "n/a", "unavailable"]);
 function applyMicPermission(perm){
   perm = (perm==null ? "" : String(perm)).trim();
   const hint = $("#micHintRow");
   if(!hint) return;
-  if(perm === "authorized" || perm === "n/a"){ confirmMicWorking(); }
-  else if(!micConfirmed){ hint.hidden = false; }   // only nag while unconfirmed + not yet granted
+  if(MIC_PERM_OK.has(perm.toLowerCase())){
+    // Already granted (or not a mac) → hide the hint. Don't latch micConfirmed for
+    // a non-mac "n/a"/"unavailable" the way an actual "authorized" grant does, but
+    // either way the hint must be hidden.
+    hint.hidden = true;
+    if(perm.toLowerCase() === "authorized"){ confirmMicWorking(); }
+  }else if(!micConfirmed){
+    hint.hidden = false;   // denied/notDetermined/restricted/unknown/missing → nag (until a check passes)
+  }
 }
 
 /* ============================================================
@@ -1712,30 +1796,50 @@ $("#micReplayBtn").addEventListener("click", ()=>{
 const micBrowserBtn = $("#micBrowserBtn");
 const micBrowserGuide = $("#micBrowserGuide"), micBrowserBar = $("#micBrowserBar");
 const micBrowserResult = $("#micBrowserResult"), micBrowserMsg = $("#micBrowserMsg");
+const BROWSER_MIC_MS = 1500;     // run for ~1.5s then auto-stop (matches server test)
 let browserMicCtx = null, browserMicStream = null, browserMicRAF = 0, browserMicOn = false;
-let browserMicSmoothed = 0, browserMicVoicedFrames = 0, browserMicPassed = false;
+let browserMicSmoothed = 0, browserMicVoicedFrames = 0, browserMicPeak = 0, browserMicPassed = false;
+let browserMicTimer = null;
 function setBrowserResult(cls, msg){
   micBrowserResult.hidden = false;
   micBrowserResult.classList.remove("ok","bad","testing");
   if(cls) micBrowserResult.classList.add(cls);
   micBrowserMsg.textContent = msg;
 }
+// Tear down the capture (stream + audio context + RAF + timer). UI-only state
+// (button class, verdict chip) is set by the caller / finalizer.
 function stopBrowserMic(){
   browserMicOn = false;
+  if(browserMicTimer){ clearTimeout(browserMicTimer); browserMicTimer = null; }
   if(browserMicRAF){ cancelAnimationFrame(browserMicRAF); browserMicRAF = 0; }
   if(browserMicStream){ browserMicStream.getTracks().forEach(t=>t.stop()); browserMicStream = null; }
   if(browserMicCtx){ browserMicCtx.close().catch(()=>{}); browserMicCtx = null; }
   micBrowserBtn.classList.remove("on"); micBrowserBtn.setAttribute("aria-pressed","false");
+  micBrowserBtn.disabled = false;
+}
+// Auto-stop after the fixed window: stop capture, then green ✓ (heard audio) or
+// red ✗ (silent) — the same 3-state verdict UX the server test uses.
+function finishBrowserMic(){
+  if(!browserMicOn) return;
+  const pct = Math.round(Math.min(1, browserMicPeak) * 100);
+  stopBrowserMic();
+  micBrowserGuide.hidden = true;
   setCheckBusy("#checkBrowser", false);
+  if(browserMicVoicedFrames >= 4 || browserMicPeak > 0.02){
+    browserMicPassed = true;
+    setBrowserResult("ok", "✓ Browser mic working properly — peak level "+pct+"%.");
+    markCheckDone("#checkBrowser", true);
+    confirmMicWorking();
+    log("✓ browser mic test: working — peak "+pct+"%","evt");
+  }else{
+    browserMicPassed = false;
+    setBrowserResult("bad", "✗ No audio detected — the browser mic was silent. Check the input device + permission.");
+    markCheckDone("#checkBrowser", false);
+    log("✗ browser mic test: silent","error");
+  }
 }
 micBrowserBtn.addEventListener("click", async ()=>{
-  if(browserMicOn){
-    stopBrowserMic();
-    setBrowserResult(browserMicPassed ? "ok" : "", browserMicPassed
-      ? "✓ Browser mic working — stopped." : "Browser mic stopped.");
-    micBrowserGuide.hidden = true;
-    return;
-  }
+  if(browserMicOn) return;        // runs for a fixed window then auto-stops; ignore re-clicks
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     setBrowserResult("bad", "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
     return;
@@ -1743,7 +1847,7 @@ micBrowserBtn.addEventListener("click", async ()=>{
   setBrowserResult("testing", "Requesting browser mic permission — click Allow if prompted…");
   setCheckBusy("#checkBrowser", true);
   markCheckDone("#checkBrowser", false);
-  browserMicPassed = false; browserMicVoicedFrames = 0; browserMicSmoothed = 0;
+  browserMicPassed = false; browserMicVoicedFrames = 0; browserMicSmoothed = 0; browserMicPeak = 0;
   try{
     browserMicStream = await navigator.mediaDevices.getUserMedia({audio:true});
   }catch(e){
@@ -1770,28 +1874,23 @@ micBrowserBtn.addEventListener("click", async ()=>{
   ]);
   browserMicOn = true; micBrowserGuide.hidden = false;
   micBrowserBtn.classList.add("on"); micBrowserBtn.setAttribute("aria-pressed","true");
-  setBrowserResult("testing", "Speak now — say “Hello”. Aim the bar into the green zone.");
+  setBrowserResult("testing", "Capturing ~1.5s — say “Hello”…");
+  // Fixed-window run: auto-stop + verdict after BROWSER_MIC_MS (like the server test).
+  browserMicTimer = setTimeout(finishBrowserMic, BROWSER_MIC_MS);
   const tick = ()=>{
     if(!browserMicOn) return;
     an.getFloatTimeDomainData(buf);
     let sum = 0;
     for(let i=0;i<buf.length;i++){ const v = buf[i]; sum += v*v; }
     const rms = Math.sqrt(sum / buf.length);
+    if(rms > browserMicPeak) browserMicPeak = rms;
     // Power-curve normalize for a responsive low-end, then smooth the bar.
     const norm = Math.min(1, Math.pow(rms * 1.6, 0.55));
     browserMicSmoothed = browserMicSmoothed*0.6 + norm*0.4;
     const pct = Math.round(browserMicSmoothed*100);
     micBrowserBar.style.width = pct + "%";
-    // Auto-PASS: ~8 frames of audio above a small floor = a working mic.
-    if(!browserMicPassed){
-      if(rms > 0.02){ browserMicVoicedFrames++; } else { browserMicVoicedFrames = Math.max(0, browserMicVoicedFrames-1); }
-      if(browserMicVoicedFrames >= 8){
-        browserMicPassed = true;
-        setBrowserResult("ok", "✓ Browser mic working properly — peak level "+pct+"%.");
-        markCheckDone("#checkBrowser", true);
-        confirmMicWorking();
-      }
-    }
+    // Count voiced frames; the verdict is decided when the window ends.
+    if(rms > 0.02) browserMicVoicedFrames++;
     browserMicRAF = requestAnimationFrame(tick);
   };
   tick();
@@ -2017,6 +2116,9 @@ function handleEvent(raw){
       // backend reports `listening` (wake loop active — `--browser --wake` auto-
       // starts it) show STOP WAKE; idle/non-active → START WAKE.
       syncWakeFromState(d.state);
+      // Reconcile push-to-talk colour/label: recording → red "Listening…",
+      // stt → orange "Transcribing…", else neutral.
+      syncPttFromState(d.state);
       // The llm_request detail is "<provider> / <model>" — take the model side
       // for the ASSISTANT label (keep the full "provider / model" if no slash).
       if(d.state === "llm_request" && d.detail) setActiveModel(modelFromDetail(d.detail));
@@ -2217,6 +2319,13 @@ const DEMO_SETTINGS = {
     {name:"Kai",  id:"en_GB-northern-low", note:"deep · UK"}
   ]
 };
+// Demo-only preset → provider/model resolution (the real backend does this server-side).
+const DEMO_PRESET_MAP = {
+  "haiku-sub":      {provider:"anthropic", model:"claude-haiku",  model_deep:"claude-sonnet"},
+  "sonnet-balanced":{provider:"anthropic", model:"claude-sonnet", model_deep:"claude-opus"},
+  "opus-deep":      {provider:"anthropic", model:"claude-opus",   model_deep:"claude-opus"},
+  "local-fast":     {provider:"local",     model:"llama-3.1-8b",  model_deep:"llama-3.1-70b"},
+};
 
 // One full scripted turn, cycling every state, then idle, then loops.
 const DEMO_SCRIPT = [
@@ -2267,7 +2376,7 @@ function runDemoStep(){
   if(ev.wake){ fireWakeCue("maziko"); log("⚡ wake fired (demo)","evt"); demoTimer = setTimeout(runDemoStep, 250); return; }
   if(ev.transcript){ addUserFromTranscript(ev.transcript, ev.source); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
 
-  if(ev.state){ setState(ev.state, ev.detail); syncWakeFromState(ev.state); log("state → "+ev.state+" (demo)","evt"); }
+  if(ev.state){ setState(ev.state, ev.detail); syncWakeFromState(ev.state); syncPttFromState(ev.state); log("state → "+ev.state+" (demo)","evt"); }
 
   if(ev.streamWords){
     let i = 0;
