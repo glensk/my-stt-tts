@@ -725,3 +725,62 @@ def test_music_env_loading(monkeypatch):
     assert cfg.music_enabled is False
     assert cfg.music_player == "mpv"
     assert cfg.music_volume == 70
+
+
+# --- music_playback (server vs hybrid) -----------------------------------------
+
+
+def test_music_playback_defaults_hybrid():
+    cfg = Config(anthropic_api_key="sk-test")
+    assert cfg.music_playback == "hybrid"
+    cfg.validate()
+
+
+def test_music_playback_server_valid():
+    Config(anthropic_api_key="sk-test", music_playback="server").validate()
+
+
+def test_music_playback_invalid_rejected():
+    from my_stt_tts.config import ConfigError
+
+    with pytest.raises(ConfigError, match="music_playback"):
+        Config(anthropic_api_key="sk-test", music_playback="bogus").validate()
+
+
+def test_music_playback_env_loading(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("MUSIC_PLAYBACK", "server")
+    assert Config.from_env().music_playback == "server"
+
+
+def test_music_playback_env_defaults_hybrid_when_unset(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.delenv("MUSIC_PLAYBACK", raising=False)
+    assert Config.from_env().music_playback == "hybrid"
+
+
+def test_music_playback_in_settings_dict():
+    from my_stt_tts.webui import settings_dict
+
+    d = settings_dict(Config(anthropic_api_key="sk-test", music_playback="server"))
+    assert d["music_playback"] == "server"
+    assert d["music_playback_modes"] == ["server", "hybrid"]
+
+
+def test_music_playback_apply_settings():
+    from my_stt_tts.webui import apply_settings
+
+    cfg = Config(anthropic_api_key="sk-test")
+    apply_settings(cfg, {"music_playback": "server"})
+    assert cfg.music_playback == "server"
+    # An unrecognised value is ignored (kept valid for validate()).
+    apply_settings(cfg, {"music_playback": "bogus"})
+    assert cfg.music_playback == "server"
+    cfg.validate()
+
+
+def test_music_playback_in_settings_text():
+    from my_stt_tts.__main__ import settings_text
+
+    text = settings_text(Config(anthropic_api_key="sk-test", music_playback="server"), color=False)
+    assert "playback server" in text

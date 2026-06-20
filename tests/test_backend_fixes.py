@@ -424,7 +424,12 @@ def test_audio_debug_enabled_publishes_and_logs(capsys) -> None:  # noqa: ANN001
     assert busdebug.call_count == 2
     err = capsys.readouterr().err
     assert "[audio:captured]" in err
+    # The structured stage is still carried for machine use…
     assert "[audio:action:voice_test]" in err
+    # …but an unmapped action now reads with a friendly "clicked <NAME>" message.
+    assert "clicked VOICE_TEST" in err
+    # The friendly label is what the GUI EVENT LOG renders (the bus.debug message).
+    assert busdebug.call_args_list[1].args[0].startswith("clicked VOICE_TEST")
 
 
 def test_debug_audio_enabled_auto_on_for_browser() -> None:
