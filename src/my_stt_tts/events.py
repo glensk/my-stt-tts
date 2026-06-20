@@ -333,6 +333,32 @@ class EventBus:
             }
         )
 
+    def music(
+        self,
+        status: str,
+        *,
+        title: str = "",
+        video_id: str = "",
+        url: str = "",
+    ) -> None:
+        """Publish a structured music-playback event for the GUI (DATA priority).
+
+        ``status`` is one of ``"playing"`` / ``"stopped"`` / ``"paused"`` /
+        ``"resumed"``. ``title`` names the track; ``video_id`` is the 11-char
+        YouTube id and ``url`` the page URL so the GUI can embed / link the video.
+        Emitted alongside the spoken confirmation whenever the intent router or a
+        GUI button drives playback, so the page can show + control what's playing.
+        """
+        self.publish(
+            {
+                "type": "music",
+                "status": status,
+                "title": title,
+                "video_id": video_id,
+                "url": url,
+            }
+        )
+
     def speaker(self, name: str | None) -> None:
         """Publish the identified speaker for the current turn (G7).
 
