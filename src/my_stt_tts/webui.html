@@ -353,6 +353,50 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .wake-result.testing{border-color:var(--cyan-dim)}
 .wake-result.testing .wake-conf-meter i{background:var(--cyan); animation:blink .9s steps(2) infinite}
 
+/* ---------- UNIFORM check result row ----------
+   Every check (mic browser/server + wake browser/server) renders the SAME row:
+   chips (duration · peak% · sample-rate) + a processing badge (AGC/NS/EC + gain)
+   + a level-over-time sparkline + a short hash + a ▶ play-last button. Built by
+   renderResultExtras() into a per-check `.check-extras` container. */
+.check-extras{display:flex; flex-direction:column; gap:7px}
+.check-extras:empty{display:none}
+.check-extras .row{display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px}
+/* processing badge — shows the capture chain (AGC / noise-supp / echo-cancel) + gain */
+.proc-badge{display:inline-flex; align-items:center; gap:7px; padding:3px 9px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; font-size:9.5px; letter-spacing:.5px;
+  color:var(--ink-dim); text-transform:none}
+.proc-badge .pf{display:inline-flex; align-items:center; gap:3px; white-space:nowrap}
+.proc-badge .pf b{font-weight:600}
+.proc-badge .pf.on b{color:var(--green)}
+.proc-badge .pf.off b{color:var(--ink-faint)}
+.proc-badge .pf.gain b{color:var(--cyan)}
+.proc-badge .sep{color:var(--ink-faint); opacity:.6}
+/* level-over-time sparkline — small inline SVG of the levels[] array across ~2s,
+   coloured by levelClass(peak). The fill sits under the stroked line. */
+.spark{display:flex; align-items:center; gap:7px}
+.spark svg{display:block; width:148px; max-width:46vw; height:30px;
+  border:1px solid var(--line2); border-radius:6px; background:#060c12}
+.spark .spark-line{fill:none; stroke-width:1.4; vector-effect:non-scaling-stroke}
+.spark .spark-fill{stroke:none; opacity:.16}
+.spark.lvl-ok    .spark-line{stroke:var(--green)} .spark.lvl-ok    .spark-fill{fill:var(--green)}
+.spark.lvl-warn  .spark-line{stroke:var(--amber)} .spark.lvl-warn  .spark-fill{fill:var(--amber)}
+.spark.lvl-bad   .spark-line{stroke:var(--red)}   .spark.lvl-bad   .spark-fill{fill:var(--red)}
+.spark .spark-cap{font-size:8.5px; letter-spacing:.5px; color:var(--ink-faint); white-space:nowrap}
+/* short hash tag — identifies the exact recording for debugging */
+.hash-tag{display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; font-size:9.5px; letter-spacing:.5px;
+  color:var(--ink-dim)}
+.hash-tag::before{content:"#"; color:var(--cyan-dim)}
+.hash-tag b{color:var(--ink); font-weight:600; letter-spacing:.8px}
+/* ▶ play-last-recording button — replays this check's last clip (wav_url or kept PCM) */
+.play-last{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+  border:1px solid var(--cyan-dim); background:rgba(34,231,255,.06); color:var(--cyan);
+  font-size:10px; letter-spacing:.5px; cursor:pointer; transition:.15s; text-transform:none}
+.play-last:hover{border-color:var(--cyan); box-shadow:0 0 12px -4px var(--cyan)}
+.play-last:disabled{opacity:.5; cursor:default; box-shadow:none}
+.play-last.playing{border-color:var(--green); color:var(--green); box-shadow:0 0 12px -4px var(--green)}
+.play-last svg{width:11px; height:11px}
+
 /* ---------- transcript ---------- */
 .transcript-card{flex:1; min-height:280px; display:flex; flex-direction:column}
 .transcript-card .body{flex:1; display:flex; flex-direction:column; padding:0; min-height:0}
@@ -636,8 +680,11 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <div class="mic-result" id="micBrowserResult" role="status" aria-live="polite" hidden>
               <span class="mic-dot" aria-hidden="true"></span>
               <span class="mic-msg" id="micBrowserMsg"></span>
+              <span class="mic-meter" id="micBrowserResultMeter" hidden><i id="micBrowserResultBar"></i></span>
             </div>
             <div class="check-meta" id="micBrowserMeta"></div>
+            <!-- uniform extras: processing badge + level-over-time graph + hash + ▶ play-last -->
+            <div class="check-extras" id="micBrowserExtras"></div>
           </div>
 
           <!-- CHECK 2 — SERVER MIC (capture ~1.5s server-side, report verdict) -->
@@ -662,6 +709,8 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <span class="mic-meter" id="micResultMeter" hidden><i id="micResultBar"></i></span>
             </div>
             <div class="check-meta" id="micServerMeta"></div>
+            <!-- uniform extras: processing badge + level-over-time graph + hash + ▶ play-last -->
+            <div class="check-extras" id="micServerExtras"></div>
           </div>
 
           <!-- CHECK 3 — RECORD & PLAY · BROWSER (fully client-side: getUserMedia →
@@ -739,6 +788,8 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                     <span class="wake-conf-meter"><i id="wakeBar-maziko"></i></span>
                   </div>
                   <div class="wake-msg" id="wakeMsg-maziko"></div>
+                  <!-- uniform extras: 2s · peak% · processing badge + graph + hash + ▶ play-last -->
+                  <div class="check-extras" id="wakeExtras-maziko"></div>
                 </div>
               </div>
               <div class="wake-word" data-word="nexus">
@@ -761,6 +812,8 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                     <span class="wake-conf-meter"><i id="wakeBar-nexus"></i></span>
                   </div>
                   <div class="wake-msg" id="wakeMsg-nexus"></div>
+                  <!-- uniform extras: 2s · peak% · processing badge + graph + hash + ▶ play-last -->
+                  <div class="check-extras" id="wakeExtras-nexus"></div>
                 </div>
               </div>
             </div>
@@ -995,6 +1048,14 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span class="gly" aria-hidden="true">⚙️</span>Advanced / General
             </summary>
+            <div class="field">
+              <label for="micGain">Mic gain <span class="v" id="micGainVal">1.00×</span>
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About mic gain"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Capture gain applied to mic audio before it's measured/scored. Both the SERVER and BROWSER mic checks multiply by this (browser clamps to ±1), so a quiet mic can be boosted uniformly. Shown in each check's processing badge. Default 1.0×.</span></span>
+              </label>
+              <input type="range" id="micGain" data-key="mic_gain" data-val="micGainVal" data-suffix="×"
+                     min="0.5" max="4" step="0.1" aria-label="Microphone capture gain">
+            </div>
             <div class="field" style="margin-bottom:0">
               <label for="sysPrompt">System prompt</label>
               <textarea class="ctrl" id="sysPrompt" data-key="system_prompt" spellcheck="false"></textarea>
@@ -1488,6 +1549,12 @@ function populate(s){
   if(isNaN(wt)) wt = 0.4;
   $("#wakeThreshold").value = wt;
   $("#wakeThresholdVal").textContent = wt.toFixed(2);
+  // Mic capture gain (float, settings.mic_gain) — applied to both mic-check paths.
+  let mg = parseFloat(settings.mic_gain);
+  if(isNaN(mg)) mg = 1.0;
+  settings.mic_gain = mg;
+  $("#micGain").value = mg;
+  $("#micGainVal").textContent = mg.toFixed(2) + "×";
   updateVoiceNote();
   setVoiceControls(settings);
   applyHostApp(settings.host_app);
@@ -1708,9 +1775,14 @@ document.querySelectorAll("[data-key]").forEach(el=>{
   const key = el.dataset.key;
   if(el.type === "range"){
     // The live value readout is the element named by data-val (e.g. length_scale
-    // updates #lengthVal, wake_threshold updates #wakeThresholdVal).
+    // updates #lengthVal, wake_threshold updates #wakeThresholdVal). An optional
+    // data-suffix (e.g. "×" for mic_gain) is appended to the formatted number.
     const valEl = el.dataset.val ? document.getElementById(el.dataset.val) : null;
-    el.addEventListener("input", ()=>{ if(valEl) valEl.textContent = parseFloat(el.value).toFixed(2); });
+    const sfx = el.dataset.suffix || "";
+    el.addEventListener("input", ()=>{
+      if(valEl) valEl.textContent = parseFloat(el.value).toFixed(2) + sfx;
+      if(key === "mic_gain"){ settings.mic_gain = parseFloat(el.value); }   // live for browser checks
+    });
     el.addEventListener("change", ()=> applyPatch({[key]: parseFloat(el.value)}));
   } else if(el.tagName==="SELECT"){
     el.addEventListener("change", ()=>{ if(el.id==="voice") updateVoiceNote(); applyPatch({[key]: el.value}); });
@@ -1992,6 +2064,224 @@ function applyMicPermission(perm){
 }
 
 /* ============================================================
+   SHARED RESULT PLUMBING  — every mic + wake check renders the SAME extras:
+   a processing badge (AGC / NS / EC + gain), a level-over-time sparkline (the
+   `levels` array across the ~2 s, coloured by levelClass(peak)), a short hash,
+   and a ▶ play-last button (replays the clip via wav_url OR kept browser PCM).
+   ============================================================ */
+const CHECK_MS = 2000;                 // every check records 2.0 s (uniform)
+
+// Current mic_gain (float ≥0); browser checks multiply by this before measuring.
+function micGain(){
+  const g = parseFloat(settings && settings.mic_gain);
+  return (isNaN(g) || g <= 0) ? 1.0 : g;
+}
+// Apply capture gain to a Float32/array PCM block, clamping to ±1 (mirrors what
+// the contract expects the server to do with its own mic_gain).
+function applyGain(pcm, gain){
+  const g = (typeof gain === "number" && gain > 0) ? gain : 1.0;
+  const n = pcm.length, out = new Float32Array(n);
+  for(let i=0;i<n;i++){ let v = pcm[i]*g; out[i] = v>1?1:(v<-1?-1:v); }
+  return out;
+}
+// Peak (0..1) of a PCM block.
+function pcmPeak(pcm){ let p=0; for(let i=0;i<pcm.length;i++){ const a=Math.abs(pcm[i]); if(a>p)p=a; } return p; }
+// RMS (0..1) of a PCM block.
+function pcmRms(pcm){ let s=0; for(let i=0;i<pcm.length;i++){ s+=pcm[i]*pcm[i]; } return pcm.length?Math.sqrt(s/pcm.length):0; }
+// Compute a ~48-bucket level-over-time array (0..1 per bucket = peak in that slice)
+// from captured PCM — the client-side `levels` the contract carries for browser checks.
+function computeLevels(pcm, buckets){
+  const B = buckets || 48;
+  const out = new Array(B).fill(0);
+  if(!pcm || !pcm.length) return out;
+  const step = pcm.length / B;
+  for(let b=0;b<B;b++){
+    const s = Math.floor(b*step), e = Math.min(pcm.length, Math.floor((b+1)*step));
+    let p = 0; for(let i=s;i<e;i++){ const a = Math.abs(pcm[i]); if(a>p) p = a; }
+    out[b] = Math.min(1, p);
+  }
+  return out;
+}
+// A short stable hash (8 hex) from a seed — used only if the backend omits `hash`.
+function shortHash(seed){
+  let h = 0x811c9dc5; const s = String(seed);
+  for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+  return ("0000000" + h.toString(16)).slice(-8);
+}
+
+// Per-check registry of the LAST recording so ▶ play-last works anytime after a
+// run: keyed by extras-id → {wav_url, pcm:Float32Array|null, sr}. Browser checks
+// keep their PCM so replay needs no server round-trip; server checks use wav_url.
+const lastClip = {};
+let _replayCtx = null;
+function replayCtx(){
+  if(!_replayCtx) _replayCtx = new (window.AudioContext||window.webkitAudioContext)();
+  return _replayCtx;
+}
+// CSP-safe replay of a Float32 PCM array via an AudioBufferSourceNode (no <audio src>).
+function playPcmArray(pcm, sr){
+  return new Promise((resolve, reject)=>{
+    try{
+      const ctx = replayCtx();
+      const buf = ctx.createBuffer(1, pcm.length, sr || 16000);
+      buf.getChannelData(0).set(pcm);
+      const node = ctx.createBufferSource();
+      node.buffer = buf; node.connect(ctx.destination);
+      node.onended = ()=> resolve();
+      node.start();
+    }catch(e){ reject(e); }
+  });
+}
+// CSP-safe replay of a same-origin WAV: fetch → arrayBuffer → decodeAudioData → play.
+async function playWavUrl(url){
+  const res = await fetch(BACKEND.http(url));
+  if(!res.ok) throw new Error("recording "+res.status);
+  const ab = await res.arrayBuffer();
+  const ctx = replayCtx();
+  const decoded = await new Promise((resolve, reject)=>{
+    const p = ctx.decodeAudioData(ab, resolve, reject);
+    if(p && p.then) p.then(resolve, reject);   // promise-style decodeAudioData
+  });
+  const node = ctx.createBufferSource();
+  node.buffer = decoded; node.connect(ctx.destination);
+  return new Promise(resolve=>{ node.onended = ()=> resolve(); node.start(); });
+}
+
+// Build/refresh the UNIFORM extras row for a check into its `.check-extras` div.
+// `d` is a contract-shaped result (mic_check_result / wake_test_result). `opts`:
+//   { dur, peakPct, sampleRate, levels, processing:{agc,ns,ec,gain}, hash,
+//     wav_url, pcm:Float32Array|null, sr, clipKey } — any missing field is omitted.
+function renderResultExtras(extrasId, opts){
+  const host = $("#"+extrasId); if(!host) return;
+  host.innerHTML = "";
+  const o = opts || {};
+  const lvls = Array.isArray(o.levels) ? o.levels : [];
+  const peakPct = (typeof o.peakPct === "number") ? o.peakPct : null;
+  const lvlCls = "lvl-" + (peakPct==null ? "ok" : levelClass(peakPct));
+
+  // --- row 1: chips (duration · peak% · sample-rate) — shared across all checks ---
+  const chips = document.createElement("div"); chips.className = "row";
+  const meta = document.createElement("span"); meta.className = "check-meta";
+  [["duration", (typeof o.dur==="number") ? (Math.round(o.dur*100)/100)+" s" : null],
+   ["peak", peakPct!=null ? peakPct+"%" : null],
+   ["sample-rate", o.sampleRate ? (Math.round(o.sampleRate/100)/10)+" kHz" : null]
+  ].forEach(([k,v])=>{
+    if(v==null) return;
+    const kv = document.createElement("span"); kv.className = "kv";
+    kv.appendChild(document.createTextNode(k+" "));
+    const b = document.createElement("b"); b.textContent = String(v); kv.appendChild(b);
+    meta.appendChild(kv);
+  });
+  if(meta.children.length) chips.appendChild(meta);
+
+  // --- processing badge (AGC / NS / EC + gain) ---
+  const p = o.processing || {};
+  const badge = document.createElement("span"); badge.className = "proc-badge";
+  badge.setAttribute("aria-label", "audio processing chain");
+  function pflag(label, v){
+    const f = document.createElement("span");
+    if(v === true){ f.className = "pf on"; f.innerHTML = label+" <b>✓</b>"; }
+    else if(v === false){ f.className = "pf off"; f.innerHTML = label+" <b>✕</b>"; }
+    else { f.className = "pf off"; f.innerHTML = label+" <b>·</b>"; }   // null/unknown → raw "·"
+    return f;
+  }
+  const anyProc = (p.agc===true || p.ns===true || p.ec===true);
+  if(p.agc==null && p.ns==null && p.ec==null && !anyProc){
+    const raw = document.createElement("span"); raw.className = "pf"; raw.innerHTML = "<b>raw</b>";
+    badge.appendChild(raw);
+  }else{
+    badge.appendChild(pflag("AGC", p.agc));
+    const s1=document.createElement("span"); s1.className="sep"; s1.textContent="·"; badge.appendChild(s1);
+    badge.appendChild(pflag("NS", p.ns));
+    const s2=document.createElement("span"); s2.className="sep"; s2.textContent="·"; badge.appendChild(s2);
+    badge.appendChild(pflag("EC", p.ec));
+  }
+  // gain segment — always shown
+  const gain = (typeof p.gain === "number") ? p.gain : micGain();
+  const sg=document.createElement("span"); sg.className="sep"; sg.textContent="·"; badge.appendChild(sg);
+  const gf=document.createElement("span"); gf.className="pf gain";
+  gf.innerHTML = "gain <b>"+gain.toFixed(1)+"×</b>"; badge.appendChild(gf);
+  chips.appendChild(badge);
+
+  // --- short hash tag ---
+  const hash = o.hash || shortHash(extrasId + "|" + (o.wav_url||"") + "|" + (peakPct||0) + "|" + Date.now());
+  const ht = document.createElement("span"); ht.className = "hash-tag";
+  const hb = document.createElement("b"); hb.textContent = String(hash).slice(0,8); ht.appendChild(hb);
+  chips.appendChild(ht);
+  host.appendChild(chips);
+
+  // --- row 2: level-over-time sparkline (coloured by levelClass(peak)) + ▶ play-last ---
+  const row2 = document.createElement("div"); row2.className = "row";
+  const spark = document.createElement("span"); spark.className = "spark " + lvlCls;
+  spark.appendChild(buildSparkline(lvls, lvlCls));
+  const cap = document.createElement("span"); cap.className = "spark-cap"; cap.textContent = "level · 2 s";
+  spark.appendChild(cap);
+  row2.appendChild(spark);
+
+  // record the clip for play-last, then build the button
+  const key = o.clipKey || extrasId;
+  lastClip[key] = { wav_url: o.wav_url || null, pcm: o.pcm || null, sr: o.sr || o.sampleRate || 16000 };
+  row2.appendChild(buildPlayLast(key));
+  host.appendChild(row2);
+}
+
+// Inline SVG sparkline of a 0..1 levels array. 100×30 viewBox, smooth polyline +
+// a faint area fill; colour comes from the parent `.spark.lvl-*` class.
+function buildSparkline(levels, lvlCls){
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 30");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "microphone level over time");
+  const n = (levels && levels.length) ? levels.length : 1;
+  const pts = [];
+  for(let i=0;i<n;i++){
+    const x = n===1 ? 0 : (i/(n-1))*100;
+    const v = Math.max(0, Math.min(1, levels[i]==null ? 0 : levels[i]));
+    const y = 29 - v*28;                       // 1px floor padding
+    pts.push([x, y]);
+  }
+  const linePts = pts.map(p=> p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
+  // area fill: close the polyline down to the baseline
+  const fill = document.createElementNS(NS, "polygon");
+  fill.setAttribute("class", "spark-fill");
+  fill.setAttribute("points", "0,30 " + linePts + " 100,30");
+  const line = document.createElementNS(NS, "polyline");
+  line.setAttribute("class", "spark-line");
+  line.setAttribute("points", linePts);
+  svg.appendChild(fill); svg.appendChild(line);
+  return svg;
+}
+
+// ▶ play-last button: replays the clip stored for `key` (kept browser PCM first,
+// else wav_url via decodeAudioData). Available anytime after a recording exists.
+function buildPlayLast(key){
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "play-last";
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14l11-7-11-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>Play last</span>';
+  btn.setAttribute("aria-label", "Play last recording for this check");
+  const clip = lastClip[key];
+  if(!clip || (!clip.pcm && !clip.wav_url)){ btn.disabled = true; }
+  btn.addEventListener("click", async ()=>{
+    const c = lastClip[key];
+    if(!c || btn.disabled) return;
+    btn.classList.add("playing"); btn.disabled = true;
+    try{
+      try{ const ctx = replayCtx(); if(ctx.state === "suspended") await ctx.resume(); }catch(_e){}
+      if(c.pcm && c.pcm.length){ await playPcmArray(c.pcm, c.sr); }     // browser checks: kept PCM
+      else if(c.wav_url){ await playWavUrl(c.wav_url); }                // server checks: saved WAV
+      log("▶ replayed last recording ("+key+")", "evt");
+    }catch(e){
+      log("play-last failed: "+(e&&e.message||e), "error");
+    }finally{
+      btn.classList.remove("playing"); btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
+/* ============================================================
    CHECK 2 — SERVER MIC  (capture ~1.5s server-side, green/red verdict).
    Available regardless of voice state — it's how you diagnose why voice is off.
    ============================================================ */
@@ -2009,31 +2299,75 @@ function setMicResult(cls, msg, level){
     micResultMeter.hidden = true;
   }
 }
-function showMicResult(d){
-  const okRaw = !!d.ok;
-  const hasLevel = typeof d.level === "number";
+// The browser check renders its row locally from the captured PCM; when the
+// server echoes back a browser-sourced mic_check_result it adds a server-side
+// `hash` + saved `wav_url`. Patch those into the existing browser extras: update
+// the visible hash tag and register the wav_url as a replay fallback (kept PCM
+// still wins for instant play-last). Idempotent if the server omits both.
+function enrichBrowserMicResult(d){
+  const clip = lastClip["micBrowserExtras"];
+  if(clip){ if(d.wav_url) clip.wav_url = d.wav_url; }
+  if(d.hash){
+    const host = $("#micBrowserExtras");
+    const hb = host && host.querySelector(".hash-tag b");
+    if(hb) hb.textContent = String(d.hash).slice(0,8);
+  }
+  log("· mic check [browser] scored server-side"
+        + (d.hash?" · #"+String(d.hash).slice(0,8):"")
+        + (typeof d.level==="number"?" · level "+d.level+"%":""), "info");
+}
+// Consume a `mic_check_result` (or browser-side equivalent) and render the SAME
+// uniform row every check uses: verdict chip + meter + chips (duration · peak% ·
+// sample-rate) + processing badge + level-over-time graph + hash + ▶ play-last.
+// Contract: peak 0..1, level 0..100, rms, duration_s, sample_rate, levels[],
+// processing{agc,ns,ec,gain}, hash, wav_url, message. `opts.pcm` (browser path)
+// keeps the captured PCM for instant replay.
+function showMicResult(d, opts){
+  opts = opts || {};
+  const source = d.source || opts.source || "server";
+  // A browser-sourced mic_check_result is the server's echo of a clip THIS browser
+  // already rendered locally → enrich that row with the server's hash + saved WAV
+  // (so play-last can fall back to the saved file), don't overwrite the server row.
+  if(source === "browser" && !opts.local){ enrichBrowserMicResult(d); return; }
+  // Normalise level (0..100): prefer explicit `level`, else derive from peak 0..1.
+  let level = (typeof d.level === "number") ? d.level
+            : (typeof d.peak === "number") ? Math.round(Math.min(1, d.peak)*100)
+            : null;
+  const peakPct = (typeof d.peak === "number") ? Math.round(Math.min(1, d.peak)*100)
+                : (typeof level === "number" ? level : null);
+  const hasLevel = typeof level === "number";
+  const okRaw = (d.ok === undefined) ? hasLevel : !!d.ok;
   // Colour the chip by the MEASURED level when one is present (shared thresholds):
-  // 0–20% red, 20–33% amber, 33%+ green. A backend "ok" with a too-low level is
-  // downgraded — we show a "move closer / speak up" warning, not a green pass.
-  const lvlCls = hasLevel ? levelClass(d.level) : (okRaw ? "ok" : "bad");
+  // 0–20% red, 20–33% amber, 33%+ green. A too-low level is downgraded to a warning.
+  const lvlCls = hasLevel ? levelClass(level) : (okRaw ? "ok" : "bad");
   const cls = okRaw ? lvlCls : "bad";
   const ok = cls === "ok";          // a confident pass only when green
   let msg;
   if(okRaw && hasLevel && cls === "bad"){
-    msg = "⚠ Mic level very low ("+d.level+"%) — move closer / speak up.";
+    msg = "⚠ Mic level very low ("+level+"%) — move closer / speak up.";
   }else if(okRaw && hasLevel && cls === "warn"){
-    msg = "⚠ Mic level low ("+d.level+"%) — move a little closer for a reliable wake.";
+    msg = "⚠ Mic level low ("+level+"%) — move a little closer for a reliable wake.";
   }else{
     msg = (okRaw?"✓ ":"✗ ") + (d.message||"");
   }
-  setMicResult(cls, msg, d.level);
+  setMicResult(cls, msg, level);
   setCheckBusy("#checkServer", false);
   markCheckDone("#checkServer", ok);
-  // Surface the relevant output the backend reports (defensive: only what's present).
+  // Uniform extras row — duration · peak% · sample-rate + processing badge + graph + hash + ▶.
+  renderResultExtras("micServerExtras", {
+    dur: (typeof d.duration_s==="number") ? d.duration_s : d.duration,
+    peakPct: peakPct,
+    sampleRate: d.sample_rate,
+    levels: d.levels,
+    processing: d.processing || {gain: micGain()},
+    hash: d.hash,
+    wav_url: d.wav_url,
+    pcm: opts.pcm || d._demoPcm || null,   // demo seed carries an audible tone for ▶ play-last
+    sr: d.sample_rate,
+    clipKey: "micServerExtras",
+  });
+  // Keep the device/permission detail line (server-specific extras).
   setCheckMeta("#micServerMeta", [
-    ["level", typeof d.level==="number" ? d.level+"%" : null],
-    ["sample-rate", d.sample_rate ? (Math.round(d.sample_rate/100)/10)+" kHz" : null],
-    ["duration", d.duration ? (Math.round(d.duration*100)/100)+" s" : null],
     ["device", d.device || null],
     ["permission", d.permission && d.permission!=="unknown" ? d.permission : null],
   ]);
@@ -2043,15 +2377,16 @@ function showMicResult(d){
   // must NOT confirm — even when permission is "authorized" — so the warning stands.
   const lowLevel = hasLevel && cls !== "ok";
   if(ok || (d.permission === "authorized" && !lowLevel)) confirmMicWorking();
-  log((ok?"✓ ":"⚠ ") + "mic test: " + msg, ok ? "evt" : "error");
+  log((ok?"✓ ":"⚠ ") + "mic check ["+source+"]: " + msg, ok ? "evt" : "error");
 }
 $("#micTestBtn").addEventListener("click", ()=>{
-  setMicResult("testing", "Capturing ~1.5s — say “Hello”…");
+  setMicResult("testing", "Capturing 2.0s — say “Hello”…");
   setCheckBusy("#checkServer", true);
   markCheckDone("#checkServer", false);
   // The server mic goes HOT for the duration of the capture (real capture state).
   if(hotFlag){ hotFlag.textContent = "MIC ● HOT"; hotFlag.classList.add("hot"); }
-  postAction("mic_test");
+  // Shared contract: {action:"mic_check", source:"server"} → mic_check_result via SSE.
+  postAction({action:"mic_check", source:"server"});
 });
 
 /* ============================================================
@@ -2111,72 +2446,34 @@ $("#micReplayBtn").addEventListener("click", ()=>{
 });
 
 /* ============================================================
-   CHECK 1 — BROWSER MIC  (getUserMedia + AnalyserNode level meter for the
-   *browser* mic Live Audio uses). RMS-driven bar (tracks perceived loudness,
-   per Web-Audio best practice) with a green target zone, auto-PASS when the
-   level crosses the floor, and the input device + sample rate from getSettings().
+   CHECK 1 — BROWSER MIC  (getUserMedia for the *browser* mic Live Audio uses).
+   Records a fixed 2.0 s window: a live RMS meter (with the green target zone)
+   PLUS a buffered mono PCM capture. On finish we read track.getSettings()
+   → {autoGainControl, noiseSuppression, echoCancellation}, apply the mic_gain
+   setting (×, clamped to ±1), measure the gained peak, compute the level-over-
+   time graph client-side, render the UNIFORM extras row, keep the PCM for
+   ▶ play-last, and POST {action:"mic_check", source:"browser", pcm, sample_rate,
+   processing} to the server (skipped in demo). Same 3-state verdict UX as server.
    ============================================================ */
 const micBrowserBtn = $("#micBrowserBtn");
 const micBrowserGuide = $("#micBrowserGuide"), micBrowserBar = $("#micBrowserBar");
 const micBrowserResult = $("#micBrowserResult"), micBrowserMsg = $("#micBrowserMsg");
-const BROWSER_MIC_MS = 1500;     // run for ~1.5s then auto-stop (matches server test)
+const micBrowserResultMeter = $("#micBrowserResultMeter"), micBrowserResultBar = $("#micBrowserResultBar");
 let browserMicCtx = null, browserMicStream = null, browserMicRAF = 0, browserMicOn = false;
-let browserMicSmoothed = 0, browserMicVoicedFrames = 0, browserMicPeak = 0, browserMicPassed = false;
+let browserMicSmoothed = 0, browserMicPeak = 0, browserMicProc = null;
 let browserMicTimer = null;
-function setBrowserResult(cls, msg){
+function setBrowserResult(cls, msg, level){
   micBrowserResult.hidden = false;
   micBrowserResult.classList.remove("ok","bad","warn","testing");
   if(cls) micBrowserResult.classList.add(cls);
   micBrowserMsg.textContent = msg;
-}
-// Tear down the capture (stream + audio context + RAF + timer). UI-only state
-// (button class, verdict chip) is set by the caller / finalizer.
-function stopBrowserMic(){
-  browserMicOn = false;
-  if(browserMicTimer){ clearTimeout(browserMicTimer); browserMicTimer = null; }
-  if(browserMicRAF){ cancelAnimationFrame(browserMicRAF); browserMicRAF = 0; }
-  if(browserMicStream){ browserMicStream.getTracks().forEach(t=>t.stop()); browserMicStream = null; }
-  if(browserMicCtx){ browserMicCtx.close().catch(()=>{}); browserMicCtx = null; }
-  micBrowserBtn.classList.remove("on"); micBrowserBtn.setAttribute("aria-pressed","false");
-  micBrowserBtn.disabled = false;
-}
-// Auto-stop after the fixed window: stop capture, then green ✓ (heard audio) or
-// red ✗ (silent) — the same 3-state verdict UX the server test uses.
-function finishBrowserMic(){
-  if(!browserMicOn) return;
-  const pct = Math.round(Math.min(1, browserMicPeak) * 100);
-  stopBrowserMic();
-  micBrowserGuide.hidden = true;
-  setCheckBusy("#checkBrowser", false);
-  const heard = browserMicVoicedFrames >= 4 || browserMicPeak > 0.02;
-  // Colour by the measured peak level via the shared thresholds: 0–20% red,
-  // 20–33% amber, 33%+ green. Below 20% never reads as a confident pass.
-  const cls = heard ? levelClass(pct) : "bad";
-  if(cls === "ok"){
-    browserMicPassed = true;
-    setBrowserResult("ok", "✓ Browser mic working properly — peak level "+pct+"%.");
-    markCheckDone("#checkBrowser", true);
-    confirmMicWorking();
-    log("✓ browser mic test: working — peak "+pct+"%","evt");
-  }else if(cls === "warn"){
-    browserMicPassed = false;
-    setBrowserResult("warn", "⚠ Mic level low ("+pct+"%) — move a little closer for a reliable wake.");
-    markCheckDone("#checkBrowser", false);
-    log("⚠ browser mic test: low level — peak "+pct+"%","error");
-  }else if(heard){
-    browserMicPassed = false;
-    setBrowserResult("bad", "⚠ Mic level very low ("+pct+"%) — move closer / speak up.");
-    markCheckDone("#checkBrowser", false);
-    log("⚠ browser mic test: very low level — peak "+pct+"%","error");
-  }else{
-    browserMicPassed = false;
-    setBrowserResult("bad", "✗ No audio detected — the browser mic was silent. Check the input device + permission.");
-    markCheckDone("#checkBrowser", false);
-    log("✗ browser mic test: silent","error");
-  }
+  if(typeof level === "number" && micBrowserResultMeter){
+    micBrowserResultMeter.hidden = false;
+    micBrowserResultBar.style.width = Math.max(0, Math.min(100, level)) + "%";
+  }else if(micBrowserResultMeter){ micBrowserResultMeter.hidden = true; }
 }
 micBrowserBtn.addEventListener("click", async ()=>{
-  if(browserMicOn) return;        // runs for a fixed window then auto-stops; ignore re-clicks
+  if(browserMicOn) return;        // runs for a fixed 2 s window then auto-stops; ignore re-clicks
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     setBrowserResult("bad", "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
     return;
@@ -2184,54 +2481,130 @@ micBrowserBtn.addEventListener("click", async ()=>{
   setBrowserResult("testing", "Requesting browser mic permission — click Allow if prompted…");
   setCheckBusy("#checkBrowser", true);
   markCheckDone("#checkBrowser", false);
-  browserMicPassed = false; browserMicVoicedFrames = 0; browserMicSmoothed = 0; browserMicPeak = 0;
+  browserMicSmoothed = 0; browserMicPeak = 0;
+  let stream = null, proc = null, srcNode = null;
+  const chunks = [];                                  // buffered mono PCM
+  let liveRms = 0;
+  function cleanupBrowserMic(){
+    browserMicOn = false;
+    if(browserMicTimer){ clearTimeout(browserMicTimer); browserMicTimer = null; }
+    if(browserMicRAF){ cancelAnimationFrame(browserMicRAF); browserMicRAF = 0; }
+    try{ if(proc){ proc.disconnect(); proc.onaudioprocess = null; } }catch(_e){}
+    try{ if(srcNode) srcNode.disconnect(); }catch(_e){}
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+    micBrowserBtn.classList.remove("on"); micBrowserBtn.setAttribute("aria-pressed","false");
+  }
   try{
-    browserMicStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
   }catch(e){
     setBrowserResult("bad", "✗ Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
     setCheckBusy("#checkBrowser", false);
     return;
   }
+  browserMicStream = stream;
   browserMicCtx = new (window.AudioContext||window.webkitAudioContext)();
-  const src = browserMicCtx.createMediaStreamSource(browserMicStream);
-  const an = browserMicCtx.createAnalyser();
-  an.fftSize = 1024; an.smoothingTimeConstant = 0.8;   // built-in smoothing
-  src.connect(an);
-  const buf = new Float32Array(an.fftSize);
-  // Surface the relevant output: device label + sample rate (labels populate only
-  // AFTER permission is granted — the browser withholds them beforehand).
-  const track = browserMicStream.getAudioTracks()[0];
+  const sr = browserMicCtx.sampleRate || 48000;
+  srcNode = browserMicCtx.createMediaStreamSource(stream);
+  // ScriptProcessor (deprecated but ubiquitous + CSP-clean — no worklet URL) buffers
+  // the raw mono PCM AND drives the live meter from each frame's RMS.
+  proc = browserMicCtx.createScriptProcessor(2048, 1, 1);
+  proc.onaudioprocess = ev=>{
+    const inp = ev.inputBuffer.getChannelData(0);
+    const copy = new Float32Array(inp.length); copy.set(inp); chunks.push(copy);
+    let sum = 0; for(let i=0;i<inp.length;i++){ const v = inp[i]; sum += v*v; }
+    liveRms = Math.sqrt(sum / inp.length);
+  };
+  const mute = browserMicCtx.createGain(); mute.gain.value = 0;   // don't echo the live mic
+  srcNode.connect(proc); proc.connect(mute); mute.connect(browserMicCtx.destination);
+
+  // Read the browser's effective processing chain from the live track. getSettings()
+  // labels populate only AFTER permission is granted — the browser withholds them before.
+  const track = stream.getAudioTracks()[0];
   const st = (track && track.getSettings && track.getSettings()) || {};
+  browserMicProc = {
+    agc: (typeof st.autoGainControl === "boolean") ? st.autoGainControl : null,
+    ns:  (typeof st.noiseSuppression === "boolean") ? st.noiseSuppression : null,
+    ec:  (typeof st.echoCancellation === "boolean") ? st.echoCancellation : null,
+    gain: micGain(),
+  };
   let device = track && track.label ? track.label : "";
   setCheckMeta("#micBrowserMeta", [
     ["device", device || "default input"],
-    ["sample-rate", (st.sampleRate || browserMicCtx.sampleRate)
-      ? (Math.round((st.sampleRate||browserMicCtx.sampleRate)/100)/10)+" kHz" : null],
     ["channels", st.channelCount || null],
   ]);
+
   browserMicOn = true; micBrowserGuide.hidden = false;
   micBrowserBtn.classList.add("on"); micBrowserBtn.setAttribute("aria-pressed","true");
-  setBrowserResult("testing", "Capturing ~1.5s — say “Hello”…");
-  // Fixed-window run: auto-stop + verdict after BROWSER_MIC_MS (like the server test).
-  browserMicTimer = setTimeout(finishBrowserMic, BROWSER_MIC_MS);
+  setBrowserResult("testing", "Capturing 2.0s — say “Hello”…");
+  browserMicTimer = setTimeout(()=> finishBrowserMic(chunks, sr, cleanupBrowserMic), CHECK_MS);
   const tick = ()=>{
     if(!browserMicOn) return;
-    an.getFloatTimeDomainData(buf);
-    let sum = 0;
-    for(let i=0;i<buf.length;i++){ const v = buf[i]; sum += v*v; }
-    const rms = Math.sqrt(sum / buf.length);
-    if(rms > browserMicPeak) browserMicPeak = rms;
-    // Power-curve normalize for a responsive low-end, then smooth the bar.
-    const norm = Math.min(1, Math.pow(rms * 1.6, 0.55));
+    if(liveRms > browserMicPeak) browserMicPeak = liveRms;
+    const norm = Math.min(1, Math.pow(liveRms * 1.6, 0.55));   // power-curve normalize
     browserMicSmoothed = browserMicSmoothed*0.6 + norm*0.4;
-    const pct = Math.round(browserMicSmoothed*100);
-    micBrowserBar.style.width = pct + "%";
-    // Count voiced frames; the verdict is decided when the window ends.
-    if(rms > 0.02) browserMicVoicedFrames++;
+    micBrowserBar.style.width = Math.round(browserMicSmoothed*100) + "%";
     browserMicRAF = requestAnimationFrame(tick);
   };
   tick();
 });
+// Finish a browser-mic run: gain → measure → graph → uniform row → POST to server.
+function finishBrowserMic(chunks, srcRate, cleanup){
+  if(!browserMicOn) return;
+  if(browserMicTimer){ clearTimeout(browserMicTimer); browserMicTimer = null; }
+  if(browserMicRAF){ cancelAnimationFrame(browserMicRAF); browserMicRAF = 0; }
+  if(cleanup) cleanup();
+  if(browserMicCtx){ try{ browserMicCtx.close(); }catch(_e){} browserMicCtx = null; }
+  micBrowserGuide.hidden = true;
+  setCheckBusy("#checkBrowser", false);
+
+  // Stitch the captured PCM, then apply the mic_gain setting (clamped ±1) so the
+  // browser path gains like the server path before anything is measured/posted.
+  const total = (chunks||[]).reduce((n,c)=>n+c.length, 0);
+  const merged = new Float32Array(total);
+  let off = 0; for(const c of (chunks||[])){ merged.set(c, off); off += c.length; }
+  const gain = micGain();
+  const gained = applyGain(merged, gain);
+  const dur = total / (srcRate || 48000);
+  const peak = pcmPeak(gained);
+  const pct = Math.round(Math.min(1, peak) * 100);
+  const levels = computeLevels(gained, 48);
+  const heard = total > 0 && peak > 0.02;
+
+  // Downsample to 16 kHz for the contract POST; keep the captured PCM for play-last.
+  const pcm16 = wakeDownsample(gained, srcRate || 48000);
+
+  const cls = heard ? levelClass(pct) : "bad";
+  let msg;
+  if(cls === "ok"){ msg = "✓ Browser mic working properly — peak level "+pct+"%."; }
+  else if(cls === "warn"){ msg = "⚠ Mic level low ("+pct+"%) — move a little closer for a reliable wake."; }
+  else if(heard){ msg = "⚠ Mic level very low ("+pct+"%) — move closer / speak up."; }
+  else{ msg = "✗ No audio detected — the browser mic was silent. Check the input device + permission."; }
+  setBrowserResult(cls, msg, heard ? pct : 0);
+  markCheckDone("#checkBrowser", cls === "ok");
+  if(cls === "ok") confirmMicWorking();
+
+  // Uniform extras row — chips + processing badge + graph + hash + ▶ play-last.
+  const proc = browserMicProc || {gain: gain};
+  renderResultExtras("micBrowserExtras", {
+    dur: dur,
+    peakPct: pct,
+    sampleRate: srcRate,
+    levels: levels,
+    processing: proc,
+    pcm: gained,                       // kept client PCM → play-last needs no server
+    sr: srcRate,
+    clipKey: "micBrowserExtras",
+  });
+  log((cls==="ok"?"✓ ":"⚠ ") + "mic check [browser]: peak "+pct+"% · AGC "+(proc.agc?"on":"off")
+        +" NS "+(proc.ns?"on":"off")+" EC "+(proc.ec?"on":"off")+" gain "+gain+"×",
+        cls==="ok" ? "evt" : "error");
+
+  // POST to the server so it can score/save the clip (skipped in demo — no backend).
+  if(!DEMO && heard){
+    postAction({action:"mic_check", source:"browser", pcm:pcm16, sample_rate:WAKE_TEST_SR,
+      processing:{agc:proc.agc, ns:proc.ns, ec:proc.ec}});
+  }
+}
 
 /* ============================================================
    CHECK 3 — RECORD & PLAY · BROWSER  (fully client-side, no server)
@@ -2407,7 +2780,6 @@ micBrowserReplayBtn.addEventListener("click", async ()=>{
    confidence (0–1) as a prominent % + bar, coloured green if `fired`/conf≥0.5,
    amber 0.3–0.5, red <0.3. The clip is saved server-side for debugging.
    ============================================================ */
-const WAKE_REC_MS = 2000;        // ~2s capture, matching the contract
 const WAKE_TEST_SR = 16000;      // target PCM rate for the browser path
 const wakeBusy = {};             // word|source → true while a capture/round-trip is in flight
 function wakeBtnsFor(word){
@@ -2438,22 +2810,48 @@ function wakeVerdictClass(conf, fired){
   if(conf >= 0.3) return "mid";
   return "low";
 }
+// Per word|source local browser capture, kept so the wake row's uniform extras
+// (peak%, level graph, processing badge, ▶ play-last) render from the SAME PCM the
+// server scores — and so play-last needs no round-trip for the browser path.
+const wakeLocal = {};                // "word|source" → {pcm, sr, levels, peakPct, processing}
 function showWakeResult(d){
   const word = d.word || "";
+  const source = d.source === "browser" ? "browser" : "server";
   const conf = typeof d.confidence === "number" ? d.confidence : 0;
   const pct = Math.round(Math.max(0, Math.min(1, conf)) * 100);
   const cls = wakeVerdictClass(conf, !!d.fired);
-  const srcLabel = d.source === "browser" ? "browser" : "server";
   let msg = (d.message || "") + " ";
   msg += d.fired ? "✓ would fire" : "✗ would not fire";
-  msg += " · " + srcLabel + (d.wav_path ? " · clip saved server-side for debugging" : "");
+  msg += " · " + source + ((d.wav_url || d.wav_path) ? " · clip saved for debugging" : "");
   setWakeResult(word, cls, pct, msg.trim());
-  wakeBusy[word+"|"+d.source] = false;
-  setWakeBtnRecording(word, d.source, false);
+  wakeBusy[word+"|"+source] = false;
+  setWakeBtnRecording(word, source, false);
+
+  // UNIFORM extras row, identical to the mic checks: 2 s duration · peak% ·
+  // sample-rate chips + processing badge + level-over-time graph + hash + ▶ play-last.
+  // Browser source: enrich the contract event with the kept local capture (graph
+  // peak/levels/processing/PCM). Server source: take it all from the event.
+  const loc = wakeLocal[word+"|"+source] || {};
+  const peak = (typeof d.peak === "number") ? Math.round(Math.min(1, d.peak)*100)
+             : (typeof d.level === "number") ? d.level
+             : (typeof loc.peakPct === "number") ? loc.peakPct : null;
+  const levels = Array.isArray(d.levels) ? d.levels : (loc.levels || []);
+  const proc = d.processing || loc.processing || {gain: micGain()};
+  const dur = (typeof d.duration_s === "number") ? d.duration_s : (CHECK_MS/1000);
+  const sampleRate = d.sample_rate || loc.sr || WAKE_TEST_SR;
+  renderResultExtras("wakeExtras-"+word, {
+    dur: dur, peakPct: peak, sampleRate: sampleRate, levels: levels,
+    processing: proc, hash: d.hash, wav_url: d.wav_url,
+    // browser: kept local PCM; server: none (uses wav_url). Demo seed carries a tone.
+    pcm: (source === "browser" ? (loc.pcm || null) : null) || d._demoPcm || null,
+    sr: (source === "browser" ? (loc.sr || sampleRate) : sampleRate),
+    clipKey: "wakeExtras-"+word,
+  });
   // any green wake result also confirms the mic is working
   if(cls === "fired" || cls === "high") confirmMicWorking();
-  log((d.fired?"⚡ ":"· ") + "wake test ["+word+" · "+srcLabel+"]: conf "+pct+"% "
-        + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
+  log((d.fired?"⚡ ":"· ") + "wake test ["+word+" · "+source+"]: conf "+pct+"%"
+        + (peak!=null?" · peak "+peak+"%":"") + " " + (d.fired?"(fired)":"(no fire)"),
+        d.fired ? "evt" : "info");
 }
 // Downsample a capture-rate Float32 block to 16 kHz by linear decimation (mirrors
 // the Live-Audio downsampler; local so this section doesn't depend on its const).
@@ -2504,27 +2902,46 @@ async function runWakeTestBrowser(word){
   // Route through a muted gain so the live mic isn't echoed during the capture.
   const mute = actx.createGain(); mute.gain.value = 0;
   srcNode.connect(proc); proc.connect(mute); mute.connect(actx.destination);
-  let remain = Math.round(WAKE_REC_MS/1000);
-  setWakeResult(word, "testing", null, "● Recording ~2 s — say “"+word+"”… ("+remain+")");
-  const countdown = setInterval(()=>{ remain--; if(remain>0) setWakeResult(word, "testing", null, "● Recording ~2 s — say “"+word+"”… ("+remain+")"); }, 1000);
+  // Read the browser's effective processing chain (AGC / NS / EC) from the track.
+  const track = stream.getAudioTracks()[0];
+  const st = (track && track.getSettings && track.getSettings()) || {};
+  const procChain = {
+    agc: (typeof st.autoGainControl === "boolean") ? st.autoGainControl : null,
+    ns:  (typeof st.noiseSuppression === "boolean") ? st.noiseSuppression : null,
+    ec:  (typeof st.echoCancellation === "boolean") ? st.echoCancellation : null,
+    gain: micGain(),
+  };
+  let remain = Math.round(CHECK_MS/1000);
+  setWakeResult(word, "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")");
+  const countdown = setInterval(()=>{ remain--; if(remain>0) setWakeResult(word, "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")"); }, 1000);
 
-  await new Promise(r=> setTimeout(r, WAKE_REC_MS));
+  await new Promise(r=> setTimeout(r, CHECK_MS));
   clearInterval(countdown);
   cleanup();
-  // Stitch + downsample the captured PCM to a 16 kHz Float32 array for the contract.
+  // Stitch, then apply the mic_gain setting (clamped ±1) before measuring/scoring,
+  // so the browser path gains exactly like the server path.
   const total = chunks.reduce((n,c)=>n+c.length, 0);
   const merged = new Float32Array(total);
   let off = 0; for(const c of chunks){ merged.set(c, off); off += c.length; }
   try{ if(actx) await actx.close(); }catch(_e){}
-  const pcm = wakeDownsample(merged, sr);
+  const gained = applyGain(merged, micGain());
+  const peakPct = Math.round(Math.min(1, pcmPeak(gained)) * 100);
+  const levels = computeLevels(gained, 48);
+  // Keep the local capture so showWakeResult renders the uniform graph/badge/peak
+  // and ▶ play-last works from this PCM (no round-trip).
+  wakeLocal[word+"|browser"] = {pcm: gained, sr: sr, levels: levels, peakPct: peakPct, processing: procChain};
+  const pcm = wakeDownsample(gained, sr);     // 16 kHz Array for the contract POST
   if(DEMO){
     // No backend in demo — synthesize a plausible scored result for THIS word/source.
     setWakeResult(word, "testing", null, "scoring captured audio…");
-    setTimeout(()=> showWakeResult(demoWakeResult(word, "browser")), 600);
+    setTimeout(()=> showWakeResult(Object.assign(demoWakeResult(word, "browser"),
+      {peak: pcmPeak(gained), levels: levels, processing: procChain,
+       sample_rate: WAKE_TEST_SR, duration_s: total/sr})), 600);
     return;
   }
-  setWakeResult(word, "testing", null, "▶ Scoring "+pcm.length+" samples @16 kHz…");
-  postAction({action:"wake_test", word, source:"browser", pcm, sample_rate:WAKE_TEST_SR});
+  setWakeResult(word, "testing", null, "▶ Scoring "+pcm.length+" samples @16 kHz (peak "+peakPct+"%)…");
+  postAction({action:"wake_test", word, source:"browser", pcm, sample_rate:WAKE_TEST_SR,
+    processing:{agc:procChain.agc, ns:procChain.ns, ec:procChain.ec}});
 }
 document.querySelectorAll(".wake-test-btn").forEach(btn=>{
   btn.addEventListener("click", ()=>{
@@ -2616,10 +3033,15 @@ function handleEvent(raw){
       log(`response${d.final?" (final)":" (stream)"}: ${txt.slice(0,60)}${txt.length>60?"…":""}`,"evt");
       break;
     }
+    case "mic_check_result":
+      // Shared contract: the mic check (server, or the server's echo of a browser
+      // clip) → uniform row. showMicResult routes browser-sourced echoes to the
+      // browser check and server-sourced results to the server check.
+      showMicResult(d); break;
     case "mic_result":
       // A record-&-replay run ends with a mic_result tagged verdict "replay"/"replayed"
       // (or while the replay check is busy) → route it to the replay chip; otherwise
-      // it's the plain server "Test mic" verdict.
+      // it's the plain server "Test mic" verdict (legacy event name → uniform row).
       if(micReplayBusy || d.verdict==="replay" || d.verdict==="replayed" || d.action==="mic_record_replay"){
         finishReplay(d);
       }else{
@@ -2790,6 +3212,7 @@ const DEMO_SETTINGS = {
   host_app:"iTerm",                   // demo: name the server's host app in the server-mic note
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
+  mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_words:["alexa","computer","jarvis","maziko","nexus"],
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
@@ -2850,11 +3273,14 @@ function enterDemo(){
     log("tip: append  ?backend=https://<your-server>  to this URL for a REAL conversation against your own `my-stt-tts --browser`","info");
   }
   if(!settings.brain_presets) populate(DEMO_SETTINGS);
-  // Seed the new UI so it's visible offline without clicking:
-  //  • a scored wake_test_result for each word (maziko fires green, nexus amber),
+  // Seed the new UI so EVERY new element (graph, processing badge, ▶ play-last,
+  // hash) is visible offline without clicking:
+  //  • a server mic_check_result (uniform row: chips + raw·gain badge + graph + hash + ▶),
+  //  • a scored wake_test_result per word (maziko fires green/browser, nexus amber/server),
   //  • a "music playing" event (server playback + hybrid video iframe when local).
-  showWakeResult(demoWakeResult("maziko", "server"));
-  showWakeResult(demoWakeResult("nexus", "browser"));
+  showMicResult(demoMicCheckResult("server"));
+  showWakeResult(demoWakeResult("maziko", "browser"));
+  showWakeResult(demoWakeResult("nexus", "server"));
   handleMusic(DEMO_MUSIC_EVENT);
   demoStep = 0;
   runDemoStep();
@@ -2914,14 +3340,62 @@ function demoTurn(text){
     tick();
   }, 600);
 }
-// Demo wake-test result: a believable per-word/per-source score so the new wake
-// UI is fully exercised offline. "maziko" fires confidently; "nexus" lands amber.
+// A believable level-over-time array (0..1 × n) shaped like a single spoken word:
+// quiet → ramp up → peak → decay, with a little jitter. Lets the demo sparkline
+// look like a real utterance offline.
+function demoLevels(peak, n){
+  const B = n || 48, out = new Array(B);
+  for(let i=0;i<B;i++){
+    const t = i/(B-1);
+    const env = Math.sin(Math.PI*Math.min(1, t*1.15));     // single-hump envelope
+    out[i] = Math.max(0, Math.min(1, peak*env + (Math.random()*0.06 - 0.03)));
+  }
+  return out;
+}
+// A short audible PCM tone so ▶ play-last actually plays for the seeded demo rows
+// (no server WAV to fetch offline). ~0.6 s at 16 kHz, gently enveloped.
+function demoTonePcm(freq){
+  const sr = WAKE_TEST_SR, n = Math.round(sr*0.6), out = new Float32Array(n);
+  const f = freq || 330;
+  for(let i=0;i<n;i++){
+    const t = i/sr, env = Math.sin(Math.PI*(i/n));
+    out[i] = 0.45 * env * Math.sin(2*Math.PI*f*t);
+  }
+  return out;
+}
+// Demo server mic_check_result — full contract shape so the uniform row (chips +
+// processing badge + level graph + hash + ▶ play-last) is exercised offline. The
+// kept demo PCM makes play-last audible without a backend.
+function demoMicCheckResult(source){
+  const peak = 0.62 + (Math.random()*0.06 - 0.03);
+  return {type:"mic_check_result", source: source||"server", ok:true,
+    peak: peak, level: Math.round(peak*100), rms: peak*0.55,
+    duration_s: 2.0, sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
+    processing: {agc:null, ns:null, ec:null, gain: micGain()},   // server path: raw + gain
+    hash: shortHash("mic|"+(source||"server")+"|demo"),
+    wav_url: "/recordings/mic_"+(source||"server")+"_demo.wav",
+    device:"MacBook Pro Microphone", permission:"authorized",
+    message:"Microphone OK — level "+Math.round(peak*100)+"% (demo)",
+    _demoPcm: demoTonePcm(280)};
+}
+// Demo wake-test result: a believable per-word/per-source score AND the full
+// contract extras (peak/levels/processing/hash/wav_url) so the new wake UI is
+// fully exercised offline. "maziko" fires confidently; "nexus" lands amber.
 function demoWakeResult(word, source){
   const base = (word === "maziko") ? 0.86 : 0.42;
   const conf = Math.max(0, Math.min(1, base + (Math.random()*0.08 - 0.04)));
+  const peak = (word === "maziko") ? 0.71 : 0.38;
   return {type:"wake_test_result", word, source, confidence:conf, fired: conf >= 0.5,
+    peak: peak, level: Math.round(peak*100), duration_s: 2.0,
+    sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
+    processing: (source==="browser")
+      ? {agc:true, ns:true, ec:true, gain: micGain()}            // browser path: AGC/NS/EC on
+      : {agc:null, ns:null, ec:null, gain: micGain()},           // server path: raw + gain
+    hash: shortHash("wake|"+word+"|"+source+"|demo"),
     message: "scored "+(word)+" @16 kHz (demo)",
-    wav_path: "/tmp/wake_"+word+"_"+source+"_demo.wav"};
+    wav_url: "/recordings/wake_"+word+"_"+source+"_demo.wav",
+    wav_path: "/tmp/wake_"+word+"_"+source+"_demo.wav",
+    _demoPcm: demoTonePcm(word === "maziko" ? 360 : 240)};
 }
 function demoAction(action, payload){
   if(action==="music_stop"){ handleMusic({type:"music", status:"stopped"}); return; }
@@ -2936,16 +3410,19 @@ function demoAction(action, payload){
     // browser source resolves its own demo result in runWakeTestBrowser
     return;
   }
+  if(action==="play_recording"){
+    // No saved WAVs in demo — the ▶ play-last buttons replay the kept demo PCM
+    // client-side, so just acknowledge.
+    log("▶ play_recording (demo): replays from the kept client PCM", "info"); return;
+  }
   if(action==="reset"){
     stream=null; thread.innerHTML=""; turns=0; bump();
     setState("idle","buffer cleared (demo).");
     clearTimeout(demoStreamTimer); demoStep=0; clearTimeout(demoTimer); demoTimer=setTimeout(runDemoStep,1200);
-  }else if(action==="mic_test"){
-    // No real server in demo mode — simulate a clean OK (with the richer output
-    // fields) so the chip + meta row are exercised.
-    setTimeout(()=> showMicResult({ok:true, verdict:"ok", level:62, permission:"authorized",
-      sample_rate:16000, duration:1.5, device:"MacBook Pro Microphone",
-      message:"Microphone OK — level 62% (demo)"}), 900);
+  }else if(action==="mic_check" || action==="mic_test"){
+    // No real server in demo — emit a full server mic_check_result after ~2s so the
+    // uniform row (chips + processing badge + level graph + hash + ▶ play-last) renders.
+    setTimeout(()=> showMicResult(demoMicCheckResult("server")), 2000);
   }else if(action==="mic_record_replay"){
     // Simulate the recording → playing back → ✓ phase sequence.
     setTimeout(()=> handleReplayPhase({phase:"recording"}), 200);
