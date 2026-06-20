@@ -366,6 +366,21 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .wake-panel[data-source="server"] .wake-src .src-dot{background:var(--mag)}
 /* the AGC + double-gain clipping warning (browser path only) */
 .wake-clip-note{font-size:10px; letter-spacing:.2px; color:var(--amber); line-height:1.5}
+/* tier legend under the WAKE PHRASE config dropdown — 🟢 reliable · 🟠 ok · 🔴 weak */
+.wake-legend{display:flex; flex-wrap:wrap; gap:5px 12px; margin-top:7px;
+  font-size:9.5px; letter-spacing:.4px; color:var(--ink-dim)}
+.wake-legend .wl{display:inline-flex; align-items:center; gap:5px}
+.wake-legend .wl-dot{width:8px; height:8px; border-radius:50%; flex:0 0 auto; background:var(--ink-faint)}
+.tier-green{background:var(--green); box-shadow:0 0 6px -1px var(--green)}
+.tier-orange{background:var(--amber); box-shadow:0 0 6px -1px var(--amber)}
+.tier-red{background:var(--red); box-shadow:0 0 6px -1px var(--red)}
+/* SELECTABLE wake-recall block — one phrase picker + Browser/Server, then the
+   per-source result panels for THAT phrase (rebuilt on change). */
+.wake-recall{display:flex; flex-direction:column; gap:11px}
+.wake-recall-pick{display:flex; flex-wrap:wrap; align-items:center; gap:8px}
+.wake-recall-lbl{font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint)}
+.wake-recall-pick #wakeRecallSelect{flex:1 1 160px; min-width:130px; width:auto}
+.wake-recall-pick .wake-btns{flex:0 0 auto; margin-left:auto}
 
 /* ---------- UNIFORM check result row ----------
    Every check (mic browser/server + wake browser/server) renders the SAME row:
@@ -867,21 +882,37 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
           </div>
 
           <!-- ====== WAKE-WORD RECALL TESTS ======================================
-               Record ~2s and score how confidently the wake word would fire. One
-               row per word (maziko / nexus), each with a Browser + Server button.
-               Browser records via Web Audio → downsamples to 16 kHz → POSTs the
-               PCM; Server records on the server. The `wake_test_result` event
-               carries the confidence (0–1) + fired flag → a prominent % + bar. -->
+               Record ~2s and score how confidently the SELECTED wake phrase would
+               fire. ONE recall block: pick a wake phrase (colour-coded by tier), then
+               Browser or Server. Browser records via Web Audio → downsamples to 16 kHz
+               → POSTs the PCM; Server records on the server. The `wake_test_result`
+               event carries the confidence (0–1) + fired flag → a prominent % + bar. -->
           <div class="check check-wake" id="checkWake">
             <div class="check-title"><span class="num" data-n="5" aria-hidden="true"></span>Wake-word recall
               <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake-word recall"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Directly tests whether the wake word would fire. Records ~2&nbsp;s and scores it: <b>Browser</b> uses THIS browser's mic (downsampled to 16&nbsp;kHz); <b>Server</b> uses the server's mic — the one the live wake loop listens on. The clip is saved server-side for debugging.</span></span>
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Directly tests whether the chosen wake phrase would fire. Pick a phrase, then record ~2&nbsp;s and score it: <b>Browser</b> uses THIS browser's mic (downsampled to 16&nbsp;kHz); <b>Server</b> uses the server's mic — the one the live wake loop listens on. The clip is saved server-side for debugging.</span></span>
             </div>
-            <!-- One row per pre-shipped wake word (settings.wake_words), built by
-                 renderWakeRows() in populate(). Each row has Browser + Server buttons
-                 and TWO independent result panels (one per source) so a Browser test
-                 and a Server test stay side by side and never overwrite each other. -->
-            <div class="wake-rows" id="wakeRows"></div>
+            <!-- Selectable recall test: ONE phrase selector (settings.wake_words,
+                 colour-coded by tier, defaulting to the configured wake phrase) +
+                 Browser/Server buttons + TWO independent per-source result panels.
+                 Built/refreshed by renderWakeRecall() in populate(); changing the
+                 selector rebuilds the panels for THAT phrase. Each panel keeps ALL
+                 the extras (gauge · sparkline · score-trace · gain-sweep + Find-gain ·
+                 play-last · score-clip · processing badge · stat chips · hash). -->
+            <div class="wake-recall" id="wakeRecall">
+              <div class="wake-recall-pick">
+                <label class="wake-recall-lbl" for="wakeRecallSelect">Wake phrase</label>
+                <select class="ctrl" id="wakeRecallSelect" aria-label="Wake phrase to test"></select>
+                <div class="wake-btns" id="wakeRecallBtns">
+                  <button type="button" class="btn wake-test-btn" id="wakeRecallBrowser"
+                          data-source="browser" title="Record ~2s in THIS browser and score the selected wake phrase">Browser</button>
+                  <button type="button" class="btn wake-test-btn" id="wakeRecallServer"
+                          data-source="server" title="Record ~2s on the SERVER mic and score the selected wake phrase">Server</button>
+                </div>
+              </div>
+              <!-- Per-source result panels for the SELECTED phrase, rebuilt on change. -->
+              <div class="wake-rows" id="wakeRows"></div>
+            </div>
           </div>
 
           <!-- First-use macOS hint: grant the terminal/app mic permission.
@@ -1061,10 +1092,18 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <div class="field">
               <label for="wakeSelect">Wake phrase</label>
               <!-- Pre-shipped wake words → dropdown (settings.wake_words). When the
-                   list is empty, or "custom…" is chosen, the free-text input shows. -->
+                   list is empty, or "custom…" is chosen, the free-text input shows.
+                   Each option is colour-coded by settings.wake_word_info[word].tier
+                   (🟢 reliable · 🟠 ok · 🔴 weak/untested) with the note as its title. -->
               <select class="ctrl" id="wakeSelect" hidden aria-label="Wake phrase"></select>
               <input class="ctrl" id="wake" autocomplete="off"
                      aria-label="Custom wake phrase" placeholder="wake phrase">
+              <!-- Tier legend for the colour-coded options above. -->
+              <div class="wake-legend" id="wakeLegend" role="note">
+                <span class="wl"><span class="wl-dot tier-green"></span>reliable</span>
+                <span class="wl"><span class="wl-dot tier-orange"></span>ok</span>
+                <span class="wl"><span class="wl-dot tier-red"></span>weak/untested</span>
+              </div>
             </div>
             <div class="field">
               <label for="wakeThreshold">Wake sensitivity <span class="v" id="wakeThresholdVal">0.40</span>
@@ -1610,9 +1649,9 @@ function populate(s){
   $("#model").value      = settings.model ?? "";
   $("#modelDeep").value  = settings.model_deep ?? "";
   setWakeControls(settings);
-  // Recall row per pre-shipped wake word (settings.wake_words) — Browser + Server
-  // buttons and two independent (per-source) result panels each.
-  renderWakeRows(settings.wake_words);
+  // Selectable recall test: fill the phrase selector (colour-coded by tier, default =
+  // configured wake phrase) and build the two per-source panels for the selected phrase.
+  renderWakeRecall(settings.wake_words, settings.wake_phrase);
   $("#agentModel").value = settings.agent_model ?? "";
   $("#workspace").value  = settings.agent_workspace ?? "";
   $("#sysPrompt").value  = settings.system_prompt ?? "";
@@ -1680,6 +1719,40 @@ function applyHostApp(app){
    Both commit {wake_phrase: <name>} via applyPatch — the same POST contract.
    ---------------------------------------------------------------- */
 const WAKE_CUSTOM = " custom";  // sentinel value for the "custom…" option
+// SHARED CONTRACT: settings.wake_word_info = { "<word>": {tier,note,recall} }.
+// Per-tier coloured dot + the note as a tooltip. <option> elements can't be styled
+// reliably by CSS across browsers, so we prefix the label with the tier emoji and put
+// the note in the option's title.  green=reliable · orange=ok · red=weak/untested.
+const WAKE_TIER_DOT = {green:"🟢", orange:"🟠", red:"🔴"};
+function wakeInfoFor(word){
+  const info = (settings && settings.wake_word_info) || {};
+  return (word && info[word]) || null;
+}
+// Tier class suffix ("green"|"orange"|"red") for `word`, or "" when unknown.
+function wakeTierOf(word){
+  const i = wakeInfoFor(word);
+  return (i && WAKE_TIER_DOT[i.tier]) ? i.tier : "";
+}
+// Tier emoji dot for an <option> label ("" when no info / unknown tier).
+function wakeTierDot(word){
+  const t = wakeTierOf(word);
+  return t ? WAKE_TIER_DOT[t] : "";
+}
+// Tooltip text for `word`: the note, then recall if present (e.g. "self-trained, recall 0.45").
+function wakeTierTitle(word){
+  const i = wakeInfoFor(word);
+  if(!i) return "";
+  let t = i.note || "";
+  if(typeof i.recall === "number") t += (t ? ", " : "") + "recall " + i.recall.toFixed(2);
+  return t;
+}
+// Decorate an <option> (label + title) for `word` from wake_word_info.
+function decorateWakeOption(o, word){
+  const dot = wakeTierDot(word);
+  o.textContent = (dot ? dot + " " : "") + word;
+  const title = wakeTierTitle(word);
+  if(title) o.title = title;
+}
 function setWakeControls(s){
   const words = Array.isArray(s.wake_words) ? s.wake_words : [];
   const phrase = s.wake_phrase ?? "";
@@ -1693,7 +1766,7 @@ function setWakeControls(s){
   sel.innerHTML = "";
   words.forEach(w=>{
     const o = document.createElement("option");
-    o.value = w; o.textContent = w;
+    o.value = w; decorateWakeOption(o, w);
     sel.appendChild(o);
   });
   const custom = document.createElement("option");
@@ -3310,41 +3383,64 @@ function buildWakePanel(word, source){
 // two independent (browser, server) result panels.
 const MIC_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>';
 const MIC_SVG_SERVER = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>';
+// The wake phrase currently selected in the recall test. The Browser/Server buttons
+// and the SSE result router both key off this so a test always lands in the right panel.
+let currentWakeWord = "";
+// Build the per-source result panels (browser + server) for ONE word. The Browser/
+// Server buttons now live in the fixed picker (#wakeRecallBrowser/Server), so the row
+// is just a name header + the two independent panels.
 function buildWakeRow(word){
   const row = document.createElement("div"); row.className = "wake-word"; row.setAttribute("data-word", word);
   const name = document.createElement("div"); name.className = "wake-name"; name.textContent = "“" + word + "”";
   row.appendChild(name);
-  const btns = document.createElement("div"); btns.className = "wake-btns";
-  const bBtn = document.createElement("button");
-  bBtn.type = "button"; bBtn.className = "btn wake-test-btn";
-  bBtn.setAttribute("data-word", word); bBtn.setAttribute("data-source", "browser");
-  bBtn.title = "Record ~2s in THIS browser and score the “" + word + "” wake word";
-  bBtn.innerHTML = MIC_SVG + " Browser";
-  const sBtn = document.createElement("button");
-  sBtn.type = "button"; sBtn.className = "btn wake-test-btn";
-  sBtn.setAttribute("data-word", word); sBtn.setAttribute("data-source", "server");
-  sBtn.title = "Record ~2s on the SERVER mic and score the “" + word + "” wake word";
-  sBtn.innerHTML = MIC_SVG_SERVER + " Server";
-  btns.appendChild(bBtn); btns.appendChild(sBtn);
-  row.appendChild(btns);
   const panels = document.createElement("div"); panels.className = "wake-panels";
   panels.appendChild(buildWakePanel(word, "browser"));
   panels.appendChild(buildWakePanel(word, "server"));
   row.appendChild(panels);
   return row;
 }
-// Render a recall row for EVERY pre-shipped wake word (settings.wake_words). Falls
-// back to maziko/nexus when the list is empty so the section is never blank. Called
-// from populate(); idempotent (rebuilds the container each time).
-function renderWakeRows(words){
+// Point the fixed Browser/Server buttons at `word` (data-word + tooltips) so the
+// delegated click handler tests the SELECTED phrase.
+function aimWakeButtons(word){
+  const b = $("#wakeRecallBrowser"), s = $("#wakeRecallServer");
+  if(b){ b.setAttribute("data-word", word); b.title = "Record ~2s in THIS browser and score the “" + word + "” wake word"; b.innerHTML = MIC_SVG + " Browser"; }
+  if(s){ s.setAttribute("data-word", word); s.title = "Record ~2s on the SERVER mic and score the “" + word + "” wake word"; s.innerHTML = MIC_SVG_SERVER + " Server"; }
+}
+// Build the recall panels for the selected `word` and aim the buttons at it.
+function renderWakePanels(word){
   const host = $("#wakeRows"); if(!host) return;
+  currentWakeWord = word;
+  host.innerHTML = "";
+  host.appendChild(buildWakeRow(word));
+  aimWakeButtons(word);
+}
+// Fill the phrase selector (settings.wake_words, colour-coded by tier) and render the
+// panels for the configured/selected phrase. Falls back to maziko/nexus when the list
+// is empty so the section is never blank. Called from populate(); idempotent.
+function renderWakeRecall(words, configured){
+  const sel = $("#wakeRecallSelect"); if(!sel) return;
   let list = Array.isArray(words) ? words.filter(w=> typeof w === "string" && w.trim()) : [];
   if(!list.length) list = ["maziko", "nexus"];
-  // de-dup, preserve order
-  const seen = {}; list = list.filter(w=> seen[w] ? false : (seen[w] = true));
-  host.innerHTML = "";
-  list.forEach(w=> host.appendChild(buildWakeRow(w)));
+  const seen = {}; list = list.filter(w=> seen[w] ? false : (seen[w] = true));   // de-dup, keep order
+  // Preserve the user's current pick across a settings refresh if still valid.
+  const prev = currentWakeWord;
+  const want = (prev && list.includes(prev)) ? prev
+             : (configured && list.includes(configured)) ? configured
+             : list[0];
+  sel.innerHTML = "";
+  list.forEach(w=>{
+    const o = document.createElement("option");
+    o.value = w; decorateWakeOption(o, w);            // 🟢/🟠/🔴 dot + note tooltip
+    if(w === want) o.selected = true;
+    sel.appendChild(o);
+  });
+  renderWakePanels(want);
 }
+// Selecting a phrase rebuilds the panels for THAT phrase (and re-aims the buttons).
+(function bindWakeRecallSelect(){
+  const sel = $("#wakeRecallSelect"); if(!sel) return;
+  sel.addEventListener("change", e=>{ if(e.target.value) renderWakePanels(e.target.value); });
+})();
 // Render a wake_test_result (or a transient "recording…" state) into the panel for
 // THIS (word, source) — never the other source's panel.
 function setWakeResult(word, source, cls, confPct, msg){
@@ -3530,14 +3626,16 @@ async function runWakeTestBrowser(word){
   postAction({action:"wake_test", word, source:"browser", pcm, sample_rate:WAKE_TEST_SR,
     processing:{agc:procChain.agc, ns:procChain.ns, ec:procChain.ec}});
 }
-// Delegated click handler on the (dynamically built) rows container so every
-// per-word Browser/Server button works regardless of when its row was rendered.
+// Delegated click handler on the picker's Browser/Server buttons. They carry the
+// SELECTED phrase via data-word (set by aimWakeButtons), so the test always lands in
+// the panel for the chosen phrase. Falls back to currentWakeWord if data-word is unset.
 (function bindWakeButtons(){
-  const rows = $("#wakeRows"); if(!rows) return;
-  rows.addEventListener("click", e=>{
+  const btnHost = $("#wakeRecallBtns"); if(!btnHost) return;
+  btnHost.addEventListener("click", e=>{
     const btn = e.target.closest && e.target.closest(".wake-test-btn");
-    if(!btn || !rows.contains(btn)) return;
-    const word = btn.dataset.word, source = btn.dataset.source;
+    if(!btn || !btnHost.contains(btn)) return;
+    const word = btn.dataset.word || currentWakeWord, source = btn.dataset.source;
+    if(!word) return;
     const key = word+"|"+source;
     if(wakeBusy[key]) return;
     wakeBusy[key] = true;
@@ -3813,6 +3911,21 @@ const DEMO_SETTINGS = {
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
   wake_words:["maziko","nexus","jarvis","alexa","computer","athena","nova","luna","sage","orion"],
+  // SHARED CONTRACT demo seed: tier per word for the colour-coded dropdown + recall
+  // selector. A green (official, big data), an orange (self-trained, recall 0.45) and
+  // a red (untested) example so all three legend colours show offline.
+  wake_word_info:{
+    maziko:  {tier:"green",  note:"official, large data",  recall:0.92},
+    jarvis:  {tier:"green",  note:"official, large data",  recall:0.89},
+    alexa:   {tier:"green",  note:"official, large data",  recall:0.90},
+    computer:{tier:"green",  note:"official, large data",  recall:0.88},
+    nexus:   {tier:"orange", note:"self-trained",          recall:0.45},
+    athena:  {tier:"orange", note:"self-trained",          recall:0.51},
+    nova:    {tier:"red",    note:"untested",              recall:null},
+    luna:    {tier:"red",    note:"untested",              recall:null},
+    sage:    {tier:"red",    note:"untested",              recall:null},
+    orion:   {tier:"red",    note:"untested",              recall:null}
+  },
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
   system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
@@ -3846,7 +3959,9 @@ const DEMO_SCRIPT = [
   {state:"recording",   detail:"mic is hot — capturing audio.", hold:1900},
   {state:"stt",         detail:"transcribing captured audio…",  hold:1100},
   {transcript:"What's the weather looking like this afternoon?", source:"wake"},
-  {state:"llm_request", detail:"dispatching request to brain…", hold:700},
+  // SHARED CONTRACT: the assistant reply carries the exact model string (provider /
+  // model · reasoning level) → the ASSISTANT transcript label shows it in full.
+  {state:"llm_request", detail:"dispatching request to brain…", model:"claude-cli / opus-4.8 · think", hold:700},
   {state:"llm_wait",    detail:"awaiting first token…",         hold:1100},
   {state:"llm_response",detail:"generating reply tokens…",
      streamWords:["Clear ","skies ","this ","afternoon ","— ","around ","19 ","degrees ","with ","a ","light ","breeze ","from ","the ","west."],
@@ -3875,22 +3990,23 @@ function enterDemo(){
   // Seed the new UI so EVERY new element (graph, processing badge, ▶ play-last,
   // hash, level-vs-model gauge, stat chips, score-trace) is visible offline:
   //  • a server mic_check_result (uniform row: chips + raw·gain badge + graph + hash + ▶),
-  //  • scored wake_test_results across words AND sources, so the SEPARATE per-source
-  //    panels are obviously independent: maziko gets BOTH a browser AND a server panel
-  //    (side by side, neither overwrites the other), plus nexus/server + jarvis/browser,
+  //  • scored wake_test_results for the SELECTED phrase on BOTH sources, so the two
+  //    independent (browser, server) panels are obviously side by side and neither
+  //    overwrites the other,
   //  • a "music playing" event (server playback + hybrid video iframe when local).
+  // The selectable recall test renders only ONE phrase's panels at a time, so seed
+  // against the currently-selected phrase (renderWakeRecall defaulted it to the
+  // configured wake phrase) — results for other phrases would land in absent panels.
+  const demoWord = currentWakeWord || (settings.wake_phrase || "maziko");
   showMicResult(demoMicCheckResult("server"));
-  showWakeResult(demoWakeResult("maziko", "browser"));   // maziko · BROWSER panel
-  showWakeResult(demoWakeResult("maziko", "server"));    // maziko · SERVER panel (independent)
-  showWakeResult(demoWakeResult("nexus", "server"));
-  showWakeResult(demoWakeResult("jarvis", "browser"));
+  showWakeResult(demoWakeResult(demoWord, "browser"));   // selected phrase · BROWSER panel
+  showWakeResult(demoWakeResult(demoWord, "server"));    // selected phrase · SERVER panel (independent)
   handleMusic(DEMO_MUSIC_EVENT);
-  // ★ Also seed the gain-sweep chart on "nexus"/server (the amber/quiet panel — its
-  // score climbs with gain and fires by 4×) and a score-clip result on "maziko"/browser,
-  // so the chart + score-clip output are VISIBLE offline without having to click.
-  showGainSweepResult(Object.assign(demoGainSweep("nexus", shortHash("wake|nexus|server|demo")), {source:"server"}));
-  showScoreClipResult(Object.assign(demoScoreClip("maziko", shortHash("wake|maziko|browser|demo")),
-                                     {_clipKey: "wakeExtras-maziko-browser"}));
+  // ★ Also seed the gain-sweep chart + a score-clip result on the SELECTED phrase's
+  // panels so the chart + score-clip output are VISIBLE offline without having to click.
+  showGainSweepResult(Object.assign(demoGainSweep(demoWord, shortHash("wake|"+demoWord+"|server|demo")), {source:"server"}));
+  showScoreClipResult(Object.assign(demoScoreClip(demoWord, shortHash("wake|"+demoWord+"|browser|demo")),
+                                     {_clipKey: "wakeExtras-"+wakePanelKey(demoWord, "browser")}));
   demoStep = 0;
   runDemoStep();
 }
@@ -3908,6 +4024,8 @@ function runDemoStep(){
   if(ev.transcript){ addUserFromTranscript(ev.transcript, ev.source); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
 
   if(ev.state){ setState(ev.state, ev.detail); syncWakeFromState(ev.state); syncPttFromState(ev.state); log("state → "+ev.state+" (demo)","evt"); }
+  // Exact model string on the reply → ASSISTANT label (e.g. "claude-cli / opus-4.8 · think").
+  if(ev.model){ setActiveModel(ev.model); }
 
   if(ev.streamWords){
     let i = 0;
