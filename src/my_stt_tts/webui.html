@@ -374,6 +374,17 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .tier-green{background:var(--green); box-shadow:0 0 6px -1px var(--green)}
 .tier-orange{background:var(--amber); box-shadow:0 0 6px -1px var(--amber)}
 .tier-red{background:var(--red); box-shadow:0 0 6px -1px var(--red)}
+.wake-legend .wl-title{color:var(--ink-faint); margin-right:2px}
+/* reliability BAR for the selected wake phrase — width = reliability, colour = tier */
+.wake-reliab{display:flex; align-items:center; gap:8px; margin-top:8px}
+.wake-reliab-track{flex:1 1 auto; height:7px; border-radius:4px; overflow:hidden;
+  background:var(--ink-faint); opacity:.92}
+.wake-reliab-fill{height:100%; width:0; border-radius:4px; transition:width .25s ease}
+.wake-reliab-fill.tier-green{background:var(--green)}
+.wake-reliab-fill.tier-orange{background:var(--amber)}
+.wake-reliab-fill.tier-red{background:var(--red)}
+.wake-reliab-pct{flex:0 0 auto; font-size:10px; letter-spacing:.4px; color:var(--ink-dim);
+  min-width:34px; text-align:right; font-variant-numeric:tabular-nums}
 /* SELECTABLE wake-recall block — one phrase picker + Browser/Server, then the
    per-source result panels for THAT phrase (rebuilt on change). */
 .wake-recall{display:flex; flex-direction:column; gap:11px}
@@ -1098,8 +1109,19 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <select class="ctrl" id="wakeSelect" hidden aria-label="Wake phrase"></select>
               <input class="ctrl" id="wake" autocomplete="off"
                      aria-label="Custom wake phrase" placeholder="wake phrase">
-              <!-- Tier legend for the colour-coded options above. -->
+              <!-- Reliability BAR for the CURRENTLY SELECTED phrase: width =
+                   wake_word_info[word].reliability × 100%, colour = tier. A native
+                   <option> can't hold a bar, so the dropdown keeps the coloured dot
+                   prefix and the live bar sits here for the chosen phrase. -->
+              <div class="wake-reliab" id="wakeReliab" role="note" hidden>
+                <div class="wake-reliab-track" title="">
+                  <div class="wake-reliab-fill" id="wakeReliabFill"></div>
+                </div>
+                <span class="wake-reliab-pct" id="wakeReliabPct"></span>
+              </div>
+              <!-- Tier legend for the colour-coded options + the reliability bar. -->
               <div class="wake-legend" id="wakeLegend" role="note">
+                <span class="wl-title">measured chance it works for you:</span>
                 <span class="wl"><span class="wl-dot tier-green"></span>reliable</span>
                 <span class="wl"><span class="wl-dot tier-orange"></span>ok</span>
                 <span class="wl"><span class="wl-dot tier-red"></span>weak/untested</span>
@@ -1719,10 +1741,12 @@ function applyHostApp(app){
    Both commit {wake_phrase: <name>} via applyPatch — the same POST contract.
    ---------------------------------------------------------------- */
 const WAKE_CUSTOM = " custom";  // sentinel value for the "custom…" option
-// SHARED CONTRACT: settings.wake_word_info = { "<word>": {tier,note,recall} }.
-// Per-tier coloured dot + the note as a tooltip. <option> elements can't be styled
-// reliably by CSS across browsers, so we prefix the label with the tier emoji and put
-// the note in the option's title.  green=reliable · orange=ok · red=weak/untested.
+// SHARED CONTRACT: settings.wake_word_info =
+//   { "<word>": {tier, note, reliability:0-1, tested:int, measured:bool} }.
+// `reliability` is the data-driven MEASURED chance the word fires for THIS user
+// (from his wake tests, server-biased) when tests exist, else a static prior. The
+// <option> keeps a per-tier coloured dot + note tooltip; the live reliability BAR
+// (next to the dropdown) shows reliability×100% for the selected phrase.
 const WAKE_TIER_DOT = {green:"🟢", orange:"🟠", red:"🔴"};
 function wakeInfoFor(word){
   const info = (settings && settings.wake_word_info) || {};
@@ -1738,12 +1762,18 @@ function wakeTierDot(word){
   const t = wakeTierOf(word);
   return t ? WAKE_TIER_DOT[t] : "";
 }
-// Tooltip text for `word`: the note, then recall if present (e.g. "self-trained, recall 0.45").
+// Reliability 0..1 for `word` (NaN when no info), and its percentage 0..100.
+function wakeReliabilityOf(word){
+  const i = wakeInfoFor(word);
+  return (i && typeof i.reliability === "number") ? i.reliability : NaN;
+}
+// Tooltip text for `word`: the note, then "NN% chance it works for you".
 function wakeTierTitle(word){
   const i = wakeInfoFor(word);
   if(!i) return "";
   let t = i.note || "";
-  if(typeof i.recall === "number") t += (t ? ", " : "") + "recall " + i.recall.toFixed(2);
+  const r = wakeReliabilityOf(word);
+  if(!isNaN(r)) t += (t ? " — " : "") + Math.round(r*100) + "% chance it works for you";
   return t;
 }
 // Decorate an <option> (label + title) for `word` from wake_word_info.
@@ -1752,6 +1782,21 @@ function decorateWakeOption(o, word){
   o.textContent = (dot ? dot + " " : "") + word;
   const title = wakeTierTitle(word);
   if(title) o.title = title;
+}
+// Render the reliability BAR for the currently selected `word` (width=reliability,
+// colour=tier, tooltip = pct + note). Hidden when the word has no reliability info.
+function updateWakeReliabBar(word){
+  const wrap = $("#wakeReliab"), fill = $("#wakeReliabFill"), pct = $("#wakeReliabPct");
+  if(!wrap || !fill || !pct) return;
+  const r = wakeReliabilityOf(word), tier = wakeTierOf(word);
+  if(isNaN(r) || !tier){ wrap.hidden = true; return; }
+  const p = Math.max(0, Math.min(100, Math.round(r*100)));
+  fill.style.width = p + "%";
+  fill.className = "wake-reliab-fill tier-" + tier;
+  pct.textContent = p + "%";
+  const track = wrap.querySelector(".wake-reliab-track");
+  if(track) track.title = wakeTierTitle(word);
+  wrap.hidden = false;
 }
 function setWakeControls(s){
   const words = Array.isArray(s.wake_words) ? s.wake_words : [];
@@ -1777,21 +1822,25 @@ function setWakeControls(s){
   sel.hidden = false;
   // Reveal the text box only for a custom (non-shipped) phrase.
   input.hidden = known;
+  // Reliability bar tracks the selected phrase.
+  updateWakeReliabBar(phrase);
 }
 $("#wakeSelect").addEventListener("change", e=>{
   const v = e.target.value;
   if(v === WAKE_CUSTOM){
     $("#wake").hidden = false;
     $("#wake").focus();
+    updateWakeReliabBar("");   // no info for an as-yet-untyped custom phrase
     return;  // wait for the user to type a custom phrase
   }
   $("#wake").hidden = true;
   $("#wake").value = v;
+  updateWakeReliabBar(v);
   applyPatch({wake_phrase: v});
 });
 $("#wake").addEventListener("change", ()=>{
   const v = $("#wake").value.trim();
-  if(v) applyPatch({wake_phrase: v});
+  if(v){ updateWakeReliabBar(v); applyPatch({wake_phrase: v}); }
 });
 $("#wake").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("#wake").blur(); } });
 
@@ -3910,21 +3959,23 @@ const DEMO_SETTINGS = {
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
-  wake_words:["maziko","nexus","jarvis","alexa","computer","athena","nova","luna","sage","orion"],
-  // SHARED CONTRACT demo seed: tier per word for the colour-coded dropdown + recall
-  // selector. A green (official, big data), an orange (self-trained, recall 0.45) and
-  // a red (untested) example so all three legend colours show offline.
+  wake_words:["maziko","nexus","hey_jarvis","alexa","computer","athena","nova","luna","sage","orion"],
+  // SHARED CONTRACT demo seed: per word {tier, note, reliability:0-1, tested, measured}.
+  // `reliability` = the MEASURED chance the word fires for THIS user (data-driven from
+  // his wake tests) or a static prior. Seeded so the bar renders offline across all
+  // three tiers: hey_jarvis 0.99 green (official), computer 0.55 orange, maziko 0.05
+  // red (self-trained — fires 0% on a non-native accent), nexus 0.2 red.
   wake_word_info:{
-    maziko:  {tier:"green",  note:"official, large data",  recall:0.92},
-    jarvis:  {tier:"green",  note:"official, large data",  recall:0.89},
-    alexa:   {tier:"green",  note:"official, large data",  recall:0.90},
-    computer:{tier:"green",  note:"official, large data",  recall:0.88},
-    nexus:   {tier:"orange", note:"self-trained",          recall:0.45},
-    athena:  {tier:"orange", note:"self-trained",          recall:0.51},
-    nova:    {tier:"red",    note:"untested",              recall:null},
-    luna:    {tier:"red",    note:"untested",              recall:null},
-    sage:    {tier:"red",    note:"untested",              recall:null},
-    orion:   {tier:"red",    note:"untested",              recall:null}
+    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true},
+    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false},
+    alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false},
+    computer:  {tier:"orange", note:"measured 0.55 over 4 tests",               reliability:0.55, tested:4, measured:true},
+    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false},
+    athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
+    nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
+    luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
+    sage:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
+    orion:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false}
   },
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
