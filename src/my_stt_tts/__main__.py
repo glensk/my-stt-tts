@@ -992,7 +992,14 @@ def run_wake_loop(
     # model receives (so a never-firing wake word is diagnosable from one WAV). Built
     # once so it captures the first window after Start; goes inert once flushed.
     recorder: audio.WakeDebugRecorder | None = None
-    if wake_debug_capture_enabled(cfg):
+    # Arm the recorder whenever the audio debug instrument is actually live (the GUI
+    # / --browser path turns it on), honoring an explicit WAKE_DEBUG_CAPTURE override.
+    # Keyed off ``dbg.enabled`` — the real source of truth — NOT a re-derivation via
+    # ``wake_debug_capture_enabled(cfg)`` that defaulted browser=False and so stayed
+    # off in exactly the GUI session where a user is trying to diagnose a dead wake
+    # word (the WAV was silently never written).
+    arm_recorder = cfg.wake_debug_capture if cfg.wake_debug_capture is not None else dbg.enabled
+    if arm_recorder:
         recorder = audio.WakeDebugRecorder(
             cfg.wake_debug_path, cfg.sample_rate, cfg.wake_debug_seconds, on_debug=dbg
         )
