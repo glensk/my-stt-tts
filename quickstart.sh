@@ -41,6 +41,10 @@ What it does:
 
 If no brain is found it prints how to enable one (install claude/ollama/codex, or
 set ANTHROPIC_API_KEY) and exits 1.
+
+Every run is logged (stdout+stderr, incl. warnings/errors and live wake scores)
+to logs/quickstart-<timestamp>.log (gitignored) while still streaming to the
+terminal. Override the location with QUICKSTART_LOG_DIR=/path.
 EOF
 }
 
@@ -59,6 +63,19 @@ esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${here}"
+
+# --- Capture this run's output to a timestamped logfile -----------------------
+# Tee EVERYTHING from here on (uv sync, brain detection, and the app's own
+# stdout/stderr — warnings, errors, and live wake scores) to a logfile, so a run
+# can be investigated after the fact (e.g. "why didn't the wake word fire?"). The
+# output still streams live to the terminal. Logs are gitignored (*.log). The
+# final `exec ./mstt` inherits these redirected fds, so the app's output is
+# captured too. Override the directory with QUICKSTART_LOG_DIR.
+log_dir="${QUICKSTART_LOG_DIR:-logs}"
+mkdir -p "${log_dir}"
+logfile="${log_dir}/quickstart-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "${logfile}") 2>&1
+echo "quickstart: logging this run to ${logfile} (also shown live below)."
 
 if ! command -v uv >/dev/null 2>&1; then
 	echo "quickstart: 'uv' is not installed (it manages the Python env)." >&2
