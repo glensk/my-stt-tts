@@ -135,6 +135,72 @@ def test_politeness_does_not_hijack_a_play_query():
     }
 
 
+# --- STT-garble play detection (the "Playform Tool lateralis" fix) ------------
+@pytest.mark.parametrize(
+    ("text", "query"),
+    [
+        # The reported bug: STT fuses "play" + a filler into one token.
+        ("Playform Tool lateralis", "Tool lateralis"),
+        ("playform Lateralus by Tool", "Lateralus by Tool"),
+        # Stray inflections / a fused verb the strict regex misses.
+        ("plays Bohemian Rhapsody", "Bohemian Rhapsody"),
+        ("playing Wonderwall", "Wonderwall"),
+        ("play for me Africa by Toto", "Africa by Toto"),
+        ("play from Thriller", "Thriller"),
+        # The verb + a "from youtube" tail.
+        ("playform Wonderwall from youtube", "Wonderwall"),
+        # DE: a trailing-"an" form and an inflected spiel*.
+        ("mach Bohemian Rhapsody an", "Bohemian Rhapsody"),
+        ("spielt Wonderwall von Oasis", "Wonderwall von Oasis"),
+        # FR inflections.
+        ("joues We Will Rock You", "We Will Rock You"),
+    ],
+)
+def test_stt_garbled_play_still_routes_to_play(text, query):
+    """STT garble like "Playform Tool lateralis" must still be a play with the song
+    as the query — so the system plays it instead of the LLM falsely claiming it."""
+    assert music.match_music_intent(text) == {"action": "play", "query": query}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A bare garbled verb with no song -> generic play (caller picks a default).
+        "playform",
+        "playing",
+    ],
+)
+def test_stt_garbled_bare_play_is_generic(text):
+    assert music.match_music_intent(text) == {"action": "play", "query": ""}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The prefix detector must NOT hijack non-play sentences.
+        "metabolism explained please",  # "met" is not the play verb "mets"
+        "what is the weather today",
+        "tell me about playgrounds",  # doesn't START with a play token
+        # Common "play*" English NOUNS as the first token are false friends.
+        "playground equipment is fun",
+        "playlist for the weekend",
+        "player stats for last night",
+    ],
+)
+def test_stt_prefix_does_not_hijack_non_play(text):
+    assert music.match_music_intent(text) is None
+
+
+def test_play_my_playlist_still_plays():
+    # A genuine "play my playlist" is the bare verb + remainder, so it routes as a
+    # play with the noun in the query (the false-friend guard only blocks the noun
+    # as the FIRST/verb token).
+    assert music.match_music_intent("play my playlist") == {
+        "action": "play",
+        "query": "my playlist",
+    }
+
+
 # --- search (yt-dlp mocked) ----------------------------------------------------
 
 

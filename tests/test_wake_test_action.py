@@ -212,6 +212,7 @@ def test_run_wake_test_server_records_scores_saves_emits(
     clip = (np.sin(np.linspace(0, 100, 32000)) * 0.4).astype(np.float32)
     monkeypatch.setattr(audio, "record_fixed", lambda *_a, **_k: (clip, 16000))
     monkeypatch.setattr("my_stt_tts.wake.score_wake_clip", lambda *_a, **_k: (0.73, True))
+    monkeypatch.setattr(audio, "recordings_dir", lambda: str(tmp_path / "rec"))
 
     wav = tmp_path / "wake-test-maziko-server.wav"
     monkeypatch.setattr(main_mod, "_wake_test_wav_path", lambda *_a: str(wav))
@@ -288,6 +289,7 @@ def test_run_wake_test_browser_scores_saves_emits(
 ) -> None:
     cfg = Config(anthropic_api_key="sk-test")
     monkeypatch.setattr("my_stt_tts.wake.score_wake_clip", lambda *_a, **_k: (0.31, False))
+    monkeypatch.setattr(audio, "recordings_dir", lambda: str(tmp_path / "rec"))
     wav = tmp_path / "wake-test-nexus-browser.wav"
     monkeypatch.setattr(main_mod, "_wake_test_wav_path", lambda *_a: str(wav))
 
@@ -333,15 +335,53 @@ def test_wake_test_result_emitter_shape() -> None:
         wav_path="/tmp/x.wav",
     )
     evt = json.loads(sub.get(timeout=1.0))
-    assert evt == {
-        "type": "wake_test_result",
-        "word": "maziko",
-        "source": "server",
-        "confidence": 0.37,
-        "fired": False,
-        "message": "maziko: confidence 0.37 — not detected",
-        "wav_path": "/tmp/x.wav",
-    }
+    # The legacy fields are preserved verbatim…
+    assert evt["type"] == "wake_test_result"
+    assert evt["word"] == "maziko"
+    assert evt["source"] == "server"
+    assert evt["confidence"] == 0.37
+    assert evt["fired"] is False
+    assert evt["message"] == "maziko: confidence 0.37 — not detected"
+    assert evt["wav_path"] == "/tmp/x.wav"
+    # …and the event is EXTENDED with the shared mic-check level fields (defaults
+    # when not supplied), so the GUI shows the same meter/graph/saved-WAV link.
+    assert evt["peak"] == 0.0
+    assert evt["level"] == 0
+    assert evt["rms"] == 0.0
+    assert evt["duration_s"] == 0.0
+    assert evt["sample_rate"] == 16000
+    assert evt["levels"] == []
+    assert evt["processing"] == {}
+    assert evt["hash"] == ""
+    assert evt["wav_url"] == ""
+
+
+def test_wake_test_result_emitter_carries_level_fields() -> None:
+    bus = EventBus()
+    sub = bus.subscribe()
+    bus.wake_test_result(
+        word="nexus",
+        source="browser",
+        confidence=0.6,
+        fired=True,
+        message="nexus: confidence 0.60 — detected",
+        peak=0.5,
+        level=50,
+        rms=0.2,
+        duration_s=2.0,
+        sample_rate=16000,
+        levels=[0.1, 0.5, 0.3],
+        processing={"agc": True, "ns": False, "ec": True, "gain": 1.0},
+        hash="abcd1234",
+        wav_url="/recordings/x.wav",
+    )
+    evt = json.loads(sub.get(timeout=1.0))
+    assert evt["peak"] == 0.5
+    assert evt["level"] == 50
+    assert evt["levels"] == [0.1, 0.5, 0.3]
+    assert evt["processing"] == {"agc": True, "ns": False, "ec": True, "gain": 1.0}
+    assert evt["hash"] == "abcd1234"
+    assert evt["wav_url"] == "/recordings/x.wav"
 
 
 # --------------------------------------------------------------------------- #
