@@ -483,6 +483,49 @@ class EventBus:
             }
         )
 
+    def mic_check_result(
+        self,
+        *,
+        source: str,
+        peak: float,
+        level: int,
+        rms: float,
+        duration_s: float,
+        sample_rate: int,
+        levels: list[float],
+        processing: dict[str, Any],
+        hash: str,  # noqa: A002 — wire field name per the shared GUI contract
+        wav_url: str,
+        message: str,
+    ) -> None:
+        """Publish the outcome of a unified 2.0 s microphone check (GUI "mic check").
+
+        DATA priority — the GUI shows the live level meter + a level-over-time graph
+        and links the saved WAV. ``source`` is ``"server"`` (the server mic, after the
+        software ``mic_gain``) or ``"browser"`` (a clip the page recorded + POSTed).
+        ``peak`` / ``rms`` are the raw 0..1 amplitudes; ``level`` is ``round(peak*100)``
+        (0..100); ``levels`` is ~48 evenly-spaced per-window peak magnitudes (0..1) for
+        the graph; ``processing`` carries ``{agc, ns, ec, gain}`` (browser echo/AGC/NS
+        flags or null + the applied server ``gain``); ``hash`` is the 8-hex content id
+        and ``wav_url`` the ``/recordings/<file>.wav`` link to the saved clip.
+        """
+        self.publish(
+            {
+                "type": "mic_check_result",
+                "source": source,
+                "peak": round(float(peak), 4),
+                "level": int(level),
+                "rms": round(float(rms), 4),
+                "duration_s": round(float(duration_s), 3),
+                "sample_rate": int(sample_rate),
+                "levels": [round(float(v), 4) for v in levels],
+                "processing": processing,
+                "hash": hash,
+                "wav_url": wav_url,
+                "message": message,
+            }
+        )
+
     def music(
         self,
         status: str,
@@ -518,6 +561,15 @@ class EventBus:
         fired: bool,
         message: str,
         wav_path: str = "",
+        peak: float = 0.0,
+        level: int = 0,
+        rms: float = 0.0,
+        duration_s: float = 0.0,
+        sample_rate: int = 16000,
+        levels: list[float] | None = None,
+        processing: dict[str, Any] | None = None,
+        hash: str = "",  # noqa: A002 — wire field name per the shared GUI contract
+        wav_url: str = "",
     ) -> None:
         """Publish the outcome of a wake-word test (GUI "Wake test"); DATA priority.
 
@@ -525,9 +577,14 @@ class EventBus:
         clip recorded either by the SERVER mic (``source="server"``) or supplied by
         the BROWSER (``source="browser"``). ``confidence`` is the max openWakeWord
         score over the clip (0..1); ``fired`` is whether it cleared the threshold;
-        ``message`` is the human one-liner the UI shows; ``wav_path`` is where the
-        scored 16 kHz clip was saved for later debugging (empty if it could not be
-        written). Mirrors the live wake path so a never-firing word is diagnosable.
+        ``message`` is the human one-liner the UI shows; ``wav_path`` is the legacy
+        on-disk path (kept for back-compat). The remaining fields mirror
+        :meth:`mic_check_result` so the GUI shows the SAME level meter + graph +
+        saved-WAV link for a wake test: ``peak``/``rms`` (0..1), ``level``
+        (``round(peak*100)``), ``levels`` (~48 per-window peaks), ``duration_s`` /
+        ``sample_rate``, ``processing`` (``{agc, ns, ec, gain}``), the ``hash`` content
+        id, and the ``wav_url`` ``/recordings/<file>.wav`` link. Mirrors the live wake
+        path so a never-firing word is diagnosable.
         """
         self.publish(
             {
@@ -538,6 +595,15 @@ class EventBus:
                 "fired": fired,
                 "message": message,
                 "wav_path": wav_path,
+                "peak": round(float(peak), 4),
+                "level": int(level),
+                "rms": round(float(rms), 4),
+                "duration_s": round(float(duration_s), 3),
+                "sample_rate": int(sample_rate),
+                "levels": [round(float(v), 4) for v in (levels or [])],
+                "processing": processing or {},
+                "hash": hash,
+                "wav_url": wav_url,
             }
         )
 

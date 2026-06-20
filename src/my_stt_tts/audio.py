@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -439,6 +440,116 @@ def capture_stats(samples: np.ndarray, sample_rate: int) -> dict[str, Any]:
         "rms": round(rms, 4),
         "peak": round(peak, 4),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Mic-diagnostic recordings: software gain, level-over-time, on-disk archive   #
+# --------------------------------------------------------------------------- #
+
+# Number of evenly-spaced per-window peak magnitudes the GUI plots as a
+# level-over-time graph. ~48 windows is a smooth-enough envelope for a ~2 s clip
+# without flooding the result event with samples.
+_LEVELS_WINDOWS = 48
+
+
+def apply_gain(clip: np.ndarray, gain: float) -> np.ndarray:
+    """Apply a software input ``gain`` to a float32 mono clip, clip-protected.
+
+    Multiplies by ``gain`` and hard-clips to ±1.0 so a hot capture is never folded
+    into garbage by overflow — a quiet server mic can be lifted to a usable level
+    without the wake/STT models seeing wrapped samples. ``gain`` of 1.0 (or an empty
+    clip) is an identity pass. Pure: returns a new array, leaves the input untouched.
+    """
+    arr = np.asarray(clip, dtype=np.float32).ravel()
+    if arr.size == 0 or gain == 1.0:
+        return arr
+    return np.clip(arr * float(gain), -1.0, 1.0).astype(np.float32)
+
+
+def compute_levels(clip: np.ndarray, windows: int = _LEVELS_WINDOWS) -> list[float]:
+    """``windows`` evenly-spaced per-window PEAK magnitudes (0..1) across ``clip``.
+
+    The GUI plots this as a level-over-time bar graph so a clip that is silent at
+    the start / clipped in the middle is visible at a glance. Pure: splits the clip
+    into ``windows`` contiguous slices and reports each slice's peak |amplitude|. An
+    empty clip yields all-zero levels; a clip shorter than ``windows`` still returns
+    exactly ``windows`` values (some windows empty -> 0.0).
+    """
+    arr = np.asarray(clip, dtype=np.float32).ravel()
+    n = max(1, int(windows))
+    if arr.size == 0:
+        return [0.0] * n
+    edges = np.linspace(0, arr.size, n + 1).astype(int)
+    out: list[float] = []
+    for i in range(n):
+        lo, hi = int(edges[i]), int(edges[i + 1])
+        seg = arr[lo:hi]
+        out.append(round(float(np.max(np.abs(seg))), 4) if seg.size else 0.0)
+    return out
+
+
+def recordings_dir() -> str:
+    """Repo-local ``debug/recordings/`` directory for saved mic/wake clips.
+
+    Resolved from this package (``<repo>/debug/recordings``) so a clip survives the
+    run for the GUI's ``GET /recordings/<file>.wav`` route and the ``play_recording``
+    action. The whole ``debug/`` tree is git-ignored.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    return str(repo_root / "debug" / "recordings")
+
+
+def _clip_hash8(clip: np.ndarray) -> str:
+    """First 8 hex of ``sha256`` over the clip's int16-LE PCM bytes (content id)."""
+    import hashlib
+
+    pcm = np.clip(np.asarray(clip, dtype=np.float32).ravel(), -1.0, 1.0)
+    int16 = (pcm * 32767.0).astype("<i2").tobytes()
+    return hashlib.sha256(int16).hexdigest()[:8]
+
+
+def save_recording(
+    clip: np.ndarray,
+    sample_rate: int,
+    *,
+    kind: str,
+    source: str,
+    word: str | None = None,
+) -> tuple[str, str, str]:
+    """Save a mic/wake clip as a 16 kHz mono WAV under ``debug/recordings/``.
+
+    The shared contract for EVERY server-captured OR browser-posted diagnostic clip:
+    the clip is resampled to 16 kHz mono and written as
+    ``<YYYYmmdd-HHMMSS>-<kind>-<source>[-<word>]-<hash8>.wav`` where ``kind`` is
+    ``mic`` / ``wake``, ``source`` is ``server`` / ``browser`` and ``hash8`` is the
+    first 8 hex of ``sha256`` over the int16 PCM (so the GUI can address it and the
+    server can replay it). Returns ``(path, hash8, wav_url)`` with
+    ``wav_url="/recordings/<filename>"``. Defensive — a disk error yields an empty
+    ``path`` (the hash/url are still computed) so a diagnostic never crashes.
+    """
+    import time as _time
+
+    from .util import wav_bytes_from_float
+
+    clip16k = resample_to(np.asarray(clip, dtype=np.float32).ravel(), int(sample_rate), 16000)
+    hash8 = _clip_hash8(clip16k)
+    ts = _time.strftime("%Y%m%d-%H%M%S", _time.localtime())
+    parts = [ts, kind, source]
+    if word:
+        parts.append(str(word))
+    parts.append(hash8)
+    filename = "-".join(parts) + ".wav"
+    wav_url = f"/recordings/{filename}"
+    target = os.path.join(recordings_dir(), filename)
+    try:
+        os.makedirs(recordings_dir(), exist_ok=True)
+        with open(target, "wb") as fh:
+            fh.write(wav_bytes_from_float(clip16k, 16000))
+        path = target
+    except OSError as exc:  # disk/permission issue must not kill a diagnostic
+        log.warning("recording save failed (%s): %s", target, exc)
+        path = ""
+    return path, hash8, wav_url
 
 
 # A preflight is considered failed when this fraction (or more) of capture frames

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import queue
 import threading
 from collections.abc import Callable
@@ -91,6 +92,9 @@ def settings_dict(
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
+        # Software input gain applied to SERVER mic captures (mic_check / wake_test),
+        # clip-protected to ±1.0. Reported back to the page as processing.gain.
+        "mic_gain": cfg.mic_gain,
         "agent_workspace": cfg.agent_workspace or "",
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
@@ -155,6 +159,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Clamp to [0, 1]: the slider can't produce out-of-range values, but a
         # hand-crafted POST shouldn't push the wake detector past validate()'s bound.
         cfg.wake_threshold = max(0.0, min(1.0, float(data["wake_threshold"])))
+    if "mic_gain" in data:
+        # Clamp to (0, 10]: a hand-crafted POST shouldn't push it past validate()'s
+        # bound (0 would zero out the capture; >10 risks pure clipping).
+        cfg.mic_gain = max(0.01, min(10.0, float(data["mic_gain"])))
     if "agent_workspace" in data:
         cfg.agent_workspace = str(data["agent_workspace"]) or None
     if "agent_model" in data:
@@ -252,8 +260,34 @@ class _Handler(BaseHTTPRequestHandler):
             self._sse()
         elif route == "/ws/audio":
             self._ws_audio()
+        elif route.startswith("/recordings/"):
+            self._serve_recording(route[len("/recordings/") :])
         else:
             self._send(404, "text/plain", b"not found")
+
+    def _serve_recording(self, name: str) -> None:
+        """Serve a saved mic/wake WAV from ``debug/recordings/`` (path-traversal-safe).
+
+        The GUI links each diagnostic clip via its ``wav_url`` (``/recordings/<file>``);
+        this returns the WAV bytes as ``audio/wav`` so the page can play it back. Only
+        the **basename** of the requested name is used (any ``..`` / ``/`` segments are
+        discarded) and only a ``.wav`` under the recordings dir is served — so a crafted
+        ``/recordings/../../etc/passwd`` can never escape the directory.
+        """
+        from .audio import recordings_dir
+
+        base = os.path.basename(name)
+        if not base.endswith(".wav") or base != name:
+            self._send(404, "text/plain", b"not found")
+            return
+        path = os.path.join(recordings_dir(), base)
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._send(404, "text/plain", b"not found")
+            return
+        self._send(200, "audio/wav", body)
 
     def do_OPTIONS(self) -> None:  # noqa: N802 (http.server API)
         """Answer a CORS preflight: 204 + the CORS headers, no body.
