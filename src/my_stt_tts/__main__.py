@@ -115,6 +115,20 @@ def debug_audio_enabled(cfg: Config, *, browser: bool = False) -> bool:
     return browser
 
 
+def wake_debug_capture_enabled(cfg: Config, *, browser: bool = False) -> bool:
+    """Whether the wake-debug recorder dumps the first seconds of the wake stream.
+
+    ``cfg.wake_debug_capture`` is tri-state: an explicit ``WAKE_DEBUG_CAPTURE`` env
+    always wins; ``None`` (the default) means "auto" — ON whenever the audio debug
+    instrument is on (so under ``--browser`` it just works and the saved WAV path is
+    logged), OFF otherwise. So a user diagnosing a never-firing wake word gets the
+    recording without flipping an extra switch.
+    """
+    if cfg.wake_debug_capture is not None:
+        return cfg.wake_debug_capture
+    return debug_audio_enabled(cfg, browser=browser)
+
+
 class _AudioDebug:
     """The capture/VAD/wake/STT debug instrument (the GUI "debugger").
 
@@ -185,6 +199,7 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
+        f"  phases {blue}{cfg.wake_phases}{reset}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
@@ -914,6 +929,15 @@ def run_wake_loop(
     # and available; None means fall back to sounddevice. R3-6: pre-VAD denoiser.
     hw_source = make_voiceprocessing_capture(cfg)
     denoiser = make_denoiser(cfg)
+    # Wake-debug recorder: dump the first ~N s of the EXACT 16 kHz frames the wake
+    # model receives (so a never-firing wake word is diagnosable from one WAV). Built
+    # once so it captures the first window after Start; goes inert once flushed.
+    recorder: audio.WakeDebugRecorder | None = None
+    if wake_debug_capture_enabled(cfg):
+        recorder = audio.WakeDebugRecorder(
+            cfg.wake_debug_path, cfg.sample_rate, cfg.wake_debug_seconds, on_debug=dbg
+        )
+        bus.log(f"wake-debug recorder armed — WAV will be saved to {recorder.path}")
     print(f'Listening for "{cfg.wake_phrase}". Ctrl-C to quit.')
     while True:
         if stop is not None and stop.is_set():
@@ -921,7 +945,9 @@ def run_wake_loop(
             return 0
         bus.state("listening", cfg.wake_phrase)
         try:
-            fired = audio.listen_for_wake(wake, cfg.sample_rate, stop=stop, on_debug=dbg)
+            fired = audio.listen_for_wake(
+                wake, cfg.sample_rate, stop=stop, on_debug=dbg, recorder=recorder
+            )
         except WakeUnavailable as exc:
             # Construction/predict failed (e.g. an openwakeword API/version
             # mismatch). Log ONCE with a clear hint and stop — never spin the

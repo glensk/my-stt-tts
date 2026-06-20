@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1039,6 +1041,84 @@ def record_turn(
     return captured
 
 
+class WakeDebugRecorder:
+    """Tap the EXACT 16 kHz frames fed to the wake model and dump them as a WAV.
+
+    Captures the first ``seconds`` of the post-resample, post-reframe 16 kHz mono
+    frames that :func:`listen_for_wake` actually hands to ``wake.detect`` — NOT a
+    separate capture — together with the per-frame wake score. On completion it
+    writes a mono 16 kHz WAV to ``path`` and logs the capture stats (sample rate /
+    #samples / duration / RMS / peak as a 0–100 % level) plus the MAX and MEAN wake
+    score over the window, so a never-firing wake word is instantly classifiable:
+    near-silent / wrong-rate / clipped audio (a capture problem) vs good audio with
+    a low score (model recall). Each ``feed`` returns whether the window is still
+    filling; once full the recorder writes once and goes inert. Cheap and tap-only,
+    so the live wake path is unaffected when it's off.
+    """
+
+    def __init__(self, path: str, sample_rate: int, seconds: float, on_debug: Any = None) -> None:
+        self.path = os.path.expanduser(path)
+        self.sample_rate = sample_rate
+        self.max_samples = max(1, int(sample_rate * seconds))
+        self._on_debug = on_debug
+        self._frames: list[np.ndarray] = []
+        self._scores: list[float] = []
+        self._n = 0
+        self.done = False
+
+    def feed(self, frame: np.ndarray, score: float) -> None:
+        """Record one 16 kHz frame + its wake score; flush + log once the window fills."""
+        if self.done:
+            return
+        self._frames.append(np.asarray(frame, dtype=np.float32).ravel())
+        self._scores.append(float(score))
+        self._n += int(np.asarray(frame).size)
+        if self._n >= self.max_samples:
+            self._flush()
+
+    def _flush(self) -> None:
+        self.done = True
+        samples = np.concatenate(self._frames) if self._frames else np.zeros(0, dtype=np.float32)
+        stats = capture_stats(samples, self.sample_rate)
+        peak = float(stats["peak"])
+        rms = float(stats["rms"])
+        max_score = round(max(self._scores), 3) if self._scores else 0.0
+        mean_score = round(float(np.mean(self._scores)), 3) if self._scores else 0.0
+        wrote = self._write_wav(samples)
+        fields = {
+            "path": wrote,
+            "sample_rate": stats["sample_rate"],
+            "samples": stats["samples"],
+            "duration_s": stats["duration_s"],
+            "rms": rms,
+            "peak": peak,
+            "level_pct": int(round(min(1.0, peak) * 100)),
+            "max_score": max_score,
+            "mean_score": mean_score,
+        }
+        # stderr line so the user can see + send the WAV path even without the GUI.
+        kv = " ".join(f"{k}={v}" for k, v in fields.items())
+        print(f"[audio:wake_debug] {kv}", file=sys.stderr)
+        print(f"[audio:wake_debug] WAV saved -> {wrote}", file=sys.stderr)
+        if self._on_debug is not None:
+            with contextlib.suppress(Exception):
+                self._on_debug("wake_debug", **fields)
+
+    def _write_wav(self, samples: np.ndarray) -> str:
+        """Write the captured frames as a 16 kHz mono 16-bit WAV; return the path."""
+
+        from .util import wav_bytes_from_float
+
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(self.path, "wb") as fh:
+                fh.write(wav_bytes_from_float(samples, self.sample_rate))
+            return self.path
+        except OSError as exc:  # disk/permission issue must not kill the wake loop
+            log.warning("wake-debug WAV write failed (%s): %s", self.path, exc)
+            return f"(write failed: {exc})"
+
+
 def listen_for_wake(
     wake: Any,
     sample_rate: int,
@@ -1047,6 +1127,7 @@ def listen_for_wake(
     poll_seconds: float = 0.1,
     stop: threading.Event | None = None,
     on_debug: Any = None,
+    recorder: WakeDebugRecorder | None = None,
 ) -> bool:
     """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame.
 
@@ -1086,10 +1167,16 @@ def listen_for_wake(
             while pending.size >= frame_samples:
                 frame, pending = pending[:frame_samples], pending[frame_samples:]
                 fired = wake.detect(frame)
+                score = getattr(wake, "last_score", 0.0)
+                # Tap the EXACT 16 kHz frame fed to the model (post-resample,
+                # post-reframe) into the debug recorder — this is the audio the wake
+                # model truly sees, so the saved WAV is what to inspect.
+                if recorder is not None and not recorder.done:
+                    recorder.feed(frame, score)
                 if on_debug is not None:
                     on_debug(
                         "wake_score",
-                        score=round(getattr(wake, "last_score", 0.0), 3),
+                        score=round(score, 3),
                         threshold=getattr(wake, "threshold", 0.5),
                         model=getattr(wake, "model_name", ""),
                     )

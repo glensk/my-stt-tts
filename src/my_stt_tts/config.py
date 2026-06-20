@@ -283,6 +283,18 @@ class Config:
     # quiet "maziko"). 0.4 is a touch more sensitive than openWakeWord's 0.5
     # default so a soft wake word still fires. Env: WAKE_THRESHOLD.
     wake_threshold: float = 0.4
+    # How many sub-frame PHASE-OFFSET detectors evaluate each wake-word pass.
+    # openWakeWord scores once per 1280-sample (80 ms) frame, locked to ONE phase
+    # relative to the spoken word — and the maziko score swings ~25x (0.03..0.85)
+    # purely with where that frame boundary lands. In an always-listening loop the
+    # frame grid is fixed by capture timing, so a single utterance gets ONE phase:
+    # an unlucky alignment scores ~0.03 and never fires even though the SAME audio
+    # at a better offset scores ~0.7 (the "fires offline, never live" bug). Running
+    # K detectors offset by 1280/K samples and firing on the max covers the phase
+    # space — measured to lift recall from 2/8 to 5/8 synthesized voices with no
+    # extra false-positives and a 0.22 real-time factor at K=8. 1 disables it.
+    # Env: WAKE_PHASES.
+    wake_phases: int = 8
     follow_up_seconds: float = 8.0
     sample_rate: int = 16000
     preroll_seconds: float = 0.3
@@ -481,6 +493,20 @@ class Config:
     # auto (ON under ``--browser``); an explicit ``DEBUG_AUDIO`` env var overrides.
     debug_audio: bool | None = None
 
+    # Wake-debug recorder: when the wake loop starts, capture the first ~5 s of the
+    # EXACT post-resample 16 kHz int16 frames fed to the wake model, save them as a
+    # mono WAV (``wake_debug_path``) and log rate / #samples / duration / RMS / peak /
+    # max+mean wake score — so a never-firing wake word is diagnosable as capture
+    # (wrong rate / silent / clipped) vs model recall (good audio, low score) from a
+    # single file. ``None`` = auto (ON when the audio debug instrument is on, e.g.
+    # under ``--browser``); an explicit ``WAKE_DEBUG_CAPTURE`` env var overrides.
+    wake_debug_capture: bool | None = None
+    # Where the wake-debug recorder writes its WAV. Default lands under the user
+    # cache dir so it's easy to find and attach. Env: WAKE_DEBUG_PATH.
+    wake_debug_path: str = "~/.cache/my-stt-tts/wake-debug.wav"
+    # Seconds of the wake stream captured by the recorder (the first N s after Start).
+    wake_debug_seconds: float = 5.0
+
     # Skip the startup audio preflight HARD STOP (the broken-audio gate that refuses
     # to open the GUI / start a mic loop when capture can't deliver 16 kHz or the mic
     # queue persistently overflows). Power-user escape hatch — also ``--skip-audio-
@@ -567,6 +593,12 @@ class Config:
             debug=_env_bool("DEBUG", default=False),
             # None => auto (the browser loop turns it on); an explicit env wins.
             debug_audio=(_env_bool("DEBUG_AUDIO", default=False) if "DEBUG_AUDIO" in env else None),
+            wake_debug_capture=(
+                _env_bool("WAKE_DEBUG_CAPTURE", default=False)
+                if "WAKE_DEBUG_CAPTURE" in env
+                else None
+            ),
+            wake_debug_path=env.get("WAKE_DEBUG_PATH", "~/.cache/my-stt-tts/wake-debug.wav"),
             skip_audio_preflight=_env_bool("SKIP_AUDIO_PREFLIGHT", default=False),
         )
         if env.get("TELEPHONY_PORT"):
@@ -587,6 +619,10 @@ class Config:
             cfg.smart_turn_threshold = float(env["SMART_TURN_THRESHOLD"])
         if env.get("WAKE_THRESHOLD"):
             cfg.wake_threshold = float(env["WAKE_THRESHOLD"])
+        if env.get("WAKE_PHASES"):
+            cfg.wake_phases = int(env["WAKE_PHASES"])
+        if env.get("WAKE_DEBUG_SECONDS"):
+            cfg.wake_debug_seconds = float(env["WAKE_DEBUG_SECONDS"])
         if env.get("VAD_THRESHOLD"):
             cfg.vad_threshold = float(env["VAD_THRESHOLD"])
         if env.get("VAD_SILENCE_SECONDS"):
@@ -693,6 +729,8 @@ class Config:
             )
         if not 0.0 <= self.wake_threshold <= 1.0:
             errors.append(f"wake_threshold must be in [0, 1]; got {self.wake_threshold}")
+        if not 1 <= self.wake_phases <= 16:
+            errors.append(f"wake_phases must be in [1, 16]; got {self.wake_phases}")
         if not 0.0 <= self.vad_threshold <= 1.0:
             errors.append(f"vad_threshold must be in [0, 1]; got {self.vad_threshold}")
         if self.interrupt_min_words < 0:
