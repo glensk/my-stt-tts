@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: ws: wss:; font-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: http: ws: wss:; font-src 'self'; frame-src https://www.youtube-nocookie.com https://www.youtube.com; base-uri 'none'; form-action 'none'">
 <title>my-stt-tts · mission control</title>
 <style>
 :root{
@@ -243,6 +243,9 @@ kbd{font-size:9px; padding:1px 5px; border:1px solid var(--line2); border-radius
 .mic-result.ok .mic-dot{background:var(--green); box-shadow:var(--glow) var(--green)}
 .mic-result.bad{border-color:var(--red); color:var(--red); box-shadow:0 0 16px -6px var(--red)}
 .mic-result.bad .mic-dot{background:var(--red); box-shadow:var(--glow) var(--red)}
+/* warn (amber) — a measurable but too-low level: not a confident pass */
+.mic-result.warn{border-color:var(--amber); color:var(--amber); box-shadow:0 0 16px -6px var(--amber)}
+.mic-result.warn .mic-dot{background:var(--amber); box-shadow:var(--glow) var(--amber)}
 .mic-result.testing{border-color:var(--cyan-dim); color:var(--cyan)}
 .mic-result.testing .mic-dot{background:var(--cyan); animation:blink .9s steps(2) infinite}
 .mic-result .mic-msg{flex:1 1 auto}
@@ -312,6 +315,44 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .level-guide .zone-label{margin-top:3px; font-size:8.5px; letter-spacing:.5px; color:var(--ink-faint);
   text-align:center}
 
+/* ---------- wake-word recall tests ----------
+   One row per wake word with Browser + Server buttons and a prominent confidence
+   readout (large % + a coloured bar): green if it would fire, amber 0.3–0.5, red <0.3. */
+.wake-rows{display:flex; flex-direction:column; gap:11px}
+.wake-word{display:flex; flex-direction:column; gap:7px; padding:9px 11px; border-radius:8px;
+  border:1px solid var(--line); background:rgba(0,0,0,.18)}
+.wake-name{font-size:12px; letter-spacing:1px; color:var(--ink); font-weight:600}
+.wake-btns{display:flex; gap:8px; flex-wrap:wrap}
+.wake-btns .btn{padding:7px 12px}
+.wake-test-btn.recording{border-color:var(--red); color:#fff;
+  background:linear-gradient(180deg,#3a1115,#2a0c0f); box-shadow:0 0 16px -4px var(--red)}
+.wake-test-btn.recording svg{animation:blink .9s steps(2) infinite}
+.wake-result{display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:8px;
+  border:1px solid var(--line2); background:#060c12}
+.wake-conf-row{display:flex; align-items:center; gap:11px}
+/* the confidence percentage is the headline of this check → make it big + bold */
+.wake-conf-val{font-size:20px; font-weight:700; letter-spacing:1px; line-height:1;
+  min-width:62px; color:var(--ink-faint); transition:color .2s}
+.wake-conf-meter{flex:1 1 auto; height:10px; border-radius:6px; background:#0a141d;
+  border:1px solid var(--line2); overflow:hidden}
+.wake-conf-meter i{display:block; height:100%; width:0%; border-radius:6px; transition:width .25s}
+.wake-msg{font-size:10.5px; letter-spacing:.3px; color:var(--ink-dim); line-height:1.5}
+/* verdict colours — fired/high (green), mid (amber), low (red), testing (cyan) */
+.wake-result.fired .wake-conf-val,
+.wake-result.high .wake-conf-val{color:var(--green); text-shadow:var(--glow) rgba(61,255,166,.45)}
+.wake-result.fired{border-color:var(--green); box-shadow:0 0 16px -6px var(--green)}
+.wake-result.fired .wake-conf-meter i,
+.wake-result.high .wake-conf-meter i{background:var(--green); box-shadow:0 0 10px -2px var(--green)}
+.wake-result.mid .wake-conf-val{color:var(--amber)}
+.wake-result.mid{border-color:var(--amber); box-shadow:0 0 16px -6px var(--amber)}
+.wake-result.mid .wake-conf-meter i{background:var(--amber); box-shadow:0 0 10px -2px var(--amber)}
+.wake-result.low .wake-conf-val{color:var(--red)}
+.wake-result.low{border-color:var(--red); box-shadow:0 0 16px -6px var(--red)}
+.wake-result.low .wake-conf-meter i{background:var(--red); box-shadow:0 0 10px -2px var(--red)}
+.wake-result.testing .wake-conf-val{color:var(--cyan)}
+.wake-result.testing{border-color:var(--cyan-dim)}
+.wake-result.testing .wake-conf-meter i{background:var(--cyan); animation:blink .9s steps(2) infinite}
+
 /* ---------- transcript ---------- */
 .transcript-card{flex:1; min-height:280px; display:flex; flex-direction:column}
 .transcript-card .body{flex:1; display:flex; flex-direction:column; padding:0; min-height:0}
@@ -345,7 +386,13 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
   -webkit-user-select:none; padding:0}
 .info-dot:hover, .info.open .info-dot{color:var(--cyan); border-color:var(--cyan);
   box-shadow:0 0 10px -3px var(--cyan)}
-.info-pop{position:absolute; z-index:50; top:calc(100% + 7px); left:50%; transform:translateX(-50%);
+/* Popover anchoring. Default (CSS hover) is absolute under the dot. But an absolute
+   popover is CLIPPED by any overflow:hidden/auto ancestor (e.g. .card, .controls,
+   .checks-body) and trapped under sibling stacking contexts. To escape that, the
+   JS positioner switches the popover to position:fixed (`.info.fixed`) and writes
+   --pop-x/--pop-y from the dot's viewport rect, so it floats above everything and
+   can open upward when near the bottom. Hover keeps the lightweight absolute path. */
+.info-pop{position:absolute; z-index:9000; top:calc(100% + 7px); left:50%; transform:translateX(-50%);
   width:230px; max-width:62vw; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
   background:linear-gradient(180deg,#0c1622,#070d14); color:var(--ink); font-size:11px;
   line-height:1.5; letter-spacing:.2px; text-transform:none; font-weight:400;
@@ -356,9 +403,20 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .info-pop code{font-size:10px; padding:1px 4px; border:1px solid var(--line2); border-radius:4px;
   background:#060c12; color:var(--cyan)}
 .info:hover .info-pop, .info.open .info-pop{opacity:1; visibility:visible}
-/* keep a right-edge popover on-screen */
+/* keep a right-edge popover on-screen (absolute/hover fallback) */
 .info.edge .info-pop{left:auto; right:0; transform:none}
 .info.edge .info-pop::before{left:auto; right:9px; transform:none}
+/* FIXED (JS-positioned, escapes all clipping) — used when an ⓘ is opened by click.
+   --pop-x is the dot centre; the popover is centred on it and clamped on-screen by
+   the JS. When `.up` it opens above the dot (near the viewport bottom). */
+.info.fixed .info-pop{position:fixed; z-index:9999; top:var(--pop-y); left:var(--pop-x);
+  right:auto; transform:translateX(-50%); max-width:min(280px,92vw)}
+.info.fixed.up .info-pop{transform:translate(-50%,-100%)}
+.info.fixed .info-pop::before{left:50%; right:auto; transform:translateX(-50%);
+  bottom:100%; top:auto; border-bottom-color:var(--line2); border-top-color:transparent}
+/* arrow points DOWN when the popover opens upward */
+.info.fixed.up .info-pop::before{bottom:auto; top:100%;
+  border-bottom-color:transparent; border-top-color:var(--line2)}
 .ctrl{width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
   background:#050a10; color:var(--ink); transition:.18s}
 .ctrl:focus{border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,231,255,.12)}
@@ -420,6 +478,23 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
 .btn.voice-test.playing{border-color:var(--mag); color:var(--mag);
   box-shadow:0 0 16px -4px var(--mag)}
 .btn.voice-test.playing svg{animation:blink .9s steps(2) infinite}
+
+/* ---------- now-playing music panel ---------- */
+.music-card .head svg{color:var(--mag)}
+.music-card>.head{color:var(--mag)}
+.music-body{display:flex; flex-direction:column; gap:12px}
+.music-row{display:flex; align-items:center; gap:11px; flex-wrap:wrap}
+.music-title{flex:1 1 200px; min-width:0; font-size:13px; letter-spacing:.4px; color:var(--ink);
+  font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.music-title::before{content:"♪ "; color:var(--mag)}
+.music-card.paused .music-title{color:var(--ink-dim)}
+.music-card.paused .music-title::after{content:" · paused"; color:var(--amber); font-weight:400; letter-spacing:1px}
+.music-btns{display:flex; gap:8px; flex-wrap:wrap}
+/* responsive 16:9 video frame (hybrid + local only) */
+.music-video{position:relative; width:100%; border-radius:8px; overflow:hidden;
+  border:1px solid var(--line2); background:#000}
+.music-video::before{content:""; display:block; padding-top:56.25%}
+.music-video iframe{position:absolute; inset:0; width:100%; height:100%; border:0}
 
 /* ---------- event log ---------- */
 .log-card .body{padding:0}
@@ -631,6 +706,66 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             </div>
           </div>
 
+          <!-- ====== WAKE-WORD RECALL TESTS ======================================
+               Record ~2s and score how confidently the wake word would fire. One
+               row per word (maziko / nexus), each with a Browser + Server button.
+               Browser records via Web Audio → downsamples to 16 kHz → POSTs the
+               PCM; Server records on the server. The `wake_test_result` event
+               carries the confidence (0–1) + fired flag → a prominent % + bar. -->
+          <div class="check check-wake" id="checkWake">
+            <div class="check-title"><span class="num" data-n="5" aria-hidden="true"></span>Wake-word recall
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake-word recall"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Directly tests whether the wake word would fire. Records ~2&nbsp;s and scores it: <b>Browser</b> uses THIS browser's mic (downsampled to 16&nbsp;kHz); <b>Server</b> uses the server's mic — the one the live wake loop listens on. The clip is saved server-side for debugging.</span></span>
+            </div>
+            <div class="wake-rows">
+              <!-- one row per wake word -->
+              <div class="wake-word" data-word="maziko">
+                <div class="wake-name">“maziko”</div>
+                <div class="wake-btns">
+                  <button class="btn wake-test-btn" type="button" data-word="maziko" data-source="browser"
+                          title="Record ~2s in THIS browser and score the “maziko” wake word">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
+                    Browser
+                  </button>
+                  <button class="btn wake-test-btn" type="button" data-word="maziko" data-source="server"
+                          title="Record ~2s on the SERVER mic and score the “maziko” wake word">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
+                    Server
+                  </button>
+                </div>
+                <div class="wake-result" id="wakeResult-maziko" role="status" aria-live="polite" hidden>
+                  <div class="wake-conf-row">
+                    <span class="wake-conf-val" id="wakeConf-maziko">—</span>
+                    <span class="wake-conf-meter"><i id="wakeBar-maziko"></i></span>
+                  </div>
+                  <div class="wake-msg" id="wakeMsg-maziko"></div>
+                </div>
+              </div>
+              <div class="wake-word" data-word="nexus">
+                <div class="wake-name">“nexus”</div>
+                <div class="wake-btns">
+                  <button class="btn wake-test-btn" type="button" data-word="nexus" data-source="browser"
+                          title="Record ~2s in THIS browser and score the “nexus” wake word">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
+                    Browser
+                  </button>
+                  <button class="btn wake-test-btn" type="button" data-word="nexus" data-source="server"
+                          title="Record ~2s on the SERVER mic and score the “nexus” wake word">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
+                    Server
+                  </button>
+                </div>
+                <div class="wake-result" id="wakeResult-nexus" role="status" aria-live="polite" hidden>
+                  <div class="wake-conf-row">
+                    <span class="wake-conf-val" id="wakeConf-nexus">—</span>
+                    <span class="wake-conf-meter"><i id="wakeBar-nexus"></i></span>
+                  </div>
+                  <div class="wake-msg" id="wakeMsg-nexus"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- First-use macOS hint: grant the terminal/app mic permission.
                Hidden once the mic is confirmed working (mic_result ok OR permission authorized). -->
           <div class="voice-note mic-hint" id="micHintRow" role="note">
@@ -682,14 +817,40 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About reset"
                     aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Clears the conversation transcript and resets the assistant's memory for a fresh start. Does not change your settings.</span></span>
             </button>
-            <button class="btn" id="listVoicesBtn" type="button" title="Refresh voice list">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h10M4 12h16M4 17h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-              List Voices
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About list voices"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Re-scans the installed TTS voices and refreshes the Voice dropdown — use it after adding a new voice model.</span></span>
-            </button>
           </div>
           <div class="voice-note" id="voiceNoteRow" role="status" aria-live="polite" hidden></div>
+        </div>
+      </section>
+
+      <!-- NOW PLAYING — appears ONLY while music is playing (driven by `music`
+           events). Title + transport controls. In hybrid mode on a local page a
+           MUTED youtube-nocookie iframe is embedded (audio is the server's; muted
+           avoids double-audio). In server mode (or remote) no iframe is shown. -->
+      <section class="card music-card" id="musicCard" aria-label="Now playing" hidden>
+        <div class="head">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5l11-2v13" stroke="#ff36c6" stroke-width="1.6" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" stroke="#ff36c6" stroke-width="1.6"/><circle cx="17" cy="16" r="3" stroke="#ff36c6" stroke-width="1.6"/></svg>
+          ♪ now playing <span class="tag" id="musicMode"></span>
+        </div>
+        <div class="body music-body">
+          <div class="music-row">
+            <div class="music-title" id="musicTitle" role="status" aria-live="polite">—</div>
+            <div class="music-btns">
+              <button class="btn" id="musicPauseBtn" type="button" title="Pause playback">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
+                <span id="musicPauseLabel">⏸ Pause</span>
+              </button>
+              <button class="btn" id="musicResumeBtn" type="button" title="Resume playback" hidden>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4l13 8-13 8V4Z" fill="currentColor"/></svg>
+                ▶ Resume
+              </button>
+              <button class="btn danger" id="musicStopBtn" type="button" title="Stop playback">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+                ⏹ Stop
+              </button>
+            </div>
+          </div>
+          <!-- video frame (hybrid + local only); src is set by JS so a non-hybrid run never loads it -->
+          <div class="music-video" id="musicVideo" hidden></div>
         </div>
       </section>
 
@@ -810,6 +971,21 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <div class="field" style="margin-bottom:0">
               <label for="workspace">Agent workspace</label>
               <input class="ctrl" id="workspace" data-key="agent_workspace" autocomplete="off">
+            </div>
+          </div>
+
+          <!-- ============ 🎵 MUSIC — where music audio comes out ============ -->
+          <div class="cfg-section" aria-label="Music settings">
+            <h3 class="cfg-section-head"><span class="gly" aria-hidden="true">🎵</span>Music</h3>
+            <div class="field" style="margin-bottom:0">
+              <label for="musicPlayback">Playback
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About music playback"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip"><b>server</b> — music plays through the server's speaker (title + transport controls only). <b>hybrid</b> — additionally embeds a <b>muted</b> YouTube video in this page when it's open locally; audio still comes from the server.</span></span>
+              </label>
+              <select class="ctrl" id="musicPlayback" data-key="music_playback">
+                <option value="server">server — speaker only</option>
+                <option value="hybrid">hybrid — + muted video (local)</option>
+              </select>
             </div>
           </div>
 
@@ -1241,10 +1417,14 @@ async function api(path, opts){
   const ct = res.headers.get("content-type")||"";
   return ct.includes("json") ? res.json() : res.text();
 }
+// `action` is either a bare action name (string) or a full payload object that
+// carries an `action` field plus extra params (e.g. wake_test's word/source/pcm).
 async function postAction(action){
-  log("» action: "+action, "sys");
-  if(DEMO){ demoAction(action); return; }
-  try{ await api("/api/action",{method:"POST",body:JSON.stringify({action})}); }
+  const payload = (action && typeof action === "object") ? action : {action};
+  const name = payload.action;
+  log("» action: "+name, "sys");
+  if(DEMO){ demoAction(name, payload); return; }
+  try{ await api("/api/action",{method:"POST",body:JSON.stringify(payload)}); }
   catch(e){ log("action failed: "+e.message,"error"); }
 }
 async function sendTurn(text){
@@ -1296,6 +1476,10 @@ function populate(s){
   $("#agentModel").value = settings.agent_model ?? "";
   $("#workspace").value  = settings.agent_workspace ?? "";
   $("#sysPrompt").value  = settings.system_prompt ?? "";
+  // Music playback mode (server | hybrid). Default to "server" when unset.
+  $("#musicPlayback").value = (settings.music_playback === "hybrid") ? "hybrid" : "server";
+  // A live music panel may need its iframe added/removed when the mode changes.
+  if(typeof refreshMusicVideoForMode === "function") refreshMusicVideoForMode();
   let ls = parseFloat(settings.length_scale);
   if(isNaN(ls)) ls = 1.0;
   $("#length").value = ls;
@@ -1456,10 +1640,35 @@ async function applyPatch(patch){
 function closeInfos(except){
   document.querySelectorAll(".info.open").forEach(i=>{
     if(i===except) return;
-    i.classList.remove("open");
+    i.classList.remove("open","fixed","edge","up");
     const dot = i.querySelector(".info-dot");
     if(dot) dot.setAttribute("aria-expanded","false");
   });
+}
+// Position a clicked popover with position:fixed off the dot's viewport rect, so it
+// escapes any overflow:hidden/auto ancestor (cards, controls row, checks body) and
+// stacking context. Centre it on the dot, clamp horizontally on-screen, and flip
+// ABOVE the dot when it would overflow the viewport bottom.
+function positionInfo(info){
+  const dot = info.querySelector(".info-dot");
+  const pop = info.querySelector(".info-pop");
+  if(!dot || !pop) return;
+  info.classList.add("fixed");
+  info.classList.remove("up");
+  // Measure the popover (it's visible once .fixed+.open are set).
+  const dr = dot.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  const margin = 8, gap = 11;
+  const half = pr.width/2;
+  let x = dr.left + dr.width/2;
+  x = Math.max(margin + half, Math.min(x, innerWidth - margin - half));   // clamp on-screen
+  // Open downward by default; flip up if it would overflow the bottom.
+  const below = dr.bottom + gap + pr.height;
+  const up = below > innerHeight - margin && dr.top - gap - pr.height > margin;
+  info.classList.toggle("up", up);
+  const y = up ? (dr.top - gap) : (dr.bottom + gap);
+  pop.style.setProperty("--pop-x", x + "px");
+  pop.style.setProperty("--pop-y", y + "px");
 }
 function toggleInfo(info){
   const open = !info.classList.contains("open");
@@ -1467,12 +1676,8 @@ function toggleInfo(info){
   info.classList.toggle("open", open);
   const dot = info.querySelector(".info-dot");
   if(dot) dot.setAttribute("aria-expanded", String(open));
-  if(open){
-    // Reposition near the right edge so the 230px popover stays on screen.
-    info.classList.remove("edge");
-    const pop = info.querySelector(".info-pop");
-    if(pop && pop.getBoundingClientRect().right > innerWidth - 6) info.classList.add("edge");
-  }
+  if(open){ positionInfo(info); }
+  else{ info.classList.remove("fixed","edge","up"); }
 }
 document.querySelectorAll(".info .info-dot").forEach(dot=>{
   const info = dot.closest(".info");
@@ -1484,6 +1689,9 @@ document.querySelectorAll(".info .info-dot").forEach(dot=>{
 });
 document.addEventListener("click", e=>{ if(!e.target.closest(".info")) closeInfos(null); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeInfos(null); });
+// A fixed popover is anchored to a viewport rect → reposition (or close) on scroll/resize.
+addEventListener("scroll", ()=>{ const o = document.querySelector(".info.open"); if(o) positionInfo(o); }, true);
+addEventListener("resize", ()=>{ const o = document.querySelector(".info.open"); if(o) positionInfo(o); });
 
 // Brain preset → POST {brain_preset: <value>}. Track the explicit pick so a later
 // populate()/settings refresh keeps showing it (the backend reports no current
@@ -1599,7 +1807,6 @@ $("#resetBtn").addEventListener("click", ()=>{
   stream=null; thread.innerHTML=""; turns=0; bump();
   setState("idle","conversation buffer cleared.");
 });
-$("#listVoicesBtn").addEventListener("click", ()=> postAction("list_voices"));
 
 /* ---------- voice TEST: synthesize + play a one-line sample in the selected voice ----------
    POSTs {action:"voice_test"} to /api/action (the backend synthesizes + plays it),
@@ -1621,6 +1828,94 @@ voiceTestBtn.addEventListener("click", ()=>{
   clearTimeout(voiceTestTimer);
   voiceTestTimer = setTimeout(()=> voiceTestBusy(false), 3500);
 });
+
+/* ============================================================
+   MUSIC PLAYER  (server playback + hybrid muted video)
+   The NOW-PLAYING panel appears ONLY while music is playing, driven by the
+   `music` SSE event ({status, title, video_id, url}). Transport buttons POST
+   music_stop / music_pause / music_resume. When settings.music_playback ===
+   "hybrid" AND the page is open locally, a MUTED youtube-nocookie iframe is
+   embedded (audio comes from the server; muting avoids double-audio). In
+   "server" mode (or a non-local page) no iframe is shown.
+   ============================================================ */
+const LOCAL_HOSTS = ["127.0.0.1","localhost","::1","[::1]"];
+const isLocalPage = LOCAL_HOSTS.includes(location.hostname);
+const musicCard = $("#musicCard");
+let musicVideoId = "";          // the video currently EMBEDDED (avoid reloading the iframe)
+let currentMusicVideoId = "";   // the current track's video id (persists across mode flips)
+function musicIsHybridLocal(){
+  return settings.music_playback === "hybrid" && isLocalPage;
+}
+// Build/refresh the muted video iframe (hybrid + local only). Only (re)creates the
+// iframe when the video_id actually changes, so pause/resume don't reload it.
+function setMusicVideo(videoId){
+  const wrap = $("#musicVideo");
+  if(!wrap) return;
+  if(musicIsHybridLocal() && videoId){
+    if(videoId !== musicVideoId){
+      const f = document.createElement("iframe");
+      // Muted + autoplay; audio is the server's. youtube-nocookie is allow-listed in the CSP frame-src.
+      f.src = "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(videoId)
+              + "?autoplay=1&mute=1&controls=1";
+      f.setAttribute("allow", "autoplay");
+      f.setAttribute("title", "Now playing video (muted)");
+      f.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+      wrap.replaceChildren(f);
+      musicVideoId = videoId;
+    }
+    wrap.hidden = false;
+  }else{
+    wrap.replaceChildren();
+    wrap.hidden = true;
+    musicVideoId = "";
+  }
+}
+function showMusic(d){
+  musicCard.hidden = false;
+  const title = d.title || d.url || "Unknown track";
+  $("#musicTitle").textContent = title;
+  const modeTag = $("#musicMode");
+  if(modeTag) modeTag.textContent = musicIsHybridLocal() ? "hybrid · video" : "server · audio";
+  // A music event without a video_id (pause/resume) keeps the current track's id.
+  if(d.video_id) currentMusicVideoId = d.video_id;
+  setMusicVideo(currentMusicVideoId);
+}
+function hideMusic(){
+  musicCard.hidden = true;
+  musicCard.classList.remove("paused");
+  currentMusicVideoId = "";
+  setMusicVideo("");
+}
+function setMusicPaused(paused){
+  musicCard.classList.toggle("paused", !!paused);
+  const pauseBtn = $("#musicPauseBtn"), resumeBtn = $("#musicResumeBtn");
+  if(pauseBtn) pauseBtn.hidden = !!paused;     // show Resume while paused, Pause while playing
+  if(resumeBtn) resumeBtn.hidden = !paused;
+}
+// Consume a `music` event: playing/resumed → show; paused → reflect; stopped → hide.
+function handleMusic(d){
+  const status = (d.status || "").toLowerCase();
+  if(status === "stopped"){
+    hideMusic();
+    log("♪ music stopped", "evt");
+    return;
+  }
+  showMusic(d);
+  if(status === "paused"){ setMusicPaused(true); log("♪ music paused", "evt"); }
+  else { setMusicPaused(false); log("♪ music "+(status||"playing")+(d.title?": "+d.title:""), "evt"); }
+}
+// Re-evaluate the video iframe for the CURRENT track after the playback mode
+// changes (server↔hybrid) — add it in hybrid+local, drop it otherwise. Called by
+// populate() (after a settings refresh writes music_playback).
+function refreshMusicVideoForMode(){
+  if(musicCard.hidden) return;        // nothing playing → nothing to do
+  const modeTag = $("#musicMode");
+  if(modeTag) modeTag.textContent = musicIsHybridLocal() ? "hybrid · video" : "server · audio";
+  setMusicVideo(currentMusicVideoId);
+}
+$("#musicStopBtn").addEventListener("click", ()=>{ postAction("music_stop"); });
+$("#musicPauseBtn").addEventListener("click", ()=>{ setMusicPaused(true); postAction("music_pause"); });
+$("#musicResumeBtn").addEventListener("click", ()=>{ setMusicPaused(false); postAction("music_resume"); });
 
 /* ============================================================
    MIC & AUDIO CHECKS  — shared helpers
@@ -1652,6 +1947,17 @@ function markCheckDone(checkId, done){
 // Busy = mid-capture: shows the per-check "● speak now / capturing…" indicator.
 function setCheckBusy(checkId, busy){
   const c = $(checkId); if(c) c.classList.toggle("testing", !!busy);
+}
+// Shared verdict-by-level mapping for ANY mic check that reports a measured level.
+// Thresholds (per spec): 0–20% red, 20–33% orange (warn), 33–100% green.
+// A level below 20% must NOT read as a confident pass — `levelClass` returns "bad",
+// and the caller shows a "move closer / speak up" warning instead of a green "working".
+function levelClass(level){
+  const n = typeof level === "number" ? level : -1;
+  if(n < 0)  return "ok";        // no level reported → don't downgrade a clean verdict
+  if(n < 20) return "bad";       // too quiet to trust — red, with a warning message
+  if(n < 33) return "warn";      // measurable but low — amber caution
+  return "ok";                   // healthy level — green
 }
 // Any successful check confirms the mic works → hide the macOS hint AND flag the
 // panel header as passed (small ✓). One-way latch: once confirmed it stays hidden.
@@ -1693,7 +1999,7 @@ const micResult = $("#micResult"), micResultMsg = $("#micResultMsg");
 const micResultMeter = $("#micResultMeter"), micResultBar = $("#micResultBar");
 function setMicResult(cls, msg, level){
   micResult.hidden = false;
-  micResult.classList.remove("ok","bad","testing");
+  micResult.classList.remove("ok","bad","warn","testing");
   if(cls) micResult.classList.add(cls);
   micResultMsg.textContent = msg;
   if(typeof level === "number"){
@@ -1704,8 +2010,23 @@ function setMicResult(cls, msg, level){
   }
 }
 function showMicResult(d){
-  const ok = !!d.ok;
-  setMicResult(ok ? "ok" : "bad", (ok?"✓ ":"✗ ") + (d.message||""), d.level);
+  const okRaw = !!d.ok;
+  const hasLevel = typeof d.level === "number";
+  // Colour the chip by the MEASURED level when one is present (shared thresholds):
+  // 0–20% red, 20–33% amber, 33%+ green. A backend "ok" with a too-low level is
+  // downgraded — we show a "move closer / speak up" warning, not a green pass.
+  const lvlCls = hasLevel ? levelClass(d.level) : (okRaw ? "ok" : "bad");
+  const cls = okRaw ? lvlCls : "bad";
+  const ok = cls === "ok";          // a confident pass only when green
+  let msg;
+  if(okRaw && hasLevel && cls === "bad"){
+    msg = "⚠ Mic level very low ("+d.level+"%) — move closer / speak up.";
+  }else if(okRaw && hasLevel && cls === "warn"){
+    msg = "⚠ Mic level low ("+d.level+"%) — move a little closer for a reliable wake.";
+  }else{
+    msg = (okRaw?"✓ ":"✗ ") + (d.message||"");
+  }
+  setMicResult(cls, msg, d.level);
   setCheckBusy("#checkServer", false);
   markCheckDone("#checkServer", ok);
   // Surface the relevant output the backend reports (defensive: only what's present).
@@ -1718,9 +2039,11 @@ function showMicResult(d){
   ]);
   // The server capture is finished → mic is cold again.
   if(hotFlag){ hotFlag.textContent = "MIC ● COLD"; hotFlag.classList.remove("hot"); }
-  // A clean OK (or an explicitly authorized permission) confirms the mic works.
-  if(ok || d.permission === "authorized") confirmMicWorking();
-  log((ok?"✓ ":"✗ ") + "mic test: " + (d.message||""), ok ? "evt" : "error");
+  // A clean GREEN verdict confirms the mic works. A too-low level (downgraded above)
+  // must NOT confirm — even when permission is "authorized" — so the warning stands.
+  const lowLevel = hasLevel && cls !== "ok";
+  if(ok || (d.permission === "authorized" && !lowLevel)) confirmMicWorking();
+  log((ok?"✓ ":"⚠ ") + "mic test: " + msg, ok ? "evt" : "error");
 }
 $("#micTestBtn").addEventListener("click", ()=>{
   setMicResult("testing", "Capturing ~1.5s — say “Hello”…");
@@ -1802,7 +2125,7 @@ let browserMicSmoothed = 0, browserMicVoicedFrames = 0, browserMicPeak = 0, brow
 let browserMicTimer = null;
 function setBrowserResult(cls, msg){
   micBrowserResult.hidden = false;
-  micBrowserResult.classList.remove("ok","bad","testing");
+  micBrowserResult.classList.remove("ok","bad","warn","testing");
   if(cls) micBrowserResult.classList.add(cls);
   micBrowserMsg.textContent = msg;
 }
@@ -1825,12 +2148,26 @@ function finishBrowserMic(){
   stopBrowserMic();
   micBrowserGuide.hidden = true;
   setCheckBusy("#checkBrowser", false);
-  if(browserMicVoicedFrames >= 4 || browserMicPeak > 0.02){
+  const heard = browserMicVoicedFrames >= 4 || browserMicPeak > 0.02;
+  // Colour by the measured peak level via the shared thresholds: 0–20% red,
+  // 20–33% amber, 33%+ green. Below 20% never reads as a confident pass.
+  const cls = heard ? levelClass(pct) : "bad";
+  if(cls === "ok"){
     browserMicPassed = true;
     setBrowserResult("ok", "✓ Browser mic working properly — peak level "+pct+"%.");
     markCheckDone("#checkBrowser", true);
     confirmMicWorking();
     log("✓ browser mic test: working — peak "+pct+"%","evt");
+  }else if(cls === "warn"){
+    browserMicPassed = false;
+    setBrowserResult("warn", "⚠ Mic level low ("+pct+"%) — move a little closer for a reliable wake.");
+    markCheckDone("#checkBrowser", false);
+    log("⚠ browser mic test: low level — peak "+pct+"%","error");
+  }else if(heard){
+    browserMicPassed = false;
+    setBrowserResult("bad", "⚠ Mic level very low ("+pct+"%) — move closer / speak up.");
+    markCheckDone("#checkBrowser", false);
+    log("⚠ browser mic test: very low level — peak "+pct+"%","error");
   }else{
     browserMicPassed = false;
     setBrowserResult("bad", "✗ No audio detected — the browser mic was silent. Check the input device + permission.");
@@ -2059,6 +2396,147 @@ micBrowserReplayBtn.addEventListener("click", async ()=>{
   try{ if(actx) await actx.close(); }catch(_e){}
 });
 
+/* ============================================================
+   WAKE-WORD RECALL TESTS  (maziko / nexus × browser / server)
+   Records ~2s and scores how confidently the wake word would fire.
+   Browser: getUserMedia → ~2s of mono PCM (Web Audio) → downsample to 16 kHz
+            Float32 → POST {action:"wake_test", word, source:"browser",
+            pcm:[…], sample_rate:16000}.
+   Server:  POST {action:"wake_test", word, source:"server"} — the server records.
+   The matching `wake_test_result` SSE event (handled in handleEvent) renders the
+   confidence (0–1) as a prominent % + bar, coloured green if `fired`/conf≥0.5,
+   amber 0.3–0.5, red <0.3. The clip is saved server-side for debugging.
+   ============================================================ */
+const WAKE_REC_MS = 2000;        // ~2s capture, matching the contract
+const WAKE_TEST_SR = 16000;      // target PCM rate for the browser path
+const wakeBusy = {};             // word|source → true while a capture/round-trip is in flight
+function wakeBtnsFor(word){
+  return Array.from(document.querySelectorAll('.wake-test-btn[data-word="'+word+'"]'));
+}
+function setWakeBtnRecording(word, source, on){
+  const b = document.querySelector('.wake-test-btn[data-word="'+word+'"][data-source="'+source+'"]');
+  if(b) b.classList.toggle("recording", !!on);
+}
+// Render a wake_test_result (or a transient "recording…" state) for a word.
+function setWakeResult(word, cls, confPct, msg){
+  const wrap = $("#wakeResult-"+word);
+  const valEl = $("#wakeConf-"+word);
+  const barEl = $("#wakeBar-"+word);
+  const msgEl = $("#wakeMsg-"+word);
+  if(!wrap) return;
+  wrap.hidden = false;
+  wrap.classList.remove("fired","high","mid","low","testing");
+  if(cls) wrap.classList.add(cls);
+  if(valEl) valEl.textContent = (confPct==null) ? "…" : (confPct + "%");
+  if(barEl) barEl.style.width = (confPct==null ? 0 : Math.max(0, Math.min(100, confPct))) + "%";
+  if(msgEl) msgEl.textContent = msg || "";
+}
+// Confidence → verdict class. fired wins; else by the spec bands:
+// green (high) ≥0.5, amber (mid) 0.3–0.5, red (low) <0.3.
+function wakeVerdictClass(conf, fired){
+  if(fired || conf >= 0.5) return fired ? "fired" : "high";
+  if(conf >= 0.3) return "mid";
+  return "low";
+}
+function showWakeResult(d){
+  const word = d.word || "";
+  const conf = typeof d.confidence === "number" ? d.confidence : 0;
+  const pct = Math.round(Math.max(0, Math.min(1, conf)) * 100);
+  const cls = wakeVerdictClass(conf, !!d.fired);
+  const srcLabel = d.source === "browser" ? "browser" : "server";
+  let msg = (d.message || "") + " ";
+  msg += d.fired ? "✓ would fire" : "✗ would not fire";
+  msg += " · " + srcLabel + (d.wav_path ? " · clip saved server-side for debugging" : "");
+  setWakeResult(word, cls, pct, msg.trim());
+  wakeBusy[word+"|"+d.source] = false;
+  setWakeBtnRecording(word, d.source, false);
+  // any green wake result also confirms the mic is working
+  if(cls === "fired" || cls === "high") confirmMicWorking();
+  log((d.fired?"⚡ ":"· ") + "wake test ["+word+" · "+srcLabel+"]: conf "+pct+"% "
+        + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
+}
+// Downsample a capture-rate Float32 block to 16 kHz by linear decimation (mirrors
+// the Live-Audio downsampler; local so this section doesn't depend on its const).
+function wakeDownsample(block, fromRate){
+  if(fromRate === WAKE_TEST_SR) return Array.from(block);
+  const ratio = fromRate / WAKE_TEST_SR;
+  const n = Math.floor(block.length / ratio);
+  const out = new Array(n);
+  for(let i=0;i<n;i++) out[i] = block[Math.floor(i*ratio)];
+  return out;
+}
+async function runWakeTestServer(word){
+  setWakeResult(word, "testing", null, "● recording 2 s on the server mic — say “"+word+"”…");
+  setWakeBtnRecording(word, "server", true);
+  postAction({action:"wake_test", word, source:"server"});   // result arrives via SSE
+}
+async function runWakeTestBrowser(word){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    setWakeResult(word, "low", 0, "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
+    wakeBusy[word+"|browser"] = false; setWakeBtnRecording(word, "browser", false);
+    return;
+  }
+  setWakeResult(word, "testing", null, "Requesting browser mic — click Allow if prompted…");
+  setWakeBtnRecording(word, "browser", true);
+  let stream = null, actx = null, proc = null, srcNode = null;
+  const chunks = [];
+  function cleanup(){
+    try{ if(proc){ proc.disconnect(); proc.onaudioprocess = null; } }catch(_e){}
+    try{ if(srcNode) srcNode.disconnect(); }catch(_e){}
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    setWakeResult(word, "low", 0, "✗ Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
+    wakeBusy[word+"|browser"] = false; setWakeBtnRecording(word, "browser", false);
+    return;
+  }
+  actx = new (window.AudioContext||window.webkitAudioContext)();
+  const sr = actx.sampleRate || 48000;
+  srcNode = actx.createMediaStreamSource(stream);
+  proc = actx.createScriptProcessor(4096, 1, 1);
+  proc.onaudioprocess = ev=>{
+    const inp = ev.inputBuffer.getChannelData(0);
+    const copy = new Float32Array(inp.length); copy.set(inp);
+    chunks.push(copy);
+  };
+  // Route through a muted gain so the live mic isn't echoed during the capture.
+  const mute = actx.createGain(); mute.gain.value = 0;
+  srcNode.connect(proc); proc.connect(mute); mute.connect(actx.destination);
+  let remain = Math.round(WAKE_REC_MS/1000);
+  setWakeResult(word, "testing", null, "● Recording ~2 s — say “"+word+"”… ("+remain+")");
+  const countdown = setInterval(()=>{ remain--; if(remain>0) setWakeResult(word, "testing", null, "● Recording ~2 s — say “"+word+"”… ("+remain+")"); }, 1000);
+
+  await new Promise(r=> setTimeout(r, WAKE_REC_MS));
+  clearInterval(countdown);
+  cleanup();
+  // Stitch + downsample the captured PCM to a 16 kHz Float32 array for the contract.
+  const total = chunks.reduce((n,c)=>n+c.length, 0);
+  const merged = new Float32Array(total);
+  let off = 0; for(const c of chunks){ merged.set(c, off); off += c.length; }
+  try{ if(actx) await actx.close(); }catch(_e){}
+  const pcm = wakeDownsample(merged, sr);
+  if(DEMO){
+    // No backend in demo — synthesize a plausible scored result for THIS word/source.
+    setWakeResult(word, "testing", null, "scoring captured audio…");
+    setTimeout(()=> showWakeResult(demoWakeResult(word, "browser")), 600);
+    return;
+  }
+  setWakeResult(word, "testing", null, "▶ Scoring "+pcm.length+" samples @16 kHz…");
+  postAction({action:"wake_test", word, source:"browser", pcm, sample_rate:WAKE_TEST_SR});
+}
+document.querySelectorAll(".wake-test-btn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    const word = btn.dataset.word, source = btn.dataset.source;
+    const key = word+"|"+source;
+    if(wakeBusy[key]) return;
+    wakeBusy[key] = true;
+    if(source === "server") runWakeTestServer(word);
+    else runWakeTestBrowser(word);
+  });
+});
+
 // keyboard: SPACE = push-to-talk (when not typing in a field)
 addEventListener("keydown", e=>{
   if(e.code==="Space" && !e.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)){
@@ -2151,6 +2629,12 @@ function handleEvent(raw){
     case "mic_record_replay":
       // Intermediate phase updates from the backend: recording → playing → done.
       handleReplayPhase(d); break;
+    case "wake_test_result":
+      // Scored wake-word recall (maziko/nexus × browser/server) → confidence + bar.
+      showWakeResult(d); break;
+    case "music":
+      // NOW-PLAYING panel: playing/paused/resumed/stopped + (hybrid+local) video.
+      handleMusic(d); break;
     case "debug":
       // Verbose backend diagnostics (button presses, capture diagnostics). Hidden
       // unless the Debug toggle is on, so the log stays clean by default.
@@ -2307,6 +2791,7 @@ const DEMO_SETTINGS = {
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
   wake_words:["alexa","computer","jarvis","maziko","nexus"],
+  music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
   system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
   brain_preset:"haiku-sub",
@@ -2326,6 +2811,11 @@ const DEMO_PRESET_MAP = {
   "opus-deep":      {provider:"anthropic", model:"claude-opus",   model_deep:"claude-opus"},
   "local-fast":     {provider:"local",     model:"llama-3.1-8b",  model_deep:"llama-3.1-70b"},
 };
+// Demo "now playing" event — a real-looking YouTube video_id so the hybrid muted
+// video embeds when the demo page is opened locally (DEMO_SETTINGS sets hybrid).
+const DEMO_MUSIC_EVENT = {type:"music", status:"playing",
+  title:"Ludovico Einaudi — Nuvole Bianche", video_id:"4VR-6AS0-l4",
+  url:"https://www.youtube.com/watch?v=4VR-6AS0-l4"};
 
 // One full scripted turn, cycling every state, then idle, then loops.
 const DEMO_SCRIPT = [
@@ -2360,6 +2850,12 @@ function enterDemo(){
     log("tip: append  ?backend=https://<your-server>  to this URL for a REAL conversation against your own `my-stt-tts --browser`","info");
   }
   if(!settings.brain_presets) populate(DEMO_SETTINGS);
+  // Seed the new UI so it's visible offline without clicking:
+  //  • a scored wake_test_result for each word (maziko fires green, nexus amber),
+  //  • a "music playing" event (server playback + hybrid video iframe when local).
+  showWakeResult(demoWakeResult("maziko", "server"));
+  showWakeResult(demoWakeResult("nexus", "browser"));
+  handleMusic(DEMO_MUSIC_EVENT);
   demoStep = 0;
   runDemoStep();
 }
@@ -2418,13 +2914,32 @@ function demoTurn(text){
     tick();
   }, 600);
 }
-function demoAction(action){
+// Demo wake-test result: a believable per-word/per-source score so the new wake
+// UI is fully exercised offline. "maziko" fires confidently; "nexus" lands amber.
+function demoWakeResult(word, source){
+  const base = (word === "maziko") ? 0.86 : 0.42;
+  const conf = Math.max(0, Math.min(1, base + (Math.random()*0.08 - 0.04)));
+  return {type:"wake_test_result", word, source, confidence:conf, fired: conf >= 0.5,
+    message: "scored "+(word)+" @16 kHz (demo)",
+    wav_path: "/tmp/wake_"+word+"_"+source+"_demo.wav"};
+}
+function demoAction(action, payload){
+  if(action==="music_stop"){ handleMusic({type:"music", status:"stopped"}); return; }
+  if(action==="music_pause"){ handleMusic(Object.assign({}, DEMO_MUSIC_EVENT, {status:"paused"})); return; }
+  if(action==="music_resume"){ handleMusic(Object.assign({}, DEMO_MUSIC_EVENT, {status:"resumed"})); return; }
+  if(action==="wake_test"){
+    const word = (payload && payload.word) || "maziko";
+    const source = (payload && payload.source) || "server";
+    if(source === "server"){
+      setTimeout(()=> showWakeResult(demoWakeResult(word, "server")), 2000);
+    }
+    // browser source resolves its own demo result in runWakeTestBrowser
+    return;
+  }
   if(action==="reset"){
     stream=null; thread.innerHTML=""; turns=0; bump();
     setState("idle","buffer cleared (demo).");
     clearTimeout(demoStreamTimer); demoStep=0; clearTimeout(demoTimer); demoTimer=setTimeout(runDemoStep,1200);
-  }else if(action==="list_voices"){
-    log("voices: "+(settings.voices||[]).map(v=>v.name).join(", "),"evt");
   }else if(action==="mic_test"){
     // No real server in demo mode — simulate a clean OK (with the richer output
     // fields) so the chip + meta row are exercised.
