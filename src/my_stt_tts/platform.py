@@ -21,6 +21,7 @@ device, no subprocess in tests.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sys
 from typing import Any
@@ -30,6 +31,54 @@ log = logging.getLogger("my_stt_tts.platform")
 MACOS = "macos"
 LINUX = "linux"
 OTHER = "other"
+
+# Map a ``TERM_PROGRAM`` value (set by the terminal emulator the server runs in) to
+# the friendly app name whose macOS microphone permission governs the SERVER-side
+# capture. The GUI labels the server mic "uses <App>'s microphone permission" so the
+# user knows which app to grant access to in System Settings › Privacy & Security ›
+# Microphone. Lookup is case-insensitive on the env value.
+_TERM_PROGRAM_NAMES: dict[str, str] = {
+    "iterm.app": "iTerm",
+    "apple_terminal": "Terminal",
+    "vscode": "VS Code",
+    "ghostty": "Ghostty",
+    "wezterm": "WezTerm",
+    "hyper": "Hyper",
+    "tabby": "Tabby",
+    "alacritty": "Alacritty",
+    "kitty": "kitty",
+    "warpterminal": "Warp",
+    "rio": "Rio",
+}
+
+# Shown when ``TERM_PROGRAM`` is unset (or unknown) — the host app can't be named,
+# so the GUI falls back to a generic phrasing.
+_UNKNOWN_HOST_APP = "your terminal app"
+
+
+def host_app_name(env: Any = None) -> str:
+    """Friendly name of the app the SERVER process runs in (from ``TERM_PROGRAM``).
+
+    This is the app whose macOS microphone permission governs the server-side
+    capture, so the GUI can label the server mic "uses <App>'s microphone
+    permission". Reads ``TERM_PROGRAM`` (set by the terminal emulator) and maps it to
+    a friendly name (``iTerm.app`` → "iTerm", ``Apple_Terminal`` → "Terminal",
+    ``vscode`` → "VS Code", ``ghostty`` → "Ghostty", ``WezTerm`` → "WezTerm",
+    ``Hyper``, …); an unknown value is title-cased as a best guess. Falls back to
+    ``"your terminal app"`` when ``TERM_PROGRAM`` is unset/blank. ``env`` (a mapping,
+    default :data:`os.environ`) is injectable for testing. Never raises.
+    """
+    source = os.environ if env is None else env
+    raw = str(source.get("TERM_PROGRAM", "") or "").strip()
+    if not raw:
+        return _UNKNOWN_HOST_APP
+    known = _TERM_PROGRAM_NAMES.get(raw.lower())
+    if known is not None:
+        return known
+    # Unknown emulator: title-case the raw value (drop a trailing ".app") as a
+    # reasonable label rather than the generic fallback — we DO know an app is set.
+    cleaned = raw[:-4] if raw.lower().endswith(".app") else raw
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else _UNKNOWN_HOST_APP
 
 
 def detect_platform(cfg: Any = None) -> str:

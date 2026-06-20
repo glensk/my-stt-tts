@@ -65,6 +65,7 @@ def settings_dict(
     ``voice_hint`` (a short reason) instead of letting them POST and silently error.
     """
     from .audio import mic_permission_status
+    from .platform import host_app_name
 
     return {
         "audio_enabled": audio_enabled,
@@ -73,6 +74,10 @@ def settings_dict(
         # macOS mic authorization (authorized/denied/notDetermined/restricted/unavailable) so
         # the page can show whether System Settings › Microphone is enabled for this app.
         "mic_permission": mic_permission_status(),
+        # The friendly name of the app the SERVER runs in (from TERM_PROGRAM) — the
+        # app whose macOS mic permission governs the server capture. The GUI labels
+        # the server mic "uses <App>'s microphone permission".
+        "host_app": host_app_name(),
         "provider": cfg.llm_provider,
         "model": cfg.llm_model,
         "model_deep": cfg.llm_model_deep,
