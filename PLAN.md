@@ -11,6 +11,46 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave M3: music_playback setting + wake-word TEST diagnostic + EVENT LOG relabel
+
+Three backend features on branch `music-server-wake` (worktree `.worktree-srv`),
+implemented against a SHARED CONTRACT a parallel GUI agent consumes. 614 → 646
+tests core (+32), green core-only (646 + 2 extras-gated skips) and `--extra all`
+(650, the 2 real-model `say` tests now run against the actual maziko/nexus ONNX).
+Lint clean (ruff check + format, mypy `src`, pylint). `music.py`/`wake.py` still
+import CORE-only (no yt-dlp / openWakeWord). No README / webui.html / clients /
+esp32 changes (backend only).
+
+- **(1) `music_playback` setting (server vs hybrid).** New `Config.music_playback`
+  (`"hybrid"` default; env `MUSIC_PLAYBACK`; validated to {server,hybrid} via new
+  `MUSIC_PLAYBACK_MODES`). Audio ALWAYS plays server-side via mpv — the setting only
+  tells the GUI whether to ALSO show the (muted) YouTube video when the control room
+  is local. Surfaced in `webui.settings_dict` (+ a `music_playback_modes` choice
+  list), accepted in `apply_settings` (unknown value ignored), shown in
+  `settings_text` ("playback <mode>"), documented in `.env.example`. The server keeps
+  emitting `video_id` on the `music` event (unchanged).
+- **(2) Wake-word TEST action + scoring.** New `wake.score_wake_clip(clip, sample_rate,
+  word, *, threshold, phases, wakewords_dir) -> (confidence, fired)`: loads the
+  `WakeWord` for `word` via `wake_model_for(word)` (NOT necessarily the configured
+  one), resamples the clip to 16 kHz, reframes to 1280-sample frames, and feeds them
+  through the REAL phase-diverse `WakeWord.detect` path frame-by-frame (exactly what
+  the live loop sees); returns `(max last_score, max>=threshold)`. Missing model /
+  empty clip / unavailable backend → `(0.0, False)` (no crash). Wired into `on_action`
+  via the `wake_test` action: `source="server"` records ~2 s via `audio.record_fixed`;
+  `source="browser"` builds an np array from the posted `pcm` + `sample_rate`. Both
+  score, save the 16 kHz clip to `~/.cache/my-stt-tts/wake-test-<word>-<source>.wav`
+  (kept for debugging), and emit `bus.wake_test_result(...)` →
+  `{"type":"wake_test_result","word","source","confidence":0..1,"fired":bool,
+  "message","wav_path"}`. The error/idle log is emitted BEFORE the (DATA) result so a
+  SYSTEM error frame doesn't flush it.
+- **(3) EVENT LOG relabel — human button names.** `_AudioDebug.action(name, **fields)`
+  now emits a friendly message using the EXACT GUI button label
+  (`ptt`→"clicked PUSH-TO-TALK", `wake_start`→"clicked START WAKE", … `turn`→"submitted
+  a turn"; unknown → "clicked <NAME>") via `_AudioDebug.action_label`, while still
+  carrying the machine-stable `stage="action:<name>"` field. Also drops a huge browser
+  `pcm` payload from the logged fields. Updated the test asserting the old
+  `[audio:action:…]` message text.
+
 ## Build status (2026-06-20) — Wave M2: music backend fixes (always-respond, stop-routing, system state)
 
 Three real bugs from the first music play (branch `music-state`, worktree
