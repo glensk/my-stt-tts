@@ -352,6 +352,20 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .wake-result.testing .wake-conf-val{color:var(--cyan)}
 .wake-result.testing{border-color:var(--cyan-dim)}
 .wake-result.testing .wake-conf-meter i{background:var(--cyan); animation:blink .9s steps(2) infinite}
+/* SEPARATE Browser vs Server result panels — never overwrite each other. Each word
+   row owns two independent panels (one per source) shown side by side (stacking on
+   narrow viewports), each clearly labelled "browser" / "server". A wake_test_result
+   updates ONLY its own (word + source) panel so the two stay comparable. */
+.wake-panels{display:flex; flex-wrap:wrap; gap:8px}
+.wake-panel{flex:1 1 300px; min-width:0; display:flex; flex-direction:column; gap:5px}
+.wake-panel .wake-src{display:inline-flex; align-items:center; gap:6px; align-self:flex-start;
+  font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint);
+  padding:2px 8px; border-radius:999px; border:1px solid var(--line2); background:#070d14}
+.wake-panel .wake-src .src-dot{width:7px; height:7px; border-radius:50%; background:var(--ink-faint)}
+.wake-panel[data-source="browser"] .wake-src .src-dot{background:var(--cyan)}
+.wake-panel[data-source="server"] .wake-src .src-dot{background:var(--mag)}
+/* the AGC + double-gain clipping warning (browser path only) */
+.wake-clip-note{font-size:10px; letter-spacing:.2px; color:var(--amber); line-height:1.5}
 
 /* ---------- UNIFORM check result row ----------
    Every check (mic browser/server + wake browser/server) renders the SAME row:
@@ -863,57 +877,11 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake-word recall"
                     aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Directly tests whether the wake word would fire. Records ~2&nbsp;s and scores it: <b>Browser</b> uses THIS browser's mic (downsampled to 16&nbsp;kHz); <b>Server</b> uses the server's mic — the one the live wake loop listens on. The clip is saved server-side for debugging.</span></span>
             </div>
-            <div class="wake-rows">
-              <!-- one row per wake word -->
-              <div class="wake-word" data-word="maziko">
-                <div class="wake-name">“maziko”</div>
-                <div class="wake-btns">
-                  <button class="btn wake-test-btn" type="button" data-word="maziko" data-source="browser"
-                          title="Record ~2s in THIS browser and score the “maziko” wake word">
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
-                    Browser
-                  </button>
-                  <button class="btn wake-test-btn" type="button" data-word="maziko" data-source="server"
-                          title="Record ~2s on the SERVER mic and score the “maziko” wake word">
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
-                    Server
-                  </button>
-                </div>
-                <div class="wake-result" id="wakeResult-maziko" role="status" aria-live="polite" hidden>
-                  <div class="wake-conf-row">
-                    <span class="wake-conf-val" id="wakeConf-maziko">—</span>
-                    <span class="wake-conf-meter"><i id="wakeBar-maziko"></i></span>
-                  </div>
-                  <div class="wake-msg" id="wakeMsg-maziko"></div>
-                  <!-- uniform extras: 2s · peak% · processing badge + graph + hash + ▶ play-last -->
-                  <div class="check-extras" id="wakeExtras-maziko"></div>
-                </div>
-              </div>
-              <div class="wake-word" data-word="nexus">
-                <div class="wake-name">“nexus”</div>
-                <div class="wake-btns">
-                  <button class="btn wake-test-btn" type="button" data-word="nexus" data-source="browser"
-                          title="Record ~2s in THIS browser and score the “nexus” wake word">
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>
-                    Browser
-                  </button>
-                  <button class="btn wake-test-btn" type="button" data-word="nexus" data-source="server"
-                          title="Record ~2s on the SERVER mic and score the “nexus” wake word">
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
-                    Server
-                  </button>
-                </div>
-                <div class="wake-result" id="wakeResult-nexus" role="status" aria-live="polite" hidden>
-                  <div class="wake-conf-row">
-                    <span class="wake-conf-val" id="wakeConf-nexus">—</span>
-                    <span class="wake-conf-meter"><i id="wakeBar-nexus"></i></span>
-                  </div>
-                  <div class="wake-msg" id="wakeMsg-nexus"></div>
-                  <!-- uniform extras: 2s · peak% · processing badge + graph + hash + ▶ play-last -->
-                  <div class="check-extras" id="wakeExtras-nexus"></div>
-                </div>
-              </div>
-            </div>
+            <!-- One row per pre-shipped wake word (settings.wake_words), built by
+                 renderWakeRows() in populate(). Each row has Browser + Server buttons
+                 and TWO independent result panels (one per source) so a Browser test
+                 and a Server test stay side by side and never overwrite each other. -->
+            <div class="wake-rows" id="wakeRows"></div>
           </div>
 
           <!-- First-use macOS hint: grant the terminal/app mic permission.
@@ -1642,6 +1610,9 @@ function populate(s){
   $("#model").value      = settings.model ?? "";
   $("#modelDeep").value  = settings.model_deep ?? "";
   setWakeControls(settings);
+  // Recall row per pre-shipped wake word (settings.wake_words) — Browser + Server
+  // buttons and two independent (per-source) result panels each.
+  renderWakeRows(settings.wake_words);
   $("#agentModel").value = settings.agent_model ?? "";
   $("#workspace").value  = settings.agent_workspace ?? "";
   $("#sysPrompt").value  = settings.system_prompt ?? "";
@@ -2185,10 +2156,18 @@ function applyMicPermission(perm){
    ============================================================ */
 const CHECK_MS = 2000;                 // every check records 2.0 s (uniform)
 
-// Current mic_gain (float ≥0); browser checks multiply by this before measuring.
+// Current mic_gain (float ≥0); SERVER checks (raw + quiet) multiply by this.
 function micGain(){
   const g = parseFloat(settings && settings.mic_gain);
   return (isNaN(g) || g <= 0) ? 1.0 : g;
+}
+// Effective capture gain for the BROWSER path. getUserMedia's AGC has ALREADY
+// auto-gained the signal, so applying mic_gain on top of it drives the PCM to
+// clipping (peak 32767) and destroys the wake score. So: capture at 1.0× in the
+// default (processed) mode. EXCEPTION — when the A/B toggle is in RAW mode
+// (AGC/NS/EC off) the signal IS quiet, so mic_gain is appropriate there.
+function browserGain(){
+  return (typeof browserMicRaw !== "undefined" && browserMicRaw) ? micGain() : 1.0;
 }
 // Apply capture gain to a Float32/array PCM block, clamping to ±1 (mirrors what
 // the contract expects the server to do with its own mic_gain).
@@ -2488,9 +2467,14 @@ function demoScoreClip(word, hash){
 // POSTs {action:"wake_gain_sweep", word, hash, gains:[…]}; the wake_gain_sweep_result
 // event renders the chart into `chartHost`. Offline → seed the rising demo sweep.
 const SWEEP_GAINS = [1,2,4,8,16];
-const gainSweepHost = {};                  // word → chart container element
-function buildFindGain(word, hash, chartHost){
-  gainSweepHost[word] = chartHost;
+const gainSweepHost = {};                  // word|source → chart container element
+// Key for the gain-sweep host map. Source-aware so a word's Browser sweep and Server
+// sweep render into their OWN panel; falls back to word-only for back-compat.
+function gainSweepKey(word, source){ return source ? (word + "|" + source) : (word || ""); }
+function buildFindGain(word, source, hash, chartHost){
+  const k = gainSweepKey(word, source);
+  gainSweepHost[k] = chartHost;
+  if(word) gainSweepHost[word] = chartHost;   // back-compat: a source-less result still resolves
   const btn = document.createElement("button");
   btn.type = "button"; btn.className = "btn find-gain";
   btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Find gain</span>';
@@ -2499,9 +2483,9 @@ function buildFindGain(word, hash, chartHost){
     btn.classList.add("busy");
     chartHost.innerHTML = "";
     if(DEMO){
-      setTimeout(()=>{ showGainSweepResult(demoGainSweep(word, hash)); }, 500);
+      setTimeout(()=>{ showGainSweepResult(Object.assign(demoGainSweep(word, hash), {source: source||undefined})); }, 500);
     }else{
-      postAction({action:"wake_gain_sweep", word, hash: hash||null, gains: SWEEP_GAINS});
+      postAction({action:"wake_gain_sweep", word, source: source||undefined, hash: hash||null, gains: SWEEP_GAINS});
     }
   });
   return btn;
@@ -2509,7 +2493,7 @@ function buildFindGain(word, hash, chartHost){
 // Render a wake_gain_sweep_result into its row's chart host (clears the busy state).
 function showGainSweepResult(d){
   const word = d.word || "";
-  const host = gainSweepHost[word];
+  const host = gainSweepHost[gainSweepKey(word, d.source)] || gainSweepHost[word];
   const btn = host && host.parentNode && host.parentNode.querySelector(".find-gain");
   if(btn) btn.classList.remove("busy");
   if(!host) return;
@@ -2676,7 +2660,7 @@ function renderResultExtras(extrasId, opts){
   if(o.wake){
     const grow = document.createElement("div"); grow.className = "row";
     const chartHost = document.createElement("div"); chartHost.style.flex = "1 1 100%";
-    grow.appendChild(buildFindGain(o.word || "", hash, chartHost));
+    grow.appendChild(buildFindGain(o.word || "", o.source || "", hash, chartHost));
     grow.appendChild(chartHost);
     host.appendChild(grow);
   }
@@ -3285,6 +3269,12 @@ micBrowserReplayBtn.addEventListener("click", async ()=>{
    ============================================================ */
 const WAKE_TEST_SR = 16000;      // target PCM rate for the browser path
 const wakeBusy = {};             // word|source → true while a capture/round-trip is in flight
+// DOM-id-safe slug for a wake word (the shipped names are simple lowercase tokens,
+// but a custom phrase could carry spaces/punctuation — keep ids selector-safe).
+function wakeSlug(word){ return String(word||"").replace(/[^a-zA-Z0-9_-]/g, "_"); }
+// Per-(word, source) panel key → unique element-id suffix so a word's Browser and
+// Server results live in TWO independent panels and never overwrite each other.
+function wakePanelKey(word, source){ return wakeSlug(word) + "-" + (source==="browser"?"browser":"server"); }
 function wakeBtnsFor(word){
   return Array.from(document.querySelectorAll('.wake-test-btn[data-word="'+word+'"]'));
 }
@@ -3292,12 +3282,77 @@ function setWakeBtnRecording(word, source, on){
   const b = document.querySelector('.wake-test-btn[data-word="'+word+'"][data-source="'+source+'"]');
   if(b) b.classList.toggle("recording", !!on);
 }
-// Render a wake_test_result (or a transient "recording…" state) for a word.
-function setWakeResult(word, cls, confPct, msg){
-  const wrap = $("#wakeResult-"+word);
-  const valEl = $("#wakeConf-"+word);
-  const barEl = $("#wakeBar-"+word);
-  const msgEl = $("#wakeMsg-"+word);
+// Build a single result panel (browser OR server) inside a word row. Returns nothing;
+// appends the labelled `.wake-panel` with its own conf-row + msg + extras host.
+function buildWakePanel(word, source){
+  const key = wakePanelKey(word, source);
+  const panel = document.createElement("div");
+  panel.className = "wake-panel"; panel.setAttribute("data-source", source);
+  const src = document.createElement("span"); src.className = "wake-src";
+  src.innerHTML = '<span class="src-dot" aria-hidden="true"></span>' + source;
+  panel.appendChild(src);
+  const result = document.createElement("div");
+  result.className = "wake-result"; result.id = "wakeResult-" + key;
+  result.setAttribute("role", "status"); result.setAttribute("aria-live", "polite");
+  result.hidden = true;
+  const confRow = document.createElement("div"); confRow.className = "wake-conf-row";
+  const val = document.createElement("span"); val.className = "wake-conf-val"; val.id = "wakeConf-" + key; val.textContent = "—";
+  const meter = document.createElement("span"); meter.className = "wake-conf-meter";
+  const bar = document.createElement("i"); bar.id = "wakeBar-" + key; meter.appendChild(bar);
+  confRow.appendChild(val); confRow.appendChild(meter);
+  const msg = document.createElement("div"); msg.className = "wake-msg"; msg.id = "wakeMsg-" + key;
+  const extras = document.createElement("div"); extras.className = "check-extras"; extras.id = "wakeExtras-" + key;
+  result.appendChild(confRow); result.appendChild(msg); result.appendChild(extras);
+  panel.appendChild(result);
+  return panel;
+}
+// Build a full wake-recall row for ONE word: name + Browser/Server buttons + the
+// two independent (browser, server) result panels.
+const MIC_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="1.5"/></svg>';
+const MIC_SVG_SERVER = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>';
+function buildWakeRow(word){
+  const row = document.createElement("div"); row.className = "wake-word"; row.setAttribute("data-word", word);
+  const name = document.createElement("div"); name.className = "wake-name"; name.textContent = "“" + word + "”";
+  row.appendChild(name);
+  const btns = document.createElement("div"); btns.className = "wake-btns";
+  const bBtn = document.createElement("button");
+  bBtn.type = "button"; bBtn.className = "btn wake-test-btn";
+  bBtn.setAttribute("data-word", word); bBtn.setAttribute("data-source", "browser");
+  bBtn.title = "Record ~2s in THIS browser and score the “" + word + "” wake word";
+  bBtn.innerHTML = MIC_SVG + " Browser";
+  const sBtn = document.createElement("button");
+  sBtn.type = "button"; sBtn.className = "btn wake-test-btn";
+  sBtn.setAttribute("data-word", word); sBtn.setAttribute("data-source", "server");
+  sBtn.title = "Record ~2s on the SERVER mic and score the “" + word + "” wake word";
+  sBtn.innerHTML = MIC_SVG_SERVER + " Server";
+  btns.appendChild(bBtn); btns.appendChild(sBtn);
+  row.appendChild(btns);
+  const panels = document.createElement("div"); panels.className = "wake-panels";
+  panels.appendChild(buildWakePanel(word, "browser"));
+  panels.appendChild(buildWakePanel(word, "server"));
+  row.appendChild(panels);
+  return row;
+}
+// Render a recall row for EVERY pre-shipped wake word (settings.wake_words). Falls
+// back to maziko/nexus when the list is empty so the section is never blank. Called
+// from populate(); idempotent (rebuilds the container each time).
+function renderWakeRows(words){
+  const host = $("#wakeRows"); if(!host) return;
+  let list = Array.isArray(words) ? words.filter(w=> typeof w === "string" && w.trim()) : [];
+  if(!list.length) list = ["maziko", "nexus"];
+  // de-dup, preserve order
+  const seen = {}; list = list.filter(w=> seen[w] ? false : (seen[w] = true));
+  host.innerHTML = "";
+  list.forEach(w=> host.appendChild(buildWakeRow(w)));
+}
+// Render a wake_test_result (or a transient "recording…" state) into the panel for
+// THIS (word, source) — never the other source's panel.
+function setWakeResult(word, source, cls, confPct, msg){
+  const key = wakePanelKey(word, source);
+  const wrap = document.getElementById("wakeResult-" + key);
+  const valEl = document.getElementById("wakeConf-" + key);
+  const barEl = document.getElementById("wakeBar-" + key);
+  const msgEl = document.getElementById("wakeMsg-" + key);
   if(!wrap) return;
   wrap.hidden = false;
   wrap.classList.remove("fired","high","mid","low","testing");
@@ -3320,13 +3375,14 @@ const wakeLocal = {};                // "word|source" → {pcm, sr, levels, peak
 function showWakeResult(d){
   const word = d.word || "";
   const source = d.source === "browser" ? "browser" : "server";
+  const key = wakePanelKey(word, source);
   const conf = typeof d.confidence === "number" ? d.confidence : 0;
   const pct = Math.round(Math.max(0, Math.min(1, conf)) * 100);
   const cls = wakeVerdictClass(conf, !!d.fired);
   let msg = (d.message || "") + " ";
   msg += d.fired ? "✓ would fire" : "✗ would not fire";
   msg += " · " + source + ((d.wav_url || d.wav_path) ? " · clip saved for debugging" : "");
-  setWakeResult(word, cls, pct, msg.trim());
+  setWakeResult(word, source, cls, pct, msg.trim());
   wakeBusy[word+"|"+source] = false;
   setWakeBtnRecording(word, source, false);
 
@@ -3348,19 +3404,31 @@ function showWakeResult(d){
   const wakeResult = (source === "browser" && loc.pcm)
     ? Object.assign(localStats(loc.pcm), d)   // local stats as the floor, event overrides
     : d;
-  renderResultExtras("wakeExtras-"+word, {
+  renderResultExtras("wakeExtras-"+key, {
     dur: dur, peakPct: peak, sampleRate: sampleRate, levels: levels,
     processing: proc, hash: d.hash, wav_url: d.wav_url,
     // browser: kept local PCM; server: none (uses wav_url). Demo seed carries a tone.
     pcm: (source === "browser" ? (loc.pcm || null) : null) || d._demoPcm || null,
     sr: (source === "browser" ? (loc.sr || sampleRate) : sampleRate),
-    clipKey: "wakeExtras-"+word,
+    clipKey: "wakeExtras-"+key,
     result: wakeResult,                  // wake-debug: level-vs-model gauge + stat chips
     scoreTrace: d.score_trace,           // ★ per-frame score trace under the waveform (task 3)
     wake: true,                          // ★ show 🔎 Find-gain + the gain-sweep chart (task 2)
-    word: word,
+    word: word, source: source,          // (word, source) keys the gain-sweep + score-clip hosts
     scoreClip: true,                     // 🔍 re-score this saved clip against the wake model (task 4)
   });
+  // Browser path can clip when getUserMedia's AGC has already normalized the signal
+  // AND a >1× capture gain is then applied — peak slams to 100% and the wake model
+  // reads the distorted audio as ~0. Flag it on the BROWSER panel only.
+  if(source === "browser" && peak != null && peak >= 99
+     && proc && proc.agc === true && typeof proc.gain === "number" && proc.gain > 1.0){
+    const ex = document.getElementById("wakeExtras-"+key);
+    if(ex){
+      const note = document.createElement("div"); note.className = "wake-clip-note";
+      note.textContent = "⚠ browser clipping — AGC + gain; not representative of the server wake path";
+      ex.appendChild(note);
+    }
+  }
   // any green wake result also confirms the mic is working
   if(cls === "fired" || cls === "high") confirmMicWorking();
   log((d.fired?"⚡ ":"· ") + "wake test ["+word+" · "+source+"]: conf "+pct+"%"
@@ -3378,17 +3446,17 @@ function wakeDownsample(block, fromRate){
   return out;
 }
 async function runWakeTestServer(word){
-  setWakeResult(word, "testing", null, "● recording 2 s on the server mic — say “"+word+"”…");
+  setWakeResult(word, "server", "testing", null, "● recording 2 s on the server mic — say “"+word+"”…");
   setWakeBtnRecording(word, "server", true);
   postAction({action:"wake_test", word, source:"server"});   // result arrives via SSE
 }
 async function runWakeTestBrowser(word){
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    setWakeResult(word, "low", 0, "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
+    setWakeResult(word, "browser", "low", 0, "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
     wakeBusy[word+"|browser"] = false; setWakeBtnRecording(word, "browser", false);
     return;
   }
-  setWakeResult(word, "testing", null, "Requesting browser mic — click Allow if prompted…");
+  setWakeResult(word, "browser", "testing", null, "Requesting browser mic — click Allow if prompted…");
   setWakeBtnRecording(word, "browser", true);
   let stream = null, actx = null, proc = null, srcNode = null;
   const chunks = [];
@@ -3398,9 +3466,11 @@ async function runWakeTestBrowser(word){
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
   }
   try{
-    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    // Match the mic-check A/B mode: default processed (AGC on) → no extra gain;
+    // RAW mode (AGC/NS/EC off) → quiet signal → apply mic_gain.
+    stream = await navigator.mediaDevices.getUserMedia(browserMicConstraints());
   }catch(e){
-    setWakeResult(word, "low", 0, "✗ Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
+    setWakeResult(word, "browser", "low", 0, "✗ Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
     wakeBusy[word+"|browser"] = false; setWakeBtnRecording(word, "browser", false);
     return;
   }
@@ -3419,26 +3489,29 @@ async function runWakeTestBrowser(word){
   // Read the browser's effective processing chain (AGC / NS / EC) from the track.
   const track = stream.getAudioTracks()[0];
   const st = (track && track.getSettings && track.getSettings()) || {};
+  // Browser capture gain: 1.0× in processed mode (AGC already normalizes — a 2× on
+  // top of it clips); mic_gain only in RAW mode where the signal is genuinely quiet.
+  const gainApplied = browserGain();
   const procChain = {
     agc: (typeof st.autoGainControl === "boolean") ? st.autoGainControl : null,
     ns:  (typeof st.noiseSuppression === "boolean") ? st.noiseSuppression : null,
     ec:  (typeof st.echoCancellation === "boolean") ? st.echoCancellation : null,
-    gain: micGain(),
+    gain: gainApplied,
   };
   let remain = Math.round(CHECK_MS/1000);
-  setWakeResult(word, "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")");
-  const countdown = setInterval(()=>{ remain--; if(remain>0) setWakeResult(word, "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")"); }, 1000);
+  setWakeResult(word, "browser", "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")");
+  const countdown = setInterval(()=>{ remain--; if(remain>0) setWakeResult(word, "browser", "testing", null, "● Recording 2 s — say “"+word+"”… ("+remain+")"); }, 1000);
 
   await new Promise(r=> setTimeout(r, CHECK_MS));
   clearInterval(countdown);
   cleanup();
-  // Stitch, then apply the mic_gain setting (clamped ±1) before measuring/scoring,
-  // so the browser path gains exactly like the server path.
+  // Stitch, then apply the BROWSER capture gain (1.0× processed / mic_gain raw) before
+  // measuring/scoring — never 2× an AGC'd signal.
   const total = chunks.reduce((n,c)=>n+c.length, 0);
   const merged = new Float32Array(total);
   let off = 0; for(const c of chunks){ merged.set(c, off); off += c.length; }
   try{ if(actx) await actx.close(); }catch(_e){}
-  const gained = applyGain(merged, micGain());
+  const gained = applyGain(merged, gainApplied);
   const peakPct = Math.round(Math.min(1, pcmPeak(gained)) * 100);
   const levels = computeLevels(gained, 48);
   // Keep the local capture so showWakeResult renders the uniform graph/badge/peak
@@ -3447,18 +3520,23 @@ async function runWakeTestBrowser(word){
   const pcm = wakeDownsample(gained, sr);     // 16 kHz Array for the contract POST
   if(DEMO){
     // No backend in demo — synthesize a plausible scored result for THIS word/source.
-    setWakeResult(word, "testing", null, "scoring captured audio…");
+    setWakeResult(word, "browser", "testing", null, "scoring captured audio…");
     setTimeout(()=> showWakeResult(Object.assign(demoWakeResult(word, "browser"),
       {peak: pcmPeak(gained), levels: levels, processing: procChain,
        sample_rate: WAKE_TEST_SR, duration_s: total/sr})), 600);
     return;
   }
-  setWakeResult(word, "testing", null, "▶ Scoring "+pcm.length+" samples @16 kHz (peak "+peakPct+"%)…");
+  setWakeResult(word, "browser", "testing", null, "▶ Scoring "+pcm.length+" samples @16 kHz (peak "+peakPct+"%)…");
   postAction({action:"wake_test", word, source:"browser", pcm, sample_rate:WAKE_TEST_SR,
     processing:{agc:procChain.agc, ns:procChain.ns, ec:procChain.ec}});
 }
-document.querySelectorAll(".wake-test-btn").forEach(btn=>{
-  btn.addEventListener("click", ()=>{
+// Delegated click handler on the (dynamically built) rows container so every
+// per-word Browser/Server button works regardless of when its row was rendered.
+(function bindWakeButtons(){
+  const rows = $("#wakeRows"); if(!rows) return;
+  rows.addEventListener("click", e=>{
+    const btn = e.target.closest && e.target.closest(".wake-test-btn");
+    if(!btn || !rows.contains(btn)) return;
     const word = btn.dataset.word, source = btn.dataset.source;
     const key = word+"|"+source;
     if(wakeBusy[key]) return;
@@ -3466,7 +3544,7 @@ document.querySelectorAll(".wake-test-btn").forEach(btn=>{
     if(source === "server") runWakeTestServer(word);
     else runWakeTestBrowser(word);
   });
-});
+})();
 
 // keyboard: SPACE = push-to-talk (when not typing in a field)
 addEventListener("keydown", e=>{
@@ -3734,7 +3812,7 @@ const DEMO_SETTINGS = {
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
-  wake_words:["alexa","computer","jarvis","maziko","nexus"],
+  wake_words:["maziko","nexus","jarvis","alexa","computer","athena","nova","luna","sage","orion"],
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
   system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
@@ -3797,18 +3875,22 @@ function enterDemo(){
   // Seed the new UI so EVERY new element (graph, processing badge, ▶ play-last,
   // hash, level-vs-model gauge, stat chips, score-trace) is visible offline:
   //  • a server mic_check_result (uniform row: chips + raw·gain badge + graph + hash + ▶),
-  //  • a scored wake_test_result per word (maziko fires green/browser, nexus amber/server),
+  //  • scored wake_test_results across words AND sources, so the SEPARATE per-source
+  //    panels are obviously independent: maziko gets BOTH a browser AND a server panel
+  //    (side by side, neither overwrites the other), plus nexus/server + jarvis/browser,
   //  • a "music playing" event (server playback + hybrid video iframe when local).
   showMicResult(demoMicCheckResult("server"));
-  showWakeResult(demoWakeResult("maziko", "browser"));
+  showWakeResult(demoWakeResult("maziko", "browser"));   // maziko · BROWSER panel
+  showWakeResult(demoWakeResult("maziko", "server"));    // maziko · SERVER panel (independent)
   showWakeResult(demoWakeResult("nexus", "server"));
+  showWakeResult(demoWakeResult("jarvis", "browser"));
   handleMusic(DEMO_MUSIC_EVENT);
-  // ★ Also seed the gain-sweep chart on "nexus" (the amber/quiet row — its score
-  // climbs with gain and fires by 4×) and a score-clip result on "maziko", so the
-  // chart + score-clip output are VISIBLE offline without having to click.
-  showGainSweepResult(demoGainSweep("nexus", shortHash("wake|nexus|server|demo")));
+  // ★ Also seed the gain-sweep chart on "nexus"/server (the amber/quiet panel — its
+  // score climbs with gain and fires by 4×) and a score-clip result on "maziko"/browser,
+  // so the chart + score-clip output are VISIBLE offline without having to click.
+  showGainSweepResult(Object.assign(demoGainSweep("nexus", shortHash("wake|nexus|server|demo")), {source:"server"}));
   showScoreClipResult(Object.assign(demoScoreClip("maziko", shortHash("wake|maziko|browser|demo")),
-                                     {_clipKey: "wakeExtras-maziko"}));
+                                     {_clipKey: "wakeExtras-maziko-browser"}));
   demoStep = 0;
   runDemoStep();
 }
@@ -3935,7 +4017,7 @@ function demoWakeResult(word, source){
     peak: peak, level: Math.round(peak*100), duration_s: 2.0,
     sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
     processing: (source==="browser")
-      ? {agc:true, ns:true, ec:true, gain: micGain()}            // browser path: AGC/NS/EC on
+      ? {agc:true, ns:true, ec:true, gain: browserGain()}        // browser path: AGC on → gain 1.0× (no 2× clip)
       : {agc:null, ns:null, ec:null, gain: micGain()},           // server path: raw + gain
     hash: shortHash("wake|"+word+"|"+source+"|demo"),
     message: "scored "+(word)+" @16 kHz (demo)",
