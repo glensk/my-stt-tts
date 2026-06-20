@@ -32,6 +32,9 @@ env/
 !.env_template
 !.env.sample
 *.log
+# Per-run output: quickstart-*.log AND the EVENT LOG events-*.jsonl live here.
+# Whole dir ignored so neither is ever swept into a commit (*.log alone missed .jsonl).
+logs/
 *.key
 *.pem
 *.p12
