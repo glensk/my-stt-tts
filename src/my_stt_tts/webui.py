@@ -84,6 +84,9 @@ def settings_dict(
         "voice_en": cfg.tts_voices.get("en"),
         "length_scale": cfg.tts_length_scale,
         "wake_phrase": cfg.wake_phrase,
+        # Wake sensitivity (openWakeWord score, 0..1) a frame must clear to fire.
+        # Lower = triggers more easily / more false-positives; higher = stricter.
+        "wake_threshold": cfg.wake_threshold,
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
@@ -142,6 +145,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Picking a wake word in the UI re-derives the model path
         # (wakewords/<phrase>.onnx) so the selection takes effect live.
         cfg.select_wake_word(str(data["wake_phrase"]))
+    if "wake_threshold" in data:
+        # Clamp to [0, 1]: the slider can't produce out-of-range values, but a
+        # hand-crafted POST shouldn't push the wake detector past validate()'s bound.
+        cfg.wake_threshold = max(0.0, min(1.0, float(data["wake_threshold"])))
     if "agent_workspace" in data:
         cfg.agent_workspace = str(data["agent_workspace"]) or None
     if "agent_model" in data:

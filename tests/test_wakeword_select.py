@@ -136,3 +136,37 @@ def test_apply_settings_wake_phrase_rederives_path() -> None:
     webui_mod.apply_settings(cfg, {"wake_phrase": "jarvis"})
     assert cfg.wake_phrase == "jarvis"
     assert cfg.wake_model_path == "wakewords/jarvis.onnx"
+
+
+# --------------------------------------------------------------------------- #
+# Wake sensitivity: settings_dict exposes it; apply_settings sets + clamps it; #
+# WakeWord.from_config reads cfg.wake_threshold (the configured value drives    #
+# detection, not the WakeWord(...) constructor default).                        #
+# --------------------------------------------------------------------------- #
+def test_settings_dict_carries_wake_threshold() -> None:
+    s = settings_dict(Config(wake_threshold=0.55))
+    assert s["wake_threshold"] == 0.55
+
+
+def test_apply_settings_sets_wake_threshold() -> None:
+    cfg = Config()
+    webui_mod.apply_settings(cfg, {"wake_threshold": 0.7})
+    assert cfg.wake_threshold == 0.7
+
+
+def test_apply_settings_clamps_wake_threshold_to_unit_range() -> None:
+    cfg = Config()
+    webui_mod.apply_settings(cfg, {"wake_threshold": 3.0})
+    assert cfg.wake_threshold == 1.0
+    webui_mod.apply_settings(cfg, {"wake_threshold": -2.0})
+    assert cfg.wake_threshold == 0.0
+
+
+def test_wakeword_from_config_uses_configured_threshold() -> None:
+    from my_stt_tts.wake import WakeWord
+
+    cfg = Config(wake_threshold=0.42)
+    wake = WakeWord.from_config(cfg)
+    assert wake.threshold == 0.42
+    # The default config threshold is 0.4, not the WakeWord(...) constructor's 0.5.
+    assert WakeWord.from_config(Config()).threshold == 0.4

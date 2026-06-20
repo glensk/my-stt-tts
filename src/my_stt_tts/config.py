@@ -278,7 +278,11 @@ class Config:
     # --- Wake / capture ---
     wake_phrase: str = "maziko"
     wake_model_path: str = "wakewords/maziko.onnx"
-    wake_threshold: float = 0.5
+    # openWakeWord score (0..1) a frame must clear to fire the wake word. Lower =
+    # triggers more easily (more false-positives); higher = stricter (may miss a
+    # quiet "maziko"). 0.4 is a touch more sensitive than openWakeWord's 0.5
+    # default so a soft wake word still fires. Env: WAKE_THRESHOLD.
+    wake_threshold: float = 0.4
     follow_up_seconds: float = 8.0
     sample_rate: int = 16000
     preroll_seconds: float = 0.3
@@ -581,6 +585,8 @@ class Config:
             cfg.interrupt_min_speech_ms = float(env["INTERRUPT_MIN_SPEECH_MS"])
         if env.get("SMART_TURN_THRESHOLD"):
             cfg.smart_turn_threshold = float(env["SMART_TURN_THRESHOLD"])
+        if env.get("WAKE_THRESHOLD"):
+            cfg.wake_threshold = float(env["WAKE_THRESHOLD"])
         if env.get("VAD_THRESHOLD"):
             cfg.vad_threshold = float(env["VAD_THRESHOLD"])
         if env.get("VAD_SILENCE_SECONDS"):
@@ -685,6 +691,8 @@ class Config:
             errors.append(
                 f"smart_turn_threshold must be in [0, 1]; got {self.smart_turn_threshold}"
             )
+        if not 0.0 <= self.wake_threshold <= 1.0:
+            errors.append(f"wake_threshold must be in [0, 1]; got {self.wake_threshold}")
         if not 0.0 <= self.vad_threshold <= 1.0:
             errors.append(f"vad_threshold must be in [0, 1]; got {self.vad_threshold}")
         if self.interrupt_min_words < 0:

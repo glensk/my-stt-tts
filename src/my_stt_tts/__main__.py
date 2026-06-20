@@ -184,8 +184,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  brain-mode {blue}{cfg.brain_mode}{reset}"
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
-        f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  model {cfg.wake_model_path}"
-        f"  exists {os.path.isfile(cfg.wake_model_path)}"
+        f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
+        f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
         f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}",

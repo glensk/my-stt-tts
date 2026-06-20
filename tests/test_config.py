@@ -136,3 +136,28 @@ def test_brain_system_prompt_contains_locale_line():
     assert cfg.system_prompt in prompt  # editable base preserved
     assert "Geneva, Switzerland" in prompt
     assert "imperial units" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# Wake sensitivity (wake_threshold) — default, env override, validation       #
+# --------------------------------------------------------------------------- #
+def test_wake_threshold_default_is_0_4():
+    assert Config().wake_threshold == 0.4
+
+
+def test_wake_threshold_from_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("WAKE_THRESHOLD", "0.65")
+    cfg = Config.from_env()
+    assert cfg.wake_threshold == 0.65
+    cfg.validate()  # in-range value is valid
+
+
+def test_wake_threshold_validation_rejects_out_of_range():
+    with pytest.raises(ConfigError, match="wake_threshold"):
+        Config(anthropic_api_key="x", wake_threshold=1.5).validate()
+    with pytest.raises(ConfigError, match="wake_threshold"):
+        Config(anthropic_api_key="x", wake_threshold=-0.1).validate()
+    # Bounds are inclusive.
+    Config(anthropic_api_key="x", wake_threshold=0.0).validate()
+    Config(anthropic_api_key="x", wake_threshold=1.0).validate()
