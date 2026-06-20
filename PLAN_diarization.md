@@ -40,7 +40,8 @@ collapsing into one unattributed transcript.
 
 ## Verified sherpa-onnx facts
 
-- PyPI `sherpa-onnx` 1.13.3, Apache-2.0, dep only `sherpa-onnx-core` (no torch), arm64 wheels.
+- PyPI `sherpa-onnx` Apache-2.0, no torch, macOS arm64 wheels. **PINNED `==1.10.46`** — see
+  the "Live-on-Mac dylib pin" section below for why a newer wheel breaks at runtime.
 - Config classes: `OfflineSpeakerDiarizationConfig`, `OfflineSpeakerSegmentationModelConfig`,
   `OfflineSpeakerSegmentationPyannoteModelConfig`, `SpeakerEmbeddingExtractorConfig`,
   `FastClusteringConfig`, `OfflineSpeakerDiarization`.
@@ -54,3 +55,40 @@ collapsing into one unattributed transcript.
     (sha256 `1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b`) — the misspelled tag is correct.
 - The sherpa embedding model is used ONLY for the anonymous clustering inside sherpa; segment
   NAMING uses the existing SpeechBrain ECAPA path, so `enroll/*.npy` + `scripts/calibrate.py` still apply.
+
+## Live-on-Mac dylib pin (resolved 2026-06-21)
+
+The merged feature degraded to single-speaker on this Mac because `import sherpa_onnx`
+crashed with a dlopen error under `uv sync --extra all`:
+
+```text
+Library not loaded: @rpath/libonnxruntime.1.24.4.dylib  (no such file)
+```
+
+**Root cause** — NOT an ABI clash with the co-installed `onnxruntime`, but a *mispackaged
+wheel*. The macOS arm64 `sherpa-onnx` wheel changed at 1.12.26: 1.10.46 and earlier
+**self-bundle** their onnxruntime (`libonnxruntime.1.17.1.dylib` shipped inside
+`sherpa_onnx/lib/`, the dir the `.so` rpaths to — 18 MB wheel). From 1.12.26 the wheel
+dropped the bundled dylib (2 MB) yet its `.so` still hard-links
+`@rpath/libonnxruntime.1.24.4.dylib`. The standalone `onnxruntime` pip package installs
+its dylib into `onnxruntime/capi/`, which is **not** on sherpa's rpath
+(`@loader_path` + `@loader_path/sherpa_onnx/lib`). dyld searches rpath *directories on
+disk*, not already-loaded images, so even `onnxruntime==1.24.4` co-installed +
+`import onnxruntime` first does NOT satisfy the link → dlopen fails.
+
+**Fix** — pin `diarize = ["sherpa-onnx==1.10.46"]` (last self-bundled macOS arm64 wheel).
+Its bundled `libonnxruntime.1.17.1.dylib` has a distinct leaf name from the standalone
+`onnxruntime` that openWakeWord (`wake`) loads, so **both coexist in one process**. The
+1.10.46 `__init__.py` exports the full diarization API used by `diarize.py`
+(`OfflineSpeakerDiarization{,Config}`, `OfflineSpeakerSegmentationPyannoteModelConfig`,
+`SpeakerEmbeddingExtractorConfig`, `FastClusteringConfig`).
+
+**Verified end-to-end (one process):** `import sherpa_onnx` (1.10.46) + the diarizer built,
+models auto-downloaded + checksum-verified, and run on a synthetic 2-speaker clip →
+**2 segments / 2 anonymous speakers**; AND `openWakeWord` (onnxruntime 1.26.0) scored a clip
+without error — no dlopen crash. `onnxruntime` itself is left unpinned (any `>=1.10,<2`
+works for openWakeWord now that sherpa carries its own).
+
+Do NOT bump sherpa-onnx to 1.12.x+ until upstream ships a self-bundled or correctly-rpathed
+macOS wheel — `diarize._sherpa_importable()` is the runtime guard that would catch a regression
+(it degrades to single-speaker rather than crashing the turn).

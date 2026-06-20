@@ -31,6 +31,15 @@ uv sync --extra speaker --extra diarize      # or: uv sync --extra all
 SPEAKER_ID=true SPEAKER_DIARIZE=true ./mstt --wake
 ```
 
+> [!note] sherpa-onnx is pinned to `1.10.46` on purpose
+> The `diarize` extra installs `sherpa-onnx==1.10.46` — the last macOS arm64 wheel that
+> *self-bundles* its onnxruntime. Newer wheels (1.12.26+) ship a `.so` that hard-links a
+> `libonnxruntime.*.dylib` they no longer include, so they fail to load on macOS even with
+> the standalone `onnxruntime` (the `wake`/`turn` extras) installed. 1.10.46 carries its own
+> dylib, so diarization and the wake word run together in one process. Do not bump it until
+> upstream fixes the macOS wheel — if you do and it can't load, diarization safely falls back
+> to single-speaker (it never crashes a turn).
+
 On first use the two ONNX models auto-download + **checksum-verify** into the
 gitignored `models/`:
 
