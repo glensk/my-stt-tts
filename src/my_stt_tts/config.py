@@ -558,6 +558,44 @@ class Config:
     speaker_margin: float = 0.06
     enroll_dir: Path = field(default_factory=lambda: Path("enroll"))
 
+    # --- Within-turn speaker diarization (G7+): split ONE captured turn that holds
+    # multiple voices + TV into per-speaker segments, each NAMED via the same ECAPA
+    # path above (so enroll/*.npy + scripts/calibrate.py still apply). Segmentation
+    # is sherpa-onnx offline diarization (pure ONNX, no torch); the models are
+    # auto-downloaded + checksum-verified into the gitignored models/ on first use.
+    # Opt-in (env SPEAKER_DIARIZE) and a STRICT superset of speaker ID: only active
+    # when ON *and* speaker ID is usable (enabled + centroids + speechbrain) *and*
+    # sherpa-onnx + the diarization models are present. Otherwise the loop falls back
+    # to today's single-speaker behaviour — it NEVER crashes a turn. ``num_speakers``
+    # = -1 lets sherpa auto-detect the count (``diarize_cluster_threshold`` then
+    # governs sensitivity); set it to a fixed N if the household size is known. ---
+    speaker_diarize_enabled: bool = False
+    diarize_segmentation_model_path: str = "models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+    diarize_segmentation_url: str = (
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+        "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+    )
+    # SHA-256 of the EXTRACTED model.onnx inside the .tar.bz2 (not the archive) — the
+    # archive is unpacked then the inner model is checksum-verified. "" disables the pin.
+    diarize_segmentation_sha256: str = (
+        "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
+    )
+    diarize_embedding_model_path: str = (
+        "models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+    )
+    # NB: the upstream release tag is the misspelled "speaker-recongition-models".
+    diarize_embedding_url: str = (
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+        "speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+    )
+    diarize_embedding_sha256: str = (
+        "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"
+    )
+    diarize_auto_download: bool = True
+    diarize_num_speakers: int = -1  # -1 = auto-detect (then the threshold governs)
+    diarize_cluster_threshold: float = 0.5  # auto-count clustering sensitivity
+    diarize_min_segment_s: float = 0.4  # drop diarized segments shorter than this
+
     # --- Audio transport (R2-5): move mic/TTS audio over the wire for satellites /
     # the browser. `local` (sounddevice) is the default; `websocket` runs a server
     # that bridges remote clients into this same pipeline. `transport_token`, when
@@ -735,6 +773,8 @@ class Config:
             music_player=env.get("MUSIC_PLAYER", "auto"),
             music_playback=env.get("MUSIC_PLAYBACK", "hybrid"),
             speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
+            speaker_diarize_enabled=_env_bool("SPEAKER_DIARIZE", default=False),
+            diarize_auto_download=_env_bool("DIARIZE_AUTO_DOWNLOAD", default=True),
             stt_backend=env.get("STT_BACKEND", "local"),
             stt_cloud_model=env.get("STT_CLOUD_MODEL", "whisper-1"),
             stt_cloud_base_url=env.get("STT_CLOUD_BASE_URL") or None,
@@ -834,6 +874,16 @@ class Config:
             cfg.speaker_threshold = float(env["SPEAKER_THRESHOLD"])
         if env.get("SPEAKER_MARGIN"):
             cfg.speaker_margin = float(env["SPEAKER_MARGIN"])
+        if env.get("DIARIZE_SEGMENTATION_MODEL_PATH"):
+            cfg.diarize_segmentation_model_path = env["DIARIZE_SEGMENTATION_MODEL_PATH"]
+        if env.get("DIARIZE_EMBEDDING_MODEL_PATH"):
+            cfg.diarize_embedding_model_path = env["DIARIZE_EMBEDDING_MODEL_PATH"]
+        if env.get("DIARIZE_NUM_SPEAKERS"):
+            cfg.diarize_num_speakers = int(env["DIARIZE_NUM_SPEAKERS"])
+        if env.get("DIARIZE_CLUSTER_THRESHOLD"):
+            cfg.diarize_cluster_threshold = float(env["DIARIZE_CLUSTER_THRESHOLD"])
+        if env.get("DIARIZE_MIN_SEGMENT_S"):
+            cfg.diarize_min_segment_s = float(env["DIARIZE_MIN_SEGMENT_S"])
         if env.get("MUSIC_VOLUME"):
             cfg.music_volume = int(env["MUSIC_VOLUME"])
         return cfg
@@ -888,6 +938,16 @@ class Config:
             errors.append(f"wake_gain must be in (0, 10]; got {self.wake_gain}")
         if not 0.0 < self.speaker_threshold < 1.0:
             errors.append(f"speaker_threshold must be in (0, 1); got {self.speaker_threshold}")
+        if self.diarize_num_speakers == 0 or self.diarize_num_speakers < -1:
+            errors.append(
+                f"diarize_num_speakers must be -1 (auto) or >= 1; got {self.diarize_num_speakers}"
+            )
+        if not 0.0 < self.diarize_cluster_threshold <= 1.0:
+            errors.append(
+                f"diarize_cluster_threshold must be in (0, 1]; got {self.diarize_cluster_threshold}"
+            )
+        if self.diarize_min_segment_s < 0:
+            errors.append(f"diarize_min_segment_s must be >= 0; got {self.diarize_min_segment_s}")
         if self.requests_per_minute <= 0:
             errors.append(f"requests_per_minute must be > 0; got {self.requests_per_minute}")
         if self.barge_in not in BARGE_IN_MODES:

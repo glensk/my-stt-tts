@@ -72,7 +72,14 @@ music = ["yt-dlp>=2024.1"]
 # OPTIONAL — capture_stats degrades `lufs` to None without it, so core + every other
 # extra import cleanly without pyloudnorm. Install only when you want LUFS readouts.
 debug = ["pyloudnorm>=0.1"]
-all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc,music,debug]"]
+# Within-turn speaker diarization (G7+): sherpa-onnx splits a captured turn into
+# anonymous per-speaker segments (pure ONNX, Apache-2.0, no torch, arm64 wheels, no
+# HF token) which are then NAMED via the existing SpeechBrain ECAPA path (the
+# `speaker` extra). Opt-in via SPEAKER_DIARIZE; models are auto-downloaded +
+# checksum-verified into the gitignored models/ on first use. Off by default, so the
+# core package + every other extra import cleanly without sherpa-onnx.
+diarize = ["sherpa-onnx>=1.10"]
+all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc,music,debug,diarize]"]
 
 [project.scripts]
 my-stt-tts = "my_stt_tts.__main__:main"
