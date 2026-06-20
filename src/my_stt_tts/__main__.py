@@ -170,6 +170,8 @@ class _AudioDebug:
         "wake_stop": "clicked STOP WAKE",
         "mic_test": "clicked TEST SERVER MIC",
         "mic_record_replay": "clicked RECORD & PLAY · SERVER",
+        "mic_check": "clicked MIC CHECK",
+        "play_recording": "clicked PLAY RECORDING",
         "live_audio": "clicked LIVE AUDIO",
         "reset": "clicked RESET",
         "wake_test": "clicked WAKE TEST",
@@ -234,7 +236,7 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
-        f"  phases {blue}{cfg.wake_phases}{reset}"
+        f"  phases {blue}{cfg.wake_phases}{reset}  mic-gain {blue}{cfg.mic_gain}{reset}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
@@ -1321,11 +1323,22 @@ class _WakeController:
         the HTTP handler."""
         threading.Thread(target=self._mic_record_replay_target, daemon=True).start()
 
+    def mic_check(self) -> None:
+        """Run the unified 2.0 s mic check (gain + level graph + saved WAV), in a worker.
+
+        Like :meth:`mic_test`, it owns the input device for the duration: if the wake
+        loop holds the mic it is paused first and restored afterwards. Never blocks
+        the HTTP handler."""
+        threading.Thread(target=self._mic_check_target, daemon=True).start()
+
     def _mic_test_target(self) -> None:
         self._with_paused_wake(lambda: _run_mic_test(self._cfg))
 
     def _mic_record_replay_target(self) -> None:
         self._with_paused_wake(lambda: _run_mic_record_replay(self._cfg))
+
+    def _mic_check_target(self) -> None:
+        self._with_paused_wake(lambda: _run_mic_check_server(self._cfg))
 
     def _with_paused_wake(self, fn: Any) -> None:
         """Run ``fn`` with exclusive use of the mic: pause the wake loop if it holds
@@ -1485,6 +1498,171 @@ def _run_mic_record_replay(cfg: Config, *, seconds: float = 3.0) -> None:
     bus.state("idle")
 
 
+def _level_from_peak(peak: float) -> int:
+    """The 0..100 UI level meter value for a 0..1 peak amplitude (clamped)."""
+    return int(round(min(1.0, max(0.0, float(peak))) * 100))
+
+
+def _mic_check_stats(clip16k: np.ndarray) -> tuple[float, float, int, float, list[float]]:
+    """Peak / rms / level / duration / per-window levels for a 16 kHz mic-check clip."""
+    arr = np.asarray(clip16k, dtype=np.float32).ravel()
+    peak = float(np.max(np.abs(arr))) if arr.size else 0.0
+    rms = float(np.sqrt(np.mean(np.square(arr)))) if arr.size else 0.0
+    duration_s = round(arr.size / 16000, 3) if arr.size else 0.0
+    return peak, rms, _level_from_peak(peak), duration_s, audio.compute_levels(arr)
+
+
+def _run_mic_check_server(cfg: Config, *, seconds: float = 2.0) -> None:
+    """Capture ~``seconds`` from the SERVER mic, apply gain, save + emit a mic_check_result.
+
+    The unified GUI ``mic_check`` / ``source="server"`` action: record a fixed window,
+    apply the software ``cfg.mic_gain`` (clip-protected), compute peak/level/rms + the
+    ~48-window level-over-time array, save the 16 kHz clip under ``debug/recordings/``,
+    and publish a ``mic_check_result`` carrying ``processing={agc,ns,ec,gain}`` (server
+    processing is gain-only) + the saved-WAV ``hash``/``wav_url``. Never raises — a
+    missing device / permission becomes a clear failing result so the worker survives.
+    """
+    bus.log(f"mic check: recording {seconds:.1f}s from the server mic…")
+    bus.state("recording")
+    try:
+        clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=seconds)
+    except Exception as exc:  # noqa: BLE001 — no device / PortAudio / capture error
+        log.error("mic check capture error: %s", exc)
+        bus.log(f"✗ mic check failed: {exc}", "error")
+        bus.mic_check_result(
+            source="server",
+            peak=0.0,
+            level=0,
+            rms=0.0,
+            duration_s=0.0,
+            sample_rate=16000,
+            levels=audio.compute_levels(np.zeros(0, dtype=np.float32)),
+            processing={"agc": False, "ns": False, "ec": False, "gain": cfg.mic_gain},
+            hash="",
+            wav_url="",
+            message=f"microphone error: {exc}",
+        )
+        bus.state("idle")
+        return
+    clip16k = audio.resample_to(clip, device_rate, 16000)
+    clip16k = audio.apply_gain(clip16k, cfg.mic_gain)  # software input gain (clip-protected)
+    path, hash8, wav_url = audio.save_recording(clip16k, 16000, kind="mic", source="server")
+    peak, rms, level, duration_s, levels = _mic_check_stats(clip16k)
+    ok = peak >= audio._SILENCE_PEAK  # noqa: SLF001 — shared silence floor
+    message = (
+        f"Microphone OK — level {level}% (gain {cfg.mic_gain:g}×)"
+        if ok
+        else "No audio captured — check the microphone permission and input device."
+    )
+    bus.log(("✓ " if ok else "✗ ") + message, "info" if ok else "error")
+    bus.mic_check_result(
+        source="server",
+        peak=peak,
+        level=level,
+        rms=rms,
+        duration_s=duration_s,
+        sample_rate=16000,
+        levels=levels,
+        processing={"agc": False, "ns": False, "ec": False, "gain": cfg.mic_gain},
+        hash=hash8,
+        wav_url=wav_url,
+        message=message,
+    )
+    bus.state("idle")
+    _ = path  # path is informational; the GUI addresses the clip via wav_url/hash
+
+
+def _run_mic_check_browser(
+    cfg: Config,
+    pcm: list[float],
+    sample_rate: int,
+    processing: dict[str, Any] | None = None,
+) -> None:
+    """Save + analyse a BROWSER-supplied mic clip, emit a mic_check_result.
+
+    The unified GUI ``mic_check`` / ``source="browser"`` action: the page records the
+    clip locally (with its own AGC/NS/EC flags) and POSTs raw float PCM + its sample
+    rate + the ``processing`` flags. The server resamples to 16 kHz, saves it under
+    ``debug/recordings/``, computes the same peak/level/rms + level-over-time graph, and
+    emits the result. No server gain is applied to a browser clip (the browser owns its
+    own processing); ``processing.gain`` is reported as 1.0. Never raises.
+    """
+    _ = cfg  # signature parity with the server variant; browser clips carry their rate
+    proc = dict(processing or {})
+    flags = {
+        "agc": bool(proc["agc"]) if "agc" in proc else None,
+        "ns": bool(proc["ns"]) if "ns" in proc else None,
+        "ec": bool(proc["ec"]) if "ec" in proc else None,
+        "gain": float(proc.get("gain", 1.0)),
+    }
+    clip = np.asarray(pcm, dtype=np.float32).ravel()
+    rate = int(sample_rate) or 16000
+    clip16k = audio.resample_to(clip, rate, 16000)
+    path, hash8, wav_url = audio.save_recording(clip16k, 16000, kind="mic", source="browser")
+    peak, rms, level, duration_s, levels = _mic_check_stats(clip16k)
+    ok = peak >= audio._SILENCE_PEAK  # noqa: SLF001 — shared silence floor
+    message = (
+        f"Microphone OK — level {level}%"
+        if ok
+        else "No audio in the recording — check the browser mic permission."
+    )
+    bus.log(("✓ " if ok else "✗ ") + message, "info" if ok else "error")
+    bus.mic_check_result(
+        source="browser",
+        peak=peak,
+        level=level,
+        rms=rms,
+        duration_s=duration_s,
+        sample_rate=16000,
+        levels=levels,
+        processing=flags,
+        hash=hash8,
+        wav_url=wav_url,
+        message=message,
+    )
+    bus.state("idle")
+    _ = path
+
+
+def _play_recording(hash8: str) -> None:
+    """Play a saved mic/wake WAV addressed by its 8-hex content ``hash`` (best-effort).
+
+    The GUI ``play_recording`` action: find ``debug/recordings/*-<hash8>.wav`` and play
+    it back server-side through the normal playback path (:func:`audio.play`) so the
+    user hears exactly what was captured. Never raises — a missing hash / file / player
+    degrades to a clear log line so the worker thread stays alive.
+    """
+    import glob
+    import wave
+
+    hash8 = str(hash8 or "").strip()
+    if not hash8:
+        bus.log("play_recording: no hash given", "error")
+        return
+    matches = glob.glob(os.path.join(audio.recordings_dir(), f"*-{hash8}.wav"))
+    if not matches:
+        bus.log(f"play_recording: no saved recording for {hash8}", "error")
+        return
+    target = matches[0]
+    try:
+        with wave.open(target, "rb") as wf:
+            rate = wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
+        clip = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    except (OSError, wave.Error) as exc:  # unreadable WAV must not crash the worker
+        log.error("play_recording read error: %s", exc)
+        bus.log(f"play_recording: could not read {os.path.basename(target)}: {exc}", "error")
+        return
+    bus.log(f"▶ playing recording {os.path.basename(target)}")
+    try:
+        audio.play(clip, rate)
+    except Exception as exc:  # noqa: BLE001 — playback backend missing/failed
+        log.error("play_recording playback error: %s", exc)
+        bus.log(f"play_recording: playback failed: {exc}", "error")
+    finally:
+        bus.state("idle")
+
+
 def _wake_test_wav_path(word: str, source: str) -> str:
     """Where a wake-test clip is saved (kept for later debugging).
 
@@ -1509,7 +1687,14 @@ def _save_wake_test_wav(clip16k: np.ndarray, word: str, source: str) -> str:
 
 
 def _emit_wake_test(
-    word: str, source: str, confidence: float, fired: bool, wav_path: str, *, available: bool = True
+    word: str,
+    source: str,
+    confidence: float,
+    fired: bool,
+    wav_path: str,
+    *,
+    available: bool = True,
+    stats: dict[str, Any] | None = None,
 ) -> None:
     """Score + format + publish a ``wake_test_result`` (and a human EVENT-LOG line).
 
@@ -1517,6 +1702,11 @@ def _emit_wake_test(
     subscriber's data queue, so the human log + idle state go FIRST and the
     authoritative ``wake_test_result`` (DATA) is published LAST — otherwise the
     unavailable-model result would be flushed away before the GUI ever sees it.
+
+    ``stats`` (optional) carries the level-meter extras the GUI shares with a
+    mic-check: ``peak``/``level``/``rms``/``duration_s``/``sample_rate``/``levels``/
+    ``processing``/``hash``/``wav_url``. Absent (unavailable model) -> the event still
+    publishes with the level fields at their zero defaults.
     """
     if not available:
         message = f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)"
@@ -1532,25 +1722,45 @@ def _emit_wake_test(
         fired=bool(fired),
         message=message,
         wav_path=wav_path,
+        **(stats or {}),
     )
+
+
+def _wake_test_stats(
+    clip16k: np.ndarray, *, processing: dict[str, Any], hash8: str, wav_url: str
+) -> dict[str, Any]:
+    """The level-meter extras (peak/level/levels/processing/hash/wav_url) for a wake test."""
+    peak, rms, level, duration_s, levels = _mic_check_stats(clip16k)
+    return {
+        "peak": peak,
+        "level": level,
+        "rms": rms,
+        "duration_s": duration_s,
+        "sample_rate": 16000,
+        "levels": levels,
+        "processing": processing,
+        "hash": hash8,
+        "wav_url": wav_url,
+    }
 
 
 def _run_wake_test_server(cfg: Config, word: str) -> None:
     """Record ~2 s from the SERVER mic, score it against ``word``, save + emit.
 
-    The GUI ``wake_test`` / ``source="server"`` diagnostic: capture a short clip from
-    the server microphone, run it through the REAL phase-diverse wake path via
-    :func:`wake.score_wake_clip` (so it matches the always-listening loop), save the
-    16 kHz clip to ``~/.cache/my-stt-tts/wake-test-<word>-server.wav`` for later
-    debugging, and publish a ``wake_test_result``. Never raises — a missing model or
-    a capture error becomes a clear failing message so the worker thread stays alive.
+    The GUI ``wake_test`` / ``source="server"`` diagnostic: capture a 2.0 s clip from
+    the server microphone, apply the software ``cfg.mic_gain`` (clip-protected), run it
+    through the REAL phase-diverse wake path via :func:`wake.score_wake_clip` (so it
+    matches the always-listening loop), save the gained 16 kHz clip under
+    ``debug/recordings/`` (and the legacy cache path), and publish a
+    ``wake_test_result`` carrying the same peak/level/levels/processing as a mic-check.
+    Never raises — a missing model or a capture error becomes a clear failing message.
     """
     from .wake import score_wake_clip, wake_model_for
 
     if not os.path.isfile(wake_model_for(word)):
         _emit_wake_test(word, "server", 0.0, False, "", available=False)
         return
-    bus.log(f"wake test: recording ~2 s to score against '{word}'…")
+    bus.log(f"wake test: recording 2.0 s to score against '{word}'…")
     bus.state("recording")
     try:
         clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=2.0)
@@ -1567,28 +1777,52 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         )
         bus.state("idle")
         return
-    confidence, fired = score_wake_clip(
-        clip, device_rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
-    )
     clip16k = audio.resample_to(clip, device_rate, 16000)
+    clip16k = audio.apply_gain(clip16k, cfg.mic_gain)  # software input gain (clip-protected)
+    confidence, fired = score_wake_clip(
+        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
     wav_path = _save_wake_test_wav(clip16k, word, "server")
-    _emit_wake_test(word, "server", confidence, fired, wav_path)
+    _, hash8, wav_url = audio.save_recording(
+        clip16k, 16000, kind="wake", source="server", word=word
+    )
+    stats = _wake_test_stats(
+        clip16k,
+        processing={"agc": False, "ns": False, "ec": False, "gain": cfg.mic_gain},
+        hash8=hash8,
+        wav_url=wav_url,
+    )
+    _emit_wake_test(word, "server", confidence, fired, wav_path, stats=stats)
 
 
-def _run_wake_test_browser(cfg: Config, word: str, pcm: list[float], sample_rate: int) -> None:
-    """Score a BROWSER-supplied ~2 s clip against ``word``, save + emit.
+def _run_wake_test_browser(
+    cfg: Config,
+    word: str,
+    pcm: list[float],
+    sample_rate: int,
+    processing: dict[str, Any] | None = None,
+) -> None:
+    """Score a BROWSER-supplied 2.0 s clip against ``word``, save + emit.
 
     The GUI ``wake_test`` / ``source="browser"`` diagnostic: the page records the
-    clip locally and POSTs raw float PCM (+ its sample rate); the server resamples,
-    scores it through the same phase-diverse wake path, saves the 16 kHz clip to
-    ``~/.cache/my-stt-tts/wake-test-<word>-browser.wav``, and emits a
-    ``wake_test_result``. Never raises — bad/empty PCM scores 0.0 with a clear message.
+    clip locally and POSTs raw float PCM (+ its sample rate + its AGC/NS/EC flags); the
+    server resamples to 16 kHz, scores it through the same phase-diverse wake path,
+    saves the clip under ``debug/recordings/`` (and the legacy cache path), and emits a
+    ``wake_test_result`` carrying the same peak/level/levels/processing as a mic-check.
+    No server gain is applied to a browser clip. Never raises — bad/empty PCM scores 0.0.
     """
     from .wake import score_wake_clip, wake_model_for
 
     if not os.path.isfile(wake_model_for(word)):
         _emit_wake_test(word, "browser", 0.0, False, "", available=False)
         return
+    proc = dict(processing or {})
+    flags = {
+        "agc": bool(proc["agc"]) if "agc" in proc else None,
+        "ns": bool(proc["ns"]) if "ns" in proc else None,
+        "ec": bool(proc["ec"]) if "ec" in proc else None,
+        "gain": float(proc.get("gain", 1.0)),
+    }
     clip = np.asarray(pcm, dtype=np.float32).ravel()
     rate = int(sample_rate) or cfg.sample_rate
     confidence, fired = score_wake_clip(
@@ -1596,7 +1830,11 @@ def _run_wake_test_browser(cfg: Config, word: str, pcm: list[float], sample_rate
     )
     clip16k = audio.resample_to(clip, rate, 16000)
     wav_path = _save_wake_test_wav(clip16k, word, "browser")
-    _emit_wake_test(word, "browser", confidence, fired, wav_path)
+    _, hash8, wav_url = audio.save_recording(
+        clip16k, 16000, kind="wake", source="browser", word=word
+    )
+    stats = _wake_test_stats(clip16k, processing=flags, hash8=hash8, wav_url=wav_url)
+    _emit_wake_test(word, "browser", confidence, fired, wav_path, stats=stats)
 
 
 def _voice_preset_name(voice_id: str) -> str:
@@ -1716,6 +1954,30 @@ def _run_browser(
                 controller.mic_record_replay()
             else:
                 threading.Thread(target=lambda: _run_mic_record_replay(cfg), daemon=True).start()
+        elif name == "mic_check":
+            # Unified 2.0 s mic diagnostic (the new backend): server captures (with the
+            # software mic_gain applied + clip protection) or a browser-recorded clip,
+            # both saved under debug/recordings/ and reported via mic_check_result with
+            # the level meter + ~48-window level-over-time graph + the saved-WAV link.
+            source = str(data.get("source") or "server")
+            if source == "browser":
+                pcm = list(data.get("pcm") or [])
+                rate = int(data.get("sample_rate") or cfg.sample_rate)
+                proc = data.get("processing") if isinstance(data.get("processing"), dict) else None
+                threading.Thread(
+                    target=lambda: _run_mic_check_browser(cfg, pcm, rate, proc),
+                    daemon=True,
+                ).start()
+            elif controller is not None:
+                controller.mic_check()  # owns the device: pauses/restores the wake loop
+            else:
+                threading.Thread(target=lambda: _run_mic_check_server(cfg), daemon=True).start()
+        elif name == "play_recording":
+            # Play a saved mic/wake WAV (addressed by its 8-hex content hash) back
+            # through the server speaker — best-effort, in a worker thread.
+            threading.Thread(
+                target=lambda: _play_recording(str(data.get("hash") or "")), daemon=True
+            ).start()
         elif name in {"wake_start", "wake_stop", "ptt"}:
             if controller is None:
                 bus.log(f"'{name}' unavailable: {voice_hint}", "error")
@@ -1738,8 +2000,9 @@ def _run_browser(
             if source == "browser":
                 pcm = list(data.get("pcm") or [])
                 rate = int(data.get("sample_rate") or cfg.sample_rate)
+                proc = data.get("processing") if isinstance(data.get("processing"), dict) else None
                 threading.Thread(
-                    target=lambda: _run_wake_test_browser(cfg, word, pcm, rate),
+                    target=lambda: _run_wake_test_browser(cfg, word, pcm, rate, proc),
                     daemon=True,
                 ).start()
             else:
