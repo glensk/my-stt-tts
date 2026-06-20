@@ -161,9 +161,44 @@ class _AudioDebug:
         with contextlib.suppress(Exception):
             bus.debug(msg, stage=stage, **fields)
 
+    # Maps a raw GUI action name to the EXACT button label the user clicked, so the
+    # EVENT LOG reads "clicked PUSH-TO-TALK" instead of the opaque "action:ptt". The
+    # structured stage="action:<name>" field is still carried for machine use.
+    _ACTION_LABELS = {
+        "ptt": "clicked PUSH-TO-TALK",
+        "wake_start": "clicked START WAKE",
+        "wake_stop": "clicked STOP WAKE",
+        "mic_test": "clicked TEST SERVER MIC",
+        "mic_record_replay": "clicked RECORD & PLAY · SERVER",
+        "live_audio": "clicked LIVE AUDIO",
+        "reset": "clicked RESET",
+        "wake_test": "clicked WAKE TEST",
+        "turn": "submitted a turn",
+    }
+
+    @classmethod
+    def action_label(cls, name: str) -> str:
+        """The human EVENT-LOG line for a GUI action (unknown -> "clicked <NAME>")."""
+        return cls._ACTION_LABELS.get(name, "clicked " + name.upper())
+
     def action(self, name: str, **fields: Any) -> None:
-        """Log a GUI action received (wake_start/stop, ptt, mic_test, voice_test, turn)."""
-        self(f"action:{name}", **fields)
+        """Log a GUI action with its friendly button label (EVENT LOG) + structured stage.
+
+        The human message uses the EXACT GUI button label (e.g. "clicked
+        PUSH-TO-TALK") so the EVENT LOG is readable, while the event still carries the
+        machine-stable ``stage="action:<name>"`` field. A huge ``pcm`` payload (the
+        browser wake-test clip) is dropped from the logged fields so the log isn't
+        flooded with thousands of floats. A no-op when audio debugging is off.
+        """
+        if not self.enabled:
+            return
+        fields = {k: v for k, v in fields.items() if k != "pcm"}
+        stage = f"action:{name}"
+        kv = " ".join(f"{k}={v}" for k, v in fields.items())
+        msg = f"{self.action_label(name)} {kv}".rstrip()
+        print(f"[audio:{stage}] {msg}", file=sys.stderr)
+        with contextlib.suppress(Exception):
+            bus.debug(msg, stage=stage, **fields)
 
 
 def _use_color() -> bool:
@@ -207,7 +242,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
         f"  music      enabled {blue}{cfg.music_enabled}{reset}  player {blue}{cfg.music_player}{reset}"
-        f"  volume {cfg.music_volume if cfg.music_volume is not None else 'default'}",
+        f"  volume {cfg.music_volume if cfg.music_volume is not None else 'default'}"
+        f"  playback {blue}{cfg.music_playback}{reset}",
         f"  prompt     {blue}{prompt_head}…{reset}  (edit prompts/system_prompt.md)",
         f"  locale     location {blue}{cfg.location}{reset}  units {blue}{cfg.units}{reset}",
     ]
@@ -1449,6 +1485,120 @@ def _run_mic_record_replay(cfg: Config, *, seconds: float = 3.0) -> None:
     bus.state("idle")
 
 
+def _wake_test_wav_path(word: str, source: str) -> str:
+    """Where a wake-test clip is saved (kept for later debugging).
+
+    ``~/.cache/my-stt-tts/wake-test-<word>-<source>.wav`` — one stable file per
+    (word, source) so a re-test overwrites the last clip of the same kind."""
+    return os.path.expanduser(f"~/.cache/my-stt-tts/wake-test-{word}-{source}.wav")
+
+
+def _save_wake_test_wav(clip16k: np.ndarray, word: str, source: str) -> str:
+    """Write the scored 16 kHz clip as a mono WAV; return the path ("" on failure)."""
+    from .util import wav_bytes_from_float
+
+    path = _wake_test_wav_path(word, source)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(wav_bytes_from_float(np.asarray(clip16k, dtype=np.float32).ravel(), 16000))
+        return path
+    except OSError as exc:  # disk/permission issue must not kill the worker
+        log.warning("wake-test WAV write failed (%s): %s", path, exc)
+        return ""
+
+
+def _emit_wake_test(
+    word: str, source: str, confidence: float, fired: bool, wav_path: str, *, available: bool = True
+) -> None:
+    """Score + format + publish a ``wake_test_result`` (and a human EVENT-LOG line).
+
+    Order matters: an "error"-level ``bus.log`` is a SYSTEM frame that FLUSHES the
+    subscriber's data queue, so the human log + idle state go FIRST and the
+    authoritative ``wake_test_result`` (DATA) is published LAST — otherwise the
+    unavailable-model result would be flushed away before the GUI ever sees it.
+    """
+    if not available:
+        message = f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)"
+    else:
+        verdict = "detected" if fired else "not detected"
+        message = f"{word}: confidence {confidence:.2f} — {verdict}"
+    bus.log(("✓ " if fired else "✗ ") + message, "info" if available else "error")
+    bus.state("idle")
+    bus.wake_test_result(
+        word=word,
+        source=source,
+        confidence=round(float(confidence), 3),
+        fired=bool(fired),
+        message=message,
+        wav_path=wav_path,
+    )
+
+
+def _run_wake_test_server(cfg: Config, word: str) -> None:
+    """Record ~2 s from the SERVER mic, score it against ``word``, save + emit.
+
+    The GUI ``wake_test`` / ``source="server"`` diagnostic: capture a short clip from
+    the server microphone, run it through the REAL phase-diverse wake path via
+    :func:`wake.score_wake_clip` (so it matches the always-listening loop), save the
+    16 kHz clip to ``~/.cache/my-stt-tts/wake-test-<word>-server.wav`` for later
+    debugging, and publish a ``wake_test_result``. Never raises — a missing model or
+    a capture error becomes a clear failing message so the worker thread stays alive.
+    """
+    from .wake import score_wake_clip, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        _emit_wake_test(word, "server", 0.0, False, "", available=False)
+        return
+    bus.log(f"wake test: recording ~2 s to score against '{word}'…")
+    bus.state("recording")
+    try:
+        clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=2.0)
+    except Exception as exc:  # noqa: BLE001 — no device / PortAudio / capture error
+        log.error("wake test capture error: %s", exc)
+        bus.error(f"wake test failed: {exc}")
+        bus.wake_test_result(
+            word=word,
+            source="server",
+            confidence=0.0,
+            fired=False,
+            message=f"{word}: microphone error — {exc}",
+            wav_path="",
+        )
+        bus.state("idle")
+        return
+    confidence, fired = score_wake_clip(
+        clip, device_rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
+    clip16k = audio.resample_to(clip, device_rate, 16000)
+    wav_path = _save_wake_test_wav(clip16k, word, "server")
+    _emit_wake_test(word, "server", confidence, fired, wav_path)
+
+
+def _run_wake_test_browser(cfg: Config, word: str, pcm: list[float], sample_rate: int) -> None:
+    """Score a BROWSER-supplied ~2 s clip against ``word``, save + emit.
+
+    The GUI ``wake_test`` / ``source="browser"`` diagnostic: the page records the
+    clip locally and POSTs raw float PCM (+ its sample rate); the server resamples,
+    scores it through the same phase-diverse wake path, saves the 16 kHz clip to
+    ``~/.cache/my-stt-tts/wake-test-<word>-browser.wav``, and emits a
+    ``wake_test_result``. Never raises — bad/empty PCM scores 0.0 with a clear message.
+    """
+    from .wake import score_wake_clip, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        _emit_wake_test(word, "browser", 0.0, False, "", available=False)
+        return
+    clip = np.asarray(pcm, dtype=np.float32).ravel()
+    rate = int(sample_rate) or cfg.sample_rate
+    confidence, fired = score_wake_clip(
+        clip, rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
+    clip16k = audio.resample_to(clip, rate, 16000)
+    wav_path = _save_wake_test_wav(clip16k, word, "browser")
+    _emit_wake_test(word, "browser", confidence, fired, wav_path)
+
+
 def _voice_preset_name(voice_id: str) -> str:
     """Map a Piper voice id (``en_US-lessac-medium``) back to its friendly preset name."""
     for name, vid in VOICE_PRESETS.items():
@@ -1577,6 +1727,25 @@ def _run_browser(
                 controller.push_to_talk()
         elif name in {"music_stop", "music_pause", "music_resume"}:
             _music_action(name, player=cfg.music_player, volume=cfg.music_volume)
+        elif name == "wake_test":
+            # Score a ~2 s clip against the model for the requested word (NOT
+            # necessarily the configured wake word) and report whether it would
+            # fire. source=server records from the server mic; source=browser scores
+            # a clip the page recorded and POSTed as raw float PCM. Worker thread so
+            # the HTTP handler never blocks; defensive against missing models / mics.
+            word = str(data.get("word") or cfg.wake_phrase)
+            source = str(data.get("source") or "server")
+            if source == "browser":
+                pcm = list(data.get("pcm") or [])
+                rate = int(data.get("sample_rate") or cfg.sample_rate)
+                threading.Thread(
+                    target=lambda: _run_wake_test_browser(cfg, word, pcm, rate),
+                    daemon=True,
+                ).start()
+            else:
+                threading.Thread(
+                    target=lambda: _run_wake_test_server(cfg, word), daemon=True
+                ).start()
         else:
             bus.log(f"unknown action '{name}'", "error")
 
