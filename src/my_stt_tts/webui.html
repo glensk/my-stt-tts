@@ -276,6 +276,12 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
   text-transform:none; opacity:0; transition:opacity .2s}
 .check.testing .check-spk{opacity:1; color:var(--cyan)}
 .check.testing .check-spk{animation:blink 1s steps(2) infinite}
+/* tiny app-attribution note under the server-mic check title — which app owns
+   the SERVER process's mic permission (settings.host_app) */
+.check-app-note{font-size:9.5px; letter-spacing:.3px; color:var(--ink-faint);
+  line-height:1.5; display:flex; align-items:flex-start; gap:5px}
+.check-app-note::before{content:"ⓘ"; color:var(--cyan-dim); flex:0 0 auto}
+.check-app-note b{color:var(--ink-dim); font-weight:600}
 
 /* meta line: sample-rate / duration / device / channels surfaced after a run */
 .check-meta{display:flex; flex-wrap:wrap; gap:5px 7px; font-size:9.5px; letter-spacing:.4px}
@@ -349,6 +355,22 @@ select.ctrl option{background:#0a121c; color:var(--ink)}
 textarea.ctrl{resize:vertical; min-height:88px; line-height:1.5; font-size:12px}
 .two{display:grid; grid-template-columns:1fr 1fr; gap:11px}
 @media(max-width:420px){.two{grid-template-columns:1fr}}
+/* Advanced — manual override <details> under Brain preset. Collapsed by default;
+   a quiet, recessed block so the preset reads as the single primary control. */
+details.adv-override{margin-top:9px; border:1px solid var(--line); border-radius:8px;
+  background:rgba(0,0,0,.18)}
+details.adv-override>.adv-summary{
+  display:flex; align-items:center; gap:7px; padding:8px 11px; cursor:pointer;
+  list-style:none; user-select:none; -webkit-user-select:none;
+  font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--ink-faint);
+  transition:.16s}
+details.adv-override>.adv-summary::-webkit-details-marker{display:none}
+details.adv-override>.adv-summary:hover{color:var(--ink-dim)}
+details.adv-override>.adv-summary .chev{width:12px; height:12px; flex:0 0 auto;
+  transition:transform .2s; color:var(--cyan-dim)}
+details[open].adv-override>.adv-summary{color:var(--ink-dim); border-bottom:1px solid var(--line)}
+details[open].adv-override>.adv-summary .chev{transform:rotate(90deg)}
+details.adv-override .adv-body{padding:12px 11px}
 input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:5px; border-radius:3px;
   background:linear-gradient(90deg,var(--cyan),var(--mag)); outline:none; cursor:pointer}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:17px;height:17px;border-radius:50%;
@@ -511,16 +533,18 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
 
           <!-- CHECK 2 — SERVER MIC (capture ~1.5s server-side, report verdict) -->
           <div class="check" id="checkServer">
-            <div class="check-title"><span class="num" data-n="2" aria-hidden="true"></span>Test mic
+            <div class="check-title"><span class="num" data-n="2" aria-hidden="true"></span>Test server mic
               <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About server mic test"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Captures ~1.5&nbsp;s from the SERVER's microphone (the one wake-word + push-to-talk use) and reports a clear pass/fail with the measured level. This is how you diagnose why voice is off.</span></span>
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Captures ~1.5&nbsp;s from the SERVER's microphone — i.e. the app the server process runs in (<span id="micServerAppPop">your terminal app</span>) — the one wake-word + push-to-talk use. Reports a clear pass/fail with the measured level. This is how you diagnose why voice is off. Different mic + permission from the browser mic.</span></span>
               <span class="check-spk" id="micServerSpk">● capturing…</span>
             </div>
+            <!-- which app owns the server-mic permission, from settings.host_app -->
+            <div class="check-app-note" id="micServerAppNote">Server mic — uses <b id="micServerApp">your terminal app</b>'s microphone permission (System&nbsp;Settings&nbsp;›&nbsp;Privacy&nbsp;&amp;&nbsp;Security&nbsp;›&nbsp;Microphone).</div>
             <div class="check-row">
               <button class="btn" id="micTestBtn" type="button"
                       title="Capture ~1.5s from the SERVER mic and report the level / permission state">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.5"/></svg>
-                🎤 Test mic
+                🎤 Test server mic
               </button>
             </div>
             <div class="mic-result" id="micResult" role="status" aria-live="assertive" hidden>
@@ -531,18 +555,40 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <div class="check-meta" id="micServerMeta"></div>
           </div>
 
-          <!-- CHECK 3 — RECORD & REPLAY (server records ~3s then plays it back) -->
+          <!-- CHECK 3 — RECORD & PLAY · BROWSER (fully client-side: getUserMedia →
+               record ~3s → replay in the browser). No server round-trip. -->
+          <div class="check" id="checkBrowserReplay">
+            <div class="check-title"><span class="num" data-n="3" aria-hidden="true"></span>Record &amp; play · browser
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About browser record and play"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Fully in THIS browser: records ~3&nbsp;s from the browser mic (the one Live&nbsp;Audio uses), then plays it straight back so you hear your own voice. No server involved — verifies your browser mic&nbsp;→&nbsp;speakers.</span></span>
+              <span class="check-spk" id="micBrowserReplaySpk">● recording…</span>
+            </div>
+            <div class="check-row">
+              <button class="btn" id="micBrowserReplayBtn" type="button"
+                      title="Record ~3s from the BROWSER mic, then play it back here in the browser">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
+                ⏺ Record &amp; play · browser
+              </button>
+            </div>
+            <div class="mic-result" id="micBrowserReplayResult" role="status" aria-live="assertive" hidden>
+              <span class="mic-dot" aria-hidden="true"></span>
+              <span class="mic-msg" id="micBrowserReplayMsg"></span>
+            </div>
+            <div class="check-meta" id="micBrowserReplayMeta"></div>
+          </div>
+
+          <!-- CHECK 4 — RECORD & PLAY · SERVER (server records ~3s then plays it back) -->
           <div class="check" id="checkReplay">
-            <div class="check-title"><span class="num" data-n="3" aria-hidden="true"></span>Record &amp; replay
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About record and replay"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Records ~3&nbsp;s from the server mic, then plays it straight back through the speakers so you can hear your own voice — the surest end-to-end mic&nbsp;→&nbsp;speaker check.</span></span>
+            <div class="check-title"><span class="num" data-n="4" aria-hidden="true"></span>Record &amp; play · server
+              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About server record and play"
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Records ~3&nbsp;s from the SERVER mic, then plays it straight back through the server's speaker so you can hear your own voice — the surest end-to-end server mic&nbsp;→&nbsp;speaker check.</span></span>
               <span class="check-spk" id="micReplaySpk">● recording…</span>
             </div>
             <div class="check-row">
               <button class="btn" id="micReplayBtn" type="button"
-                      title="Record ~3s from the server mic, then play it back">
+                      title="Record ~3s from the SERVER mic, then play it back through the server's speaker">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
-                ⏺ Record &amp; replay
+                ⏺ Record &amp; play · server
               </button>
             </div>
             <div class="mic-result" id="micReplayResult" role="status" aria-live="assertive" hidden>
@@ -629,32 +675,43 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
           <div class="field">
             <label for="brain">Brain preset
               <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About brain preset"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">One-click bundle that sets Provider + Model + mode together (e.g. <code>haiku-sub</code> = Claude CLI + Haiku). Pick a preset, or set the fields below manually.</span></span>
+                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">One-click bundle that sets Provider + Model + mode together (e.g. <code>haiku-sub</code> = Claude CLI + Haiku). This is the primary control — expand <b>Advanced</b> below only to override the individual fields.</span></span>
             </label>
             <select class="ctrl" id="brain"></select>
-          </div>
-          <div class="two">
-            <div class="field">
-              <label for="provider">Provider
-                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About provider"
-                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Which LLM backend runs the brain: <code>claude-cli</code> (no API key, uses your Claude CLI), <code>anthropic</code>, <code>openai</code>, <code>openai-compatible</code>, or <code>ollama</code> (local).</span></span>
-              </label>
-              <select class="ctrl" id="provider" data-key="provider"></select>
-            </div>
-            <div class="field">
-              <label for="model">Model
-                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model"
-                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">The fast model id used for normal turns.</span></span>
-              </label>
-              <input class="ctrl" id="model" data-key="model" autocomplete="off">
-            </div>
-          </div>
-          <div class="field">
-            <label for="modelDeep">Model (deep)
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model (deep)"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Optional stronger model used for harder/"deep" turns; leave as-is if unsure.</span></span>
-            </label>
-            <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
+            <!-- ADVANCED — manual override. Provider / Model / Model (deep) are
+                 driven by the preset above; this <details> (collapsed by default)
+                 lets a power user override them without cluttering the default view. -->
+            <details class="adv-override" id="brainAdvanced">
+              <summary class="adv-summary">
+                <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Advanced — manual override
+              </summary>
+              <div class="adv-body">
+                <div class="two">
+                  <div class="field">
+                    <label for="provider">Provider
+                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About provider"
+                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Which LLM backend runs the brain: <code>claude-cli</code> (no API key, uses your Claude CLI), <code>anthropic</code>, <code>openai</code>, <code>openai-compatible</code>, or <code>ollama</code> (local). Normally set by the preset.</span></span>
+                    </label>
+                    <select class="ctrl" id="provider" data-key="provider"></select>
+                  </div>
+                  <div class="field">
+                    <label for="model">Model
+                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model"
+                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">The fast model id used for normal turns. Normally set by the preset.</span></span>
+                    </label>
+                    <input class="ctrl" id="model" data-key="model" autocomplete="off">
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom:0">
+                  <label for="modelDeep">Model (deep)
+                    <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model (deep)"
+                          aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Optional stronger model used for harder/"deep" turns; leave as-is if unsure. Normally set by the preset.</span></span>
+                  </label>
+                  <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
+                </div>
+              </div>
+            </details>
           </div>
           <div class="field">
             <label for="voice">Voice <span class="v" id="voiceNote"></span></label>
@@ -1161,6 +1218,7 @@ function populate(s){
   $("#lengthVal").textContent = ls.toFixed(2);
   updateVoiceNote();
   setVoiceControls(settings);
+  applyHostApp(settings.host_app);
   // Show/hide the macOS mic-permission hint from the real grant the backend reports.
   applyMicPermission(settings.mic_permission);
   // readout
@@ -1178,6 +1236,15 @@ function updateVoiceNote(){
   const sel = $("#voice");
   const v = (settings.voices||[]).find(x=>x.id===sel.value);
   $("#voiceNote").textContent = v && v.note ? v.note : "";
+}
+/* The SERVER mic is the app the server process runs in (iTerm / Terminal / VS Code…),
+   surfaced by the backend as settings.host_app. Name it in the "Test server mic" note
+   + tooltip so it's clear WHICH app's macOS Microphone permission must be granted.
+   Falls back to "your terminal app" when the backend doesn't report it. */
+function applyHostApp(app){
+  const name = (app==null ? "" : String(app)).trim() || "your terminal app";
+  const el = $("#micServerApp");   if(el) el.textContent = name;
+  const pop = $("#micServerAppPop"); if(pop) pop.textContent = name;
 }
 
 /* ----------------------------------------------------------------
@@ -1346,14 +1413,34 @@ $("#sendForm").addEventListener("submit", e=>{
   sendTurn(v); $("#textInput").value="";
 });
 
+/* The wake button reflects the ACTUAL wake-loop state, not just clicks. The
+   backend drives the loop into `listening` (e.g. `--browser --wake` auto-starts
+   it), so the button must read "STOP WAKE" (active) whenever state===listening
+   and "START WAKE" when idle/not listening — never "START WAKE" while it's
+   actually listening. `setWakeOn` is the single source of truth: it's called by
+   the click handler (optimistic) AND by the live `state` event (authoritative).
+   Activity states downstream of listening (recording/stt/llm/tts/speaking) mean
+   the loop is still engaged, so they keep the button active too. */
 let wakeOn = false;
-$("#wakeBtn").addEventListener("click", ()=>{
-  if(!voiceAvailable){ log("voice controls are off — "+(settings.voice_hint||"relaunch with --wake"), "error"); return; }
-  wakeOn = !wakeOn;
+const WAKE_ACTIVE_STATES = new Set([
+  "listening","recording","stt","llm_request","llm_wait","llm_response","tts","speaking"
+]);
+function setWakeOn(on){
+  wakeOn = !!on;
   const b = $("#wakeBtn");
+  if(!b) return;
   b.classList.toggle("on", wakeOn);
   b.setAttribute("aria-pressed", String(wakeOn));
   $("#wakeLabel").textContent = wakeOn ? "Stop Wake" : "Start Wake";
+}
+// Reconcile the button with a live backend state. `idle` (or any non-active
+// state) → START WAKE; `listening` (& the active pipeline states) → STOP WAKE.
+function syncWakeFromState(state){
+  setWakeOn(WAKE_ACTIVE_STATES.has(state));
+}
+$("#wakeBtn").addEventListener("click", ()=>{
+  if(!voiceAvailable){ log("voice controls are off — "+(settings.voice_hint||"relaunch with --wake"), "error"); return; }
+  setWakeOn(!wakeOn);                       // optimistic; live `state` events reconcile it
   postAction(wakeOn ? "wake_start" : "wake_stop");
 });
 
@@ -1652,6 +1739,169 @@ micBrowserBtn.addEventListener("click", async ()=>{
   tick();
 });
 
+/* ============================================================
+   CHECK 3 — RECORD & PLAY · BROWSER  (fully client-side, no server)
+   getUserMedia → capture ~3s of PCM via Web Audio → replay it in the browser.
+   Primary path is a Web-Audio capture + AudioBufferSourceNode replay (no codec
+   negotiation, no blob URL → always CSP-safe). If MediaRecorder is available it's
+   used to ALSO build a blob <audio> for a nicer replay; on any blob/playback
+   failure we fall back to the Web-Audio buffer-source replay. Shares the same
+   3-state UX as the server replay: recording… → playing back… → green ✓, and
+   reports duration + peak level. */
+const REC_SECONDS = 3;
+const micBrowserReplayBtn = $("#micBrowserReplayBtn");
+const micBrowserReplayResult = $("#micBrowserReplayResult"), micBrowserReplayMsg = $("#micBrowserReplayMsg");
+let micBrowserReplayBusy = false;
+function setBrowserReplayResult(cls, msg){
+  micBrowserReplayResult.hidden = false;
+  micBrowserReplayResult.classList.remove("ok","bad","testing");
+  if(cls) micBrowserReplayResult.classList.add(cls);
+  micBrowserReplayMsg.textContent = msg;
+}
+function browserReplaySpk(text){ const s = $("#micBrowserReplaySpk"); if(s) s.textContent = text; }
+function finishBrowserReplay(ok, msg, meta){
+  setBrowserReplayResult(ok ? "ok" : "bad", (ok?"✓ ":"✗ ") + msg);
+  setCheckBusy("#checkBrowserReplay", false);
+  markCheckDone("#checkBrowserReplay", ok);
+  if(meta) setCheckMeta("#micBrowserReplayMeta", meta);
+  micBrowserReplayBusy = false;
+  browserReplaySpk("● recording…");
+  if(ok) confirmMicWorking();
+  log((ok?"✓ ":"✗ ") + "record & play · browser: " + msg, ok ? "evt" : "error");
+}
+micBrowserReplayBtn.addEventListener("click", async ()=>{
+  if(micBrowserReplayBusy) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    setBrowserReplayResult("bad", "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
+    return;
+  }
+  micBrowserReplayBusy = true;
+  setBrowserReplayResult("testing", "Requesting browser mic permission — click Allow if prompted…");
+  setCheckBusy("#checkBrowserReplay", true);
+  markCheckDone("#checkBrowserReplay", false);
+
+  let stream = null, actx = null, proc = null, srcNode = null;
+  const chunks = [];                       // Float32Array PCM frames (mono)
+  let peak = 0, recRAF = 0;
+  let mediaRec = null; const blobParts = [];
+  function cleanupCapture(){
+    if(recRAF){ cancelAnimationFrame(recRAF); recRAF = 0; }
+    try{ if(proc){ proc.disconnect(); proc.onaudioprocess = null; } }catch(_e){}
+    try{ if(srcNode) srcNode.disconnect(); }catch(_e){}
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  }
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    setCheckBusy("#checkBrowserReplay", false);
+    finishBrowserReplay(false, "Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
+    return;
+  }
+  actx = new (window.AudioContext||window.webkitAudioContext)();
+  const sr = actx.sampleRate || 48000;
+  srcNode = actx.createMediaStreamSource(stream);
+  // ScriptProcessorNode is deprecated but universally supported and needs no
+  // external worklet file (which a strict CSP would block). Buffer the mono PCM.
+  proc = actx.createScriptProcessor(4096, 1, 1);
+  proc.onaudioprocess = ev=>{
+    const inp = ev.inputBuffer.getChannelData(0);
+    const copy = new Float32Array(inp.length);
+    copy.set(inp);
+    chunks.push(copy);
+    for(let i=0;i<inp.length;i++){ const a = Math.abs(inp[i]); if(a>peak) peak = a; }
+  };
+  // Connect through a muted gain so the live mic isn't echoed to the speakers
+  // during recording (only the replay should be audible).
+  const mute = actx.createGain(); mute.gain.value = 0;
+  srcNode.connect(proc); proc.connect(mute); mute.connect(actx.destination);
+
+  // Optional nicer replay via MediaRecorder → blob; PCM capture above is the
+  // guaranteed fallback if blob playback is unavailable or blocked.
+  try{
+    if(window.MediaRecorder){
+      mediaRec = new MediaRecorder(stream);
+      mediaRec.ondataavailable = e=>{ if(e.data && e.data.size) blobParts.push(e.data); };
+      mediaRec.start();
+    }
+  }catch(_e){ mediaRec = null; }
+
+  // Recording countdown UI.
+  setCheckBusy("#checkBrowserReplay", true);
+  browserReplaySpk("● recording…");
+  let remain = REC_SECONDS;
+  setBrowserReplayResult("testing", "● Recording ~"+REC_SECONDS+"s — say “Hello”… ("+remain+")");
+  const countdown = setInterval(()=>{
+    remain--;
+    if(remain>0) setBrowserReplayResult("testing", "● Recording ~"+REC_SECONDS+"s — say “Hello”… ("+remain+")");
+  }, 1000);
+
+  await new Promise(r=> setTimeout(r, REC_SECONDS*1000));
+  clearInterval(countdown);
+  try{ if(mediaRec && mediaRec.state!=="inactive") mediaRec.stop(); }catch(_e){}
+  cleanupCapture();
+
+  // Stitch the captured PCM into one buffer; compute duration + peak level.
+  const total = chunks.reduce((n,c)=>n+c.length, 0);
+  const dur = total / sr;
+  const peakPct = Math.round(Math.min(1, peak) * 100);
+  if(total === 0 || peak < 0.002){
+    try{ if(actx) await actx.close(); }catch(_e){}
+    finishBrowserReplay(false, "No audio captured — the browser mic was silent. Check the input device + permission.",
+      [["duration", (Math.round(dur*100)/100)+" s"], ["peak", peakPct+"%"]]);
+    return;
+  }
+  const meta = [
+    ["duration", (Math.round(dur*100)/100)+" s"],
+    ["peak", peakPct+"%"],
+    ["sample-rate", (Math.round(sr/100)/10)+" kHz"],
+  ];
+
+  // ---- replay ----
+  browserReplaySpk("▶ playing back…");
+  setBrowserReplayResult("testing", "▶ Playing it back — listen… (peak "+peakPct+"%)");
+  const doneOk = ()=> finishBrowserReplay(true,
+    "Recorded "+(Math.round(dur*10)/10)+"s and played it back — browser mic → speakers works.", meta);
+
+  // Build the AudioBufferSourceNode replay from the captured PCM (the guaranteed,
+  // CSP-safe path). Used directly as fallback and after a blob-playback failure.
+  function webAudioReplay(){
+    try{
+      const ractx = new (window.AudioContext||window.webkitAudioContext)();
+      const abuf = ractx.createBuffer(1, total, sr);
+      const out = abuf.getChannelData(0);
+      let off = 0;
+      for(const c of chunks){ out.set(c, off); off += c.length; }
+      const node = ractx.createBufferSource();
+      node.buffer = abuf;
+      node.connect(ractx.destination);
+      node.onended = ()=>{ try{ ractx.close(); }catch(_e){} doneOk(); };
+      node.start();
+    }catch(e){
+      finishBrowserReplay(false, "Captured audio but replay failed in this browser ("+(e&&e.name||"error")+").", meta);
+    }
+  }
+
+  // Prefer a blob <audio> replay when MediaRecorder produced data; on ANY failure
+  // (CSP/codec/playback) fall back to the Web-Audio buffer-source replay.
+  if(mediaRec && blobParts.length){
+    try{
+      const blob = new Blob(blobParts, {type: blobParts[0].type || "audio/webm"});
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio();
+      let settled = false;
+      const cleanupBlob = ()=>{ try{ URL.revokeObjectURL(url); }catch(_e){} };
+      audio.onended = ()=>{ if(settled) return; settled = true; cleanupBlob(); doneOk(); };
+      audio.onerror = ()=>{ if(settled) return; settled = true; cleanupBlob(); webAudioReplay(); };
+      audio.src = url;
+      const p = audio.play();
+      if(p && p.catch) p.catch(()=>{ if(settled) return; settled = true; cleanupBlob(); webAudioReplay(); });
+    }catch(_e){ webAudioReplay(); }
+  }else{
+    webAudioReplay();
+  }
+  try{ if(actx) await actx.close(); }catch(_e){}
+});
+
 // keyboard: SPACE = push-to-talk (when not typing in a field)
 addEventListener("keydown", e=>{
   if(e.code==="Space" && !e.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)){
@@ -1705,6 +1955,10 @@ function handleEvent(raw){
   switch(d.type){
     case "state":
       setState(d.state, d.detail);
+      // Authoritative: reconcile the wake button to the real loop state. When the
+      // backend reports `listening` (wake loop active — `--browser --wake` auto-
+      // starts it) show STOP WAKE; idle/non-active → START WAKE.
+      syncWakeFromState(d.state);
       // The llm_request detail is "<provider> / <model>" — take the model side
       // for the ASSISTANT label (keep the full "provider / model" if no slash).
       if(d.state === "llm_request" && d.detail) setActiveModel(modelFromDetail(d.detail));
@@ -1889,6 +2143,7 @@ if(liveAudioBtn){
    ============================================================ */
 const DEMO_SETTINGS = {
   mic_permission:"notDetermined",     // demo: hint visible until a check "passes"
+  host_app:"iTerm",                   // demo: name the server's host app in the server-mic note
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko",
   wake_words:["alexa","computer","jarvis","maziko","nexus"],
@@ -1954,7 +2209,7 @@ function runDemoStep(){
   if(ev.wake){ fireWakeCue("maziko"); log("⚡ wake fired (demo)","evt"); demoTimer = setTimeout(runDemoStep, 250); return; }
   if(ev.transcript){ addUserFromTranscript(ev.transcript, ev.source); log("transcript: "+ev.transcript,"evt"); demoTimer = setTimeout(runDemoStep, 350); return; }
 
-  if(ev.state){ setState(ev.state, ev.detail); log("state → "+ev.state+" (demo)","evt"); }
+  if(ev.state){ setState(ev.state, ev.detail); syncWakeFromState(ev.state); log("state → "+ev.state+" (demo)","evt"); }
 
   if(ev.streamWords){
     let i = 0;
