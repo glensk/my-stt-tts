@@ -367,17 +367,76 @@ def make_home_control_tool(dispatch: Callable[[str], str], *, name: str = "home_
     )
 
 
+def make_music_tools(*, player: str = "auto", volume: int | None = None) -> list[Tool]:
+    """Build the ``play_music`` / ``stop_music`` tools for API (anthropic/openai) brains.
+
+    These let a tool-calling provider trigger the SAME stoppable YouTube player the
+    local intent router uses (the router stays the primary path because the default
+    ``claude-cli`` brain does no tool-calling). ``player`` / ``volume`` come from
+    config and select the playback backend (mpv -> ffplay -> yt-dlp download). The
+    music module is imported lazily inside ``run`` so importing :mod:`tools` never
+    needs yt-dlp (CORE stays importable without the ``music`` extra)."""
+
+    def _play(args: dict[str, Any]) -> str:
+        from .music import get_player
+
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return "error: no song given"
+        result = get_player(player=player, volume=volume).play(query)
+        return f"Playing {result.title}." if result.ok else result.reason
+
+    def _stop(_args: dict[str, Any]) -> str:
+        from .music import get_player
+
+        stopped = get_player(player=player, volume=volume).stop()
+        return "Stopped the music." if stopped else "Nothing was playing."
+
+    return [
+        Tool(
+            name="play_music",
+            description=(
+                "Play a song or piece of music from YouTube through the speakers. "
+                "Pass the song and artist as 'query' (e.g. 'We Will Rock You by Queen'). "
+                "Use for any 'play <song>', 'put on <music>' request."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The song to play, e.g. 'Bohemian Rhapsody by Queen'.",
+                    }
+                },
+                "required": ["query"],
+            },
+            run=_play,
+        ),
+        Tool(
+            name="stop_music",
+            description="Stop the music currently playing. Use for 'stop the music' / 'stop'.",
+            parameters=_NO_ARGS,
+            run=_stop,
+        ),
+    ]
+
+
 def default_tools(
     home_dispatch: Callable[[str], str] | None = None,
     *,
     location: str = "Lausanne, Switzerland",
     units: str = "metric",
+    music_enabled: bool = True,
+    music_player: str = "auto",
+    music_volume: int | None = None,
 ) -> list[Tool]:
     """The shipped example tools (get_time, calculator, get_weather).
 
     ``get_weather`` is bound to the configured ``location`` + ``units`` so it
     defaults to the user's home but accepts an explicit place per call.
     ``home_dispatch`` additionally enables ``home_control`` when supplied.
+    ``music_enabled`` adds ``play_music`` / ``stop_music`` (YouTube) so a
+    tool-calling API brain can play music too (the local intent router is primary).
     """
     tools = [
         Tool(
@@ -408,6 +467,8 @@ def default_tools(
         ),
         make_weather_tool(default_location=location, default_units=units),
     ]
+    if music_enabled:
+        tools.extend(make_music_tools(player=music_player, volume=music_volume))
     if home_dispatch is not None:
         tools.append(make_home_control_tool(home_dispatch))
     return tools

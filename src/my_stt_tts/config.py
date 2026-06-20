@@ -101,6 +101,10 @@ BARGE_IN_MODES = ("off", "headphones", "always")
 # End-of-turn analyzer choices (see turn.py).
 TURN_ANALYZERS = ("silence", "smart")
 
+# Music playback backends (see music.py): auto picks the best available
+# (mpv -> ffplay -> yt-dlp download). Pin one to force it.
+MUSIC_PLAYERS = ("auto", "mpv", "ffplay", "download")
+
 # Acoustic echo cancellation modes (see aec.py). Removes the assistant's own TTS
 # from the mic so barge-in works on open speakers, not just headphones:
 #   off             — no AEC (legacy; barge-in reliable only with headphones)
@@ -141,7 +145,9 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are a calm, concise voice assistant. Your reply is spoken aloud and the "
     "user never sees text: no markdown, lists, code, emoji, or URLs. Speak in one "
     "to three short sentences, spell numbers and dates as words, reply in the "
-    "language the user spoke, and use metric units and ISO-8601 dates."
+    "language the user spoke, and use metric units and ISO-8601 dates. You can play "
+    "music from YouTube — when the user asks to play a song it will be handled, so "
+    "never say you cannot play music."
 )
 
 
@@ -417,6 +423,16 @@ class Config:
     tools_enabled: bool = True
     tools_max_iterations: int = 4  # cap tool-use loops so a model can't spin forever
 
+    # --- Music from YouTube: a LOCAL intent router in the turn path resolves "play
+    # <song>" with yt-dlp and plays it through a stoppable background player BEFORE
+    # the LLM is asked, so it works for every brain (incl. claude-cli, which does
+    # not do our tool-calling). `music_player` picks the backend: auto (mpv ->
+    # ffplay -> yt-dlp download), or pin one. `music_volume` (0..100) is applied by
+    # mpv when set. yt-dlp is the `music` extra; mpv/ffmpeg are system tools. ---
+    music_enabled: bool = True
+    music_player: str = "auto"  # auto | mpv | ffplay | download
+    music_volume: int | None = None  # 0..100; None = leave the player default
+
     # --- Cloud STT/TTS backends (R2-7): optional, behind the existing seams.
     # Local-first defaults; cloud is selected explicitly and degrades gracefully
     # when no API key is set. Both speak an OpenAI-compatible API by default. ---
@@ -555,6 +571,8 @@ class Config:
             transport_host=env.get("TRANSPORT_HOST", "0.0.0.0"),  # noqa: S104 — LAN bind
             transport_token=env.get("TRANSPORT_TOKEN") or None,
             tools_enabled=_env_bool("TOOLS_ENABLED", default=True),
+            music_enabled=_env_bool("MUSIC_ENABLED", default=True),
+            music_player=env.get("MUSIC_PLAYER", "auto"),
             speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
             stt_backend=env.get("STT_BACKEND", "local"),
             stt_cloud_model=env.get("STT_CLOUD_MODEL", "whisper-1"),
@@ -651,6 +669,8 @@ class Config:
             cfg.speaker_threshold = float(env["SPEAKER_THRESHOLD"])
         if env.get("SPEAKER_MARGIN"):
             cfg.speaker_margin = float(env["SPEAKER_MARGIN"])
+        if env.get("MUSIC_VOLUME"):
+            cfg.music_volume = int(env["MUSIC_VOLUME"])
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -745,6 +765,10 @@ class Config:
             errors.append(f"transport_port must be in (0, 65535]; got {self.transport_port}")
         if self.tools_max_iterations <= 0:
             errors.append(f"tools_max_iterations must be > 0; got {self.tools_max_iterations}")
+        if self.music_player not in MUSIC_PLAYERS:
+            errors.append(f"music_player must be one of {MUSIC_PLAYERS}; got {self.music_player!r}")
+        if self.music_volume is not None and not 0 <= self.music_volume <= 100:
+            errors.append(f"music_volume must be in [0, 100]; got {self.music_volume}")
         self._validate_backends(errors)
         if self.platform not in ("auto", "macos", "linux"):
             errors.append(f"platform must be auto|macos|linux; got {self.platform!r}")

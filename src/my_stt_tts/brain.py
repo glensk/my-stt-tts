@@ -98,6 +98,9 @@ class Brain:
                     home_dispatch=self._home_dispatch,
                     location=cfg.location,
                     units=cfg.units,
+                    music_enabled=cfg.music_enabled,
+                    music_player=cfg.music_player,
+                    music_volume=cfg.music_volume,
                 )
             )
         self.tools = tools

@@ -61,7 +61,13 @@ cartesia = ["cartesia>=1.0"]
 whispercpp = ["pywhispercpp>=1.2"]
 faster-whisper = ["faster-whisper>=1.0"]
 linux-aec = ["webrtc-audio-processing>=0.1; sys_platform == 'linux'"]
-all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc]"]
+# Play music from YouTube: yt-dlp resolves + (optionally) downloads the audio.
+# mpv (preferred — supports stop/pause via IPC) or ffmpeg's ffplay are SYSTEM
+# tools — install via `brew install mpv` (macOS) or your package manager; yt-dlp
+# itself is uv-installable here. The local intent router in the turn path handles
+# "play <song>" for every brain; this extra just provides the resolver.
+music = ["yt-dlp>=2024.1"]
+all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc,music]"]
 
 [project.scripts]
 my-stt-tts = "my_stt_tts.__main__:main"

@@ -206,6 +206,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}",
         f"  agent      trigger '{cfg.agent_trigger}'  workspace {blue}{agent_ws}{reset}"
         f"  model {cfg.agent_model}",
+        f"  music      enabled {blue}{cfg.music_enabled}{reset}  player {blue}{cfg.music_player}{reset}"
+        f"  volume {cfg.music_volume if cfg.music_volume is not None else 'default'}",
         f"  prompt     {blue}{prompt_head}…{reset}  (edit prompts/system_prompt.md)",
         f"  locale     location {blue}{cfg.location}{reset}  units {blue}{cfg.units}{reset}",
     ]
@@ -515,6 +517,57 @@ class _BargeInCtx:
         return self.vad is not None and self.igate is not None
 
 
+def maybe_handle_music(cfg: Config, tts: TTSRouter, gate: audio.MicGate, text: str) -> bool:
+    """Handle ``text`` locally as a music command, returning True if it was one.
+
+    This is the cross-brain LOCAL INTENT ROUTER: it runs in the turn path BEFORE
+    the LLM so "play We Will Rock You by Queen" actually plays the song for every
+    brain (the default ``claude-cli`` does not do our tool-calling, so a tool alone
+    would not work). On a match it resolves + plays / stops / pauses / resumes via
+    :mod:`my_stt_tts.music`, speaks a short confirmation through the normal TTS
+    path, publishes a bus state/log so the GUI shows "▶ Playing: <title>", and the
+    caller then SKIPS the LLM. Disabled (always returns False) when
+    ``cfg.music_enabled`` is off. Never raises — a failure degrades to a spoken
+    reason and a handled turn so the music word never reaches the LLM as "I can't
+    play music"."""
+    if not cfg.music_enabled:
+        return False
+    from . import music
+
+    intent = music.match_music_intent(text)
+    if intent is None:
+        return False
+    action = intent["action"]
+    player = music.get_player(player=cfg.music_player, volume=cfg.music_volume)
+    bus.transcript(text)
+    if action == "play":
+        query = intent.get("query") or "popular music playlist"
+        bus.state("music_search", query)
+        result = player.play(query)
+        if result.ok:
+            bus.state("music_playing", result.title)
+            bus.log(f"▶ Playing: {result.title}")
+            _speak(tts, gate, f"Playing {result.title}.")
+        else:
+            bus.log(result.reason, "error")
+            _speak(tts, gate, result.reason)
+    elif action == "stop":
+        was = player.stop()
+        bus.state("idle")
+        bus.log("⏹ Stopped the music" if was else "no music was playing")
+        _speak(tts, gate, "Stopped the music." if was else "Nothing is playing.")
+    elif action == "pause":
+        ok = player.pause()
+        bus.log("⏸ Paused the music" if ok else "could not pause")
+        _speak(tts, gate, "Paused." if ok else "I can't pause this track.")
+    elif action == "resume":
+        ok = player.resume()
+        bus.log("▶ Resumed the music" if ok else "could not resume")
+        _speak(tts, gate, "Resuming." if ok else "There's nothing to resume.")
+    bus.state("idle")
+    return True
+
+
 def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
     """Half-duplex speak one sentence (mic gated during playback). Legacy path."""
     spoken = strip_non_spoken(sentence)
@@ -577,6 +630,12 @@ def _respond(
     resolved to an enrolled name before streaming, so memory is per-person. The
     barge-in chaining loops call this again with the freshly *captured* clip, so a
     different person interrupting is re-identified for the follow-up turn."""
+    # LOCAL INTENT ROUTER (cross-brain): handle a music command ("play <song>",
+    # "stop", …) HERE, before the LLM, so it works for every brain. On a match the
+    # song is played + a short confirmation is spoken, and the turn ends without
+    # ever asking the model (which would otherwise answer "I can't play music").
+    if maybe_handle_music(cfg, tts, gate, text):
+        return RespondResult()
     _set_speaker(brain, speaker_id, clip)
     metrics = TurnMetrics()
     metrics.note(transcript=text)

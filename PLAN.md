@@ -11,6 +11,56 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave M: play music from YouTube (local intent router)
+
+"Play We Will Rock You by Queen" now actually plays the song instead of "I can't
+play music" (branch `music-youtube`, worktree `.worktree-music`). 518 → 584 tests
+(+66), green with `--extra all` and core-only (582 + 2 extras-gated skips). Lint
+clean (ruff check + format, mypy `src`). The mechanism is a **local intent router
+in the turn path** (not only a tool) because the default `claude-cli` brain does
+NOT do our tool-calling — so a turn is intercepted BEFORE the LLM and handled
+locally, working for every brain.
+
+- **(1) `music.py` — the player.** `search(query)` resolves the best match via
+  **yt-dlp** `ytsearch1:` (extract_info, no download → webpage_url + title).
+  `MusicPlayer.play(query)` plays through a **stoppable background process**:
+  prefers `mpv --no-video` (streams the YouTube page URL, pause/resume/stop via
+  JSON IPC socket), else `ffplay -nodisp` (streams the bestaudio URL; stop only),
+  else a yt-dlp **download → temp file → project playback** fallback (daemon
+  thread). `stop()` / `pause()` / `resume()` / `is_playing()` / `now_playing()`.
+  yt-dlp is imported **lazily/guarded** so CORE imports `music.py` without the
+  extra; missing yt-dlp/player → a clear spoken reason, never a crash. A
+  process-wide `get_player()` singleton lets a later "stop" act on an earlier
+  "play".
+- **(2) Intent router in the turn path.** `match_music_intent(text)` recognises,
+  case-insensitively, EN/DE/FR: play ("play/put on <X>", "play <X> from youtube",
+  "play some music"; DE "spiel(e) <X>", "mach Musik an"; FR "joue/mets <X>", "mets
+  de la musique") and stop/pause/resume (EN/DE "stopp/halt/pausiere/weiter"/FR
+  "arrête/pause/reprends"). Wired into `_respond` in `__main__.py` via
+  `maybe_handle_music(cfg, tts, gate, text)`: when `cfg.music_enabled` and the text
+  matches, it searches+plays / stops, **speaks a confirmation via the normal TTS
+  path** ("Playing …" / "Stopped the music."), emits `bus.state` / `bus.log` (GUI
+  shows "▶ Playing: <title>"), and SKIPS the LLM. Covers terminal PTT, the wake
+  loop, and the GUI server-side PTT/typed paths (all converge on `_respond`).
+- **(3) Tool for API brains + system prompt.** `make_music_tools()` registers
+  `play_music`/`stop_music` so anthropic/openai providers can also call them (the
+  router stays primary); wired through `default_tools()` ← `brain.py` from config.
+  System prompt (`prompts/system_prompt.md` + the `_DEFAULT_SYSTEM_PROMPT`
+  fallback) now states the assistant CAN play YouTube music, so it stops saying "I
+  can't play music".
+- **(4) Config + deps.** `music_enabled=True`, `music_player="auto"`,
+  `music_volume: int|None` with `MUSIC_ENABLED`/`MUSIC_PLAYER`/`MUSIC_VOLUME` env,
+  validated (`MUSIC_PLAYERS` = auto|mpv|ffplay|download; volume ∈ [0,100]), shown
+  in `--settings`, documented in `.env.example`. `yt-dlp` added to a new `music`
+  extra in `pyproject.toml` and folded into `all`; mpv/ffmpeg documented as system
+  tools (`brew install mpv`).
+- **Tests (+66, `tests/test_music.py`):** intent matching across EN/DE/FR
+  play/stop/pause/resume + non-music negatives; `search`/`play` with yt-dlp + the
+  player subprocess MOCKED (no network/audio); graceful missing-deps (yt-dlp/player
+  absent → spoken reason, no crash); mpv IPC pause/resume; ffplay fallback; the turn
+  router skips the LLM on a music intent and calls play; the tool path + config
+  validation/env loading. CORE-only verified (`music.py` imports without yt-dlp).
+
 ## Build status (2026-06-20) — Wave L: config-panel reorg + wake sensitivity as a VOICE setting
 
 Layout/grouping pass on the GUI CONFIGURATION panel plus one new first-class
