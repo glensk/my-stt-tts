@@ -11,6 +11,54 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave M2: music backend fixes (always-respond, stop-routing, system state)
+
+Three real bugs from the first music play (branch `music-state`, worktree
+`.worktree-music2`). 582 → 614 tests core (+32), green core-only (614 + 2
+extras-gated skips) and `--extra all` (616). Lint clean (ruff check + format,
+mypy `src`). `music.py` still imports CORE-only without yt-dlp. No webui.html /
+clients / esp32 changes (backend only).
+
+- **(1) ALWAYS emit an assistant response on a music action.** A music turn used
+  to emit only `bus.log` → NO assistant bubble in the transcript. New
+  `_music_respond(cfg, tts, gate, display, spoken)` in `__main__.py` emits a brief
+  `bus.state("llm_response", model)` + a final `bus.response(display, final=True,
+  model=…)` (so the page draws an "ASSISTANT · <model>" bubble with the ▶/⏹/⏸
+  glyph) AND speaks the **glyph-free** `spoken` text (symbols must not be read
+  aloud). Play → "▶ Playing: <title>." / stop → "⏹ Stopped the music." / pause →
+  "⏸ Paused." / resume → "▶ Resumed."
+- **(2) Reliable stop/pause/resume — never falls through to the LLM.** Root cause:
+  `_STOP_RE` did not allow trailing politeness, so **"stop the music please"** failed
+  to match → `match_music_intent` returned `None` → the turn reached the LLM (which
+  hallucinated "there's no music playing"). Fix: `_strip_politeness()` strips a
+  trailing politeness/filler clause (EN "please"/"now", DE "bitte"/"jetzt", FR
+  "s'il te/vous plaît"/"stp"/"svp"/"maintenant") BEFORE matching control phrases.
+  Any matched control intent is ALWAYS handled locally; a stop/pause with nothing
+  playing is answered BY THE ROUTER ("Nothing is playing right now."), never the LLM.
+- **(3) System-state awareness in the LLM context.** New `music.music_state_line()`
+  reads the process-wide `get_player()` singleton (side-effect-free; no player ⇒
+  "System state: no music is playing.") and is injected into `brain._system_prompt()`
+  on EVERY turn, right next to `current_time_line()`. So an LLM-routed question like
+  "what's playing?" is answered from LIVE state ("System state: music is currently
+  playing: \"<title>\".", or "…is paused…"), not just chat history.
+- **(4) Rich music events + GUI control actions + video_id.** `search`/`play` now
+  extract the 11-char YouTube `video_id` (from yt-dlp's `id` or the page URL) onto
+  `Track`/`PlayResult`; a new `bus.music(status, title, video_id, url)` emitter
+  publishes `{"type":"music","status":"playing|stopped|paused|resumed","title",
+  "video_id","url"}` on every play/stop/pause/resume (so a later GUI wave can embed
+  - control the video). New `_music_action("music_stop"|"music_pause"|"music_resume")`
+  server actions are wired into the `on_action` handler (GUI buttons) and drive the
+  SAME singleton + emit the SAME event. `MusicPlayer.status()` exposes a live
+  snapshot (status/title/video_id/url) and `_paused` is tracked. Server-side mpv
+  playback unchanged.
+- **Tests (+32, `tests/test_music.py`):** trailing-politeness control matching
+  EN/DE/FR (router-level + turn-hook level, incl. "stop the music please" and the
+  nothing-playing case); always-respond (`bus.response` final + glyph-free spoken
+  text + the `music` event with video_id/url for play AND stop); `music_state_line()`
+  idle/playing/paused; `search` video_id from `id` and from a watch URL;
+  `status()` snapshot; the `_music_action` GUI handlers emit stopped/paused/resumed.
+  Player/yt-dlp/network all MOCKED. CORE-only verified.
+
 ## Build status (2026-06-20) — Wave M: play music from YouTube (local intent router)
 
 "Play We Will Rock You by Queen" now actually plays the song instead of "I can't
