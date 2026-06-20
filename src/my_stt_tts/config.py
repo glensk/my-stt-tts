@@ -105,6 +105,11 @@ TURN_ANALYZERS = ("silence", "smart")
 # (mpv -> ffplay -> yt-dlp download). Pin one to force it.
 MUSIC_PLAYERS = ("auto", "mpv", "ffplay", "download")
 
+# Where the GUI surfaces music (audio always plays SERVER-side via mpv either way):
+# "server" = page shows audio-only controls; "hybrid" = page may ALSO embed the
+# (muted) YouTube video when it is local to the server. See Config.music_playback.
+MUSIC_PLAYBACK_MODES = ("server", "hybrid")
+
 # Acoustic echo cancellation modes (see aec.py). Removes the assistant's own TTS
 # from the mic so barge-in works on open speakers, not just headphones:
 #   off             — no AEC (legacy; barge-in reliable only with headphones)
@@ -432,6 +437,15 @@ class Config:
     music_enabled: bool = True
     music_player: str = "auto"  # auto | mpv | ffplay | download
     music_volume: int | None = None  # 0..100; None = leave the player default
+    # Where the GUI shows music. Audio ALWAYS plays SERVER-side via mpv regardless
+    # of this — the setting only tells the control-room page whether it should ALSO
+    # show the (muted) YouTube video when it is local to the server: "server" = the
+    # page shows audio-only controls (no embedded video); "hybrid" (default) = the
+    # page may ALSO embed the muted video alongside the server audio. The server
+    # itself does not detect "local"; it just surfaces the choice and keeps emitting
+    # the YouTube ``video_id`` on the ``music`` event (see events.bus.music).
+    # Env: MUSIC_PLAYBACK.
+    music_playback: str = "hybrid"  # server | hybrid
 
     # --- Cloud STT/TTS backends (R2-7): optional, behind the existing seams.
     # Local-first defaults; cloud is selected explicitly and degrades gracefully
@@ -573,6 +587,7 @@ class Config:
             tools_enabled=_env_bool("TOOLS_ENABLED", default=True),
             music_enabled=_env_bool("MUSIC_ENABLED", default=True),
             music_player=env.get("MUSIC_PLAYER", "auto"),
+            music_playback=env.get("MUSIC_PLAYBACK", "hybrid"),
             speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
             stt_backend=env.get("STT_BACKEND", "local"),
             stt_cloud_model=env.get("STT_CLOUD_MODEL", "whisper-1"),
@@ -769,6 +784,10 @@ class Config:
             errors.append(f"music_player must be one of {MUSIC_PLAYERS}; got {self.music_player!r}")
         if self.music_volume is not None and not 0 <= self.music_volume <= 100:
             errors.append(f"music_volume must be in [0, 100]; got {self.music_volume}")
+        if self.music_playback not in MUSIC_PLAYBACK_MODES:
+            errors.append(
+                f"music_playback must be one of {MUSIC_PLAYBACK_MODES}; got {self.music_playback!r}"
+            )
         self._validate_backends(errors)
         if self.platform not in ("auto", "macos", "linux"):
             errors.append(f"platform must be auto|macos|linux; got {self.platform!r}")

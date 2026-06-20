@@ -24,6 +24,7 @@ from .config import (
     BARGE_IN_MODES,
     BRAIN_PRESETS,
     DENOISER_MODES,
+    MUSIC_PLAYBACK_MODES,
     PROVIDERS,
     TRANSPORT_MODES,
     TURN_ANALYZERS,
@@ -108,6 +109,10 @@ def settings_dict(
         "tts_streaming": cfg.tts_streaming,
         "denoiser": cfg.denoiser,
         "tools_enabled": cfg.tools_enabled,
+        # Where the GUI shows music (audio always plays server-side via mpv): the
+        # page uses this to decide whether to ALSO embed the muted YouTube video when
+        # it is local to the server. "server" = audio-only; "hybrid" = may embed video.
+        "music_playback": cfg.music_playback,
         "brain_mode": cfg.brain_mode,
         "realtime_keyed": bool(cfg.realtime_api_key),
         "telephony": cfg.telephony,
@@ -119,6 +124,7 @@ def settings_dict(
         "turn_analyzers": list(TURN_ANALYZERS),
         "transport_modes": list(TRANSPORT_MODES),
         "denoiser_modes": list(DENOISER_MODES),
+        "music_playback_modes": list(MUSIC_PLAYBACK_MODES),
         "units_modes": list(UNITS),
         "voices": [
             {"name": name, "id": VOICE_PRESETS[name], "note": _VOICE_NOTES.get(name, "")}
@@ -177,6 +183,13 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         cfg.tts_streaming = bool(data["tts_streaming"])
     if "denoiser" in data:
         cfg.denoiser = str(data["denoiser"])
+    if "music_playback" in data:
+        # Audio still always plays server-side; this only steers whether the GUI
+        # also embeds the muted YouTube video. Ignore an unrecognised value so a
+        # hand-crafted POST can't push the config past validate()'s allowed set.
+        choice = str(data["music_playback"])
+        if choice in MUSIC_PLAYBACK_MODES:
+            cfg.music_playback = choice
 
 
 class _Handler(BaseHTTPRequestHandler):
