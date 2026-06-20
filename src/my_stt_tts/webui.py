@@ -93,9 +93,13 @@ def settings_dict(
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
-        # Per-wake-word reliability metadata so the page can colour the picker by
-        # tier and steer users to the reliable (green) models. Shape (GUI contract):
-        # {"<word>": {"tier": "green"|"orange"|"red", "note": str, "recall": float|null}}.
+        # Per-wake-word reliability metadata so the page can render a reliability BAR
+        # (width = reliability) + tier colour + note, steering users to reliable
+        # models. Shape (GUI contract): {"<word>": {"tier": "green"|"orange"|"red",
+        # "note": str, "reliability": float 0-1, "tested": int, "measured": bool}}.
+        # ``reliability`` is data-driven from THIS user's wake tests when they exist
+        # (debug/wake_stats.json, server-biased), else a static prior (official 0.9,
+        # self-trained 0.3); ``tier`` is derived from it.
         "wake_word_info": wake_word_info(),
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),
         # clip-protected to ±1.0. Reported back to the page as processing.gain.
@@ -287,19 +291,20 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_recording(self, name: str) -> None:
         """Serve a saved mic/wake WAV from ``debug/recordings/`` (path-traversal-safe).
 
-        The GUI links each diagnostic clip via its ``wav_url`` (``/recordings/<file>``);
-        this returns the WAV bytes as ``audio/wav`` so the page can play it back. Only
-        the **basename** of the requested name is used (any ``..`` / ``/`` segments are
-        discarded) and only a ``.wav`` under the recordings dir is served — so a crafted
-        ``/recordings/../../etc/passwd`` can never escape the directory.
+        The GUI links each diagnostic clip via its ``wav_url`` — a flat
+        ``/recordings/<file>`` for a mic check or a per-word
+        ``/recordings/wake/<word>/<file>`` for a wake clip. Either way only the
+        **basename** of the requested name is honoured: :func:`audio.resolve_recording`
+        strips any ``..`` / path segments and searches the recordings dir and its
+        subfolders for that ``.wav``, re-checking every candidate stays under the
+        recordings dir — so a crafted ``/recordings/../../etc/passwd`` can never escape.
         """
-        from .audio import recordings_dir
+        from .audio import resolve_recording
 
-        base = os.path.basename(name)
-        if not base.endswith(".wav") or base != name:
+        path = resolve_recording(os.path.basename(name))
+        if path is None:
             self._send(404, "text/plain", b"not found")
             return
-        path = os.path.join(recordings_dir(), base)
         try:
             with open(path, "rb") as fh:
                 body = fh.read()

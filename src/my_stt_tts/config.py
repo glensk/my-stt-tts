@@ -44,72 +44,203 @@ def available_wake_words(wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR) 
     return sorted(p.stem for p in directory.glob("*.onnx") if p.is_file())
 
 
-# --- Wake-word reliability metadata (GUI contract: settings_dict.wake_word_info).
-# A wake word is GREEN (recommended) when it is an official extensively-trained
-# model OR its measured recall is >= 0.70; ORANGE for recall in [0.50, 0.70);
-# RED for recall < 0.50, or an unknown recall on a self-trained model.
+# --- Wake-word reliability (GUI contract: settings_dict.wake_word_info) ---------
+# Reliability is a 0..1 scalar = the MEASURED chance the word fires for THIS user
+# when his own wake tests exist, else a STATIC PRIOR. Empirical finding driving
+# this: official models fire ~99-100% on Albert's voice while the self-trained
+# `maziko` scores 0% — so the per-word dot must read from his actual tests, not the
+# static training metric. The tier is DERIVED from the scalar (see WAKE_TIER_*):
+# the official models go green, the synthetic-English self-trained ones go red
+# (their 0.3 prior, then -> ~0 once his failing tests accrue).
 
 # openWakeWord's official, extensively-trained models (shipped via
-# scripts/fetch_official_wakewords.py). Always GREEN — the recommended reliable
-# choice. Recall is unmeasured here (null) because they are trained/validated
-# upstream on far more data than this repo's self-trained set.
+# scripts/fetch_official_wakewords.py). Prior 0.9 (they fire reliably even on a
+# non-native accent — validated upstream on far more data).
 OFFICIAL_WAKE_WORDS: frozenset[str] = frozenset({"alexa", "hey_jarvis", "hey_mycroft"})
 
-# Measured recall of the self-trained models (from wakewords/WAKEWORD.md training
-# runs). Words absent here are self-trained with UNRECORDED recall -> RED.
-SELF_TRAINED_RECALL: dict[str, float] = {
-    "maziko": 0.76,
-    "nova": 0.71,
-    "athena": 0.71,
-    "orion": 0.70,
-    "computer": 0.64,
-    "luna": 0.52,
-    "sage": 0.45,
-}
+# Static reliability PRIORS used until measured tests exist for a word.
+OFFICIAL_PRIOR = 0.9
+# Self-trained / synthetic-English models: low prior (0.3 -> red). They are trained
+# on synthetic English TTS and empirically fail on a non-native accent — maziko
+# proved it (0% on Albert's voice). The set is for documentation/seed parity; ANY
+# non-official word gets the self-trained prior.
+SELF_TRAINED_WAKE_WORDS: frozenset[str] = frozenset(
+    {"maziko", "nexus", "nova", "athena", "orion", "computer", "luna", "sage", "jarvis"}
+)
+SELF_TRAINED_PRIOR = 0.3
 
-# Recall tier thresholds (inclusive lower bounds): >= GREEN -> green; >= ORANGE
-# (and < GREEN) -> orange; below ORANGE -> red.
+# How many of the most-recent tests feed the measured reliability mean.
+WAKE_STATS_RECENT = 10
+
+# Tier thresholds (inclusive lower bounds) DERIVED from the reliability scalar:
+# >= GREEN -> green; >= ORANGE (and < GREEN) -> orange; below ORANGE -> red.
 WAKE_TIER_GREEN = 0.70
-WAKE_TIER_ORANGE = 0.50
+WAKE_TIER_ORANGE = 0.40
 
 
-def wake_word_tier(word: str) -> tuple[str, str, float | None]:
-    """Reliability ``(tier, note, recall)`` for a wake word (GUI contract).
+def wake_stats_path() -> str:
+    """Repo-local ``debug/wake_stats.json`` — the per-word wake-test outcome log.
 
-    ``tier`` is ``"green" | "orange" | "red"`` per the rule above; ``note`` is a
-    short human reason; ``recall`` is the measured recall (``float``) or ``None``
-    when unknown (official models, or self-trained words with no recorded recall).
-    Pure + dependency-free so it is cheap and trivially testable.
+    Gitignored (the whole ``debug/`` tree is). Keyed by word ->
+    ``[{confidence, fired, source, ts}, …]``; consumed by :func:`measured_reliability`
+    so the GUI dot reflects this user's REAL hit rate, not a static training metric.
     """
+    repo_root = Path(__file__).resolve().parents[2]
+    return str(repo_root / "debug" / "wake_stats.json")
+
+
+def load_wake_stats(path: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Load ``debug/wake_stats.json`` -> ``{word: [outcome, …]}`` (``{}`` if absent/bad).
+
+    Never raises — a missing or corrupt file yields an empty mapping so reliability
+    falls back to the static prior. Only well-formed ``{str: list}`` entries are kept.
+    """
+    import json
+
+    target = path or wake_stats_path()
+    try:
+        with open(target, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): list(v) for k, v in data.items() if isinstance(v, list)}
+
+
+def record_wake_outcome(
+    word: str,
+    *,
+    confidence: float,
+    fired: bool,
+    source: str,
+    path: str | None = None,
+    ts: str | None = None,
+) -> None:
+    """Append one wake-test outcome for ``word`` to ``debug/wake_stats.json``.
+
+    Called on EVERY ``wake_test`` (server or browser) so reliability becomes
+    data-driven from this user's real tests. ``ts`` defaults to the system clock at
+    call time (ISO-8601). Best-effort — a disk/JSON error is logged and swallowed so a
+    diagnostic never crashes (the GUI just keeps the prior).
+    """
+    import json
+    import logging
+    import time as _time
+
+    target = path or wake_stats_path()
+    entry = {
+        "confidence": round(float(confidence), 4),
+        "fired": bool(fired),
+        "source": str(source),
+        "ts": ts or _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime()),
+    }
+    try:
+        stats = load_wake_stats(target)
+        stats.setdefault(str(word), []).append(entry)
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump(stats, fh, indent=2)
+    except OSError as exc:  # disk/permission issue must not kill a diagnostic
+        logging.getLogger("my_stt_tts.config").warning(
+            "wake_stats append failed (%s): %s", target, exc
+        )
+
+
+def measured_reliability(
+    word: str, stats: dict[str, list[dict[str, Any]]]
+) -> tuple[float | None, int]:
+    """Measured reliability ``(scalar, tested)`` for ``word`` from wake-test ``stats``.
+
+    Returns ``(mean_confidence_over_recent_tests, count)`` or ``(None, 0)`` when no
+    usable tests exist. Biased to the **server** source (the always-listening loop is
+    server-side): when any server tests exist, ONLY server tests count; otherwise it
+    falls back to browser tests. Uses the mean confidence over the most recent
+    :data:`WAKE_STATS_RECENT` qualifying tests, clamped to ``[0, 1]``.
+    """
+    outcomes = stats.get(str(word)) or []
+    server = [o for o in outcomes if str(o.get("source")) == "server"]
+    chosen = server or outcomes
+    confs: list[float] = []
+    for o in chosen[-WAKE_STATS_RECENT:]:
+        try:
+            confs.append(float(o.get("confidence", 0.0)))
+        except (TypeError, ValueError):
+            continue
+    if not confs:
+        return None, 0
+    return max(0.0, min(1.0, sum(confs) / len(confs))), len(confs)
+
+
+def _tier_from_reliability(reliability: float) -> str:
+    """``"green" | "orange" | "red"`` derived from a 0..1 reliability scalar."""
+    if reliability >= WAKE_TIER_GREEN:
+        return "green"
+    if reliability >= WAKE_TIER_ORANGE:
+        return "orange"
+    return "red"
+
+
+def wake_word_reliability(
+    word: str, stats: dict[str, list[dict[str, Any]]] | None = None
+) -> tuple[float, int, bool, str]:
+    """Reliability ``(reliability, tested, measured, note)`` for one wake word.
+
+    ``reliability`` is a 0..1 scalar: the MEASURED mean confidence over this user's
+    recent (server-biased) tests when any exist, else the static PRIOR (official 0.9,
+    self-trained 0.3). ``tested`` is how many tests fed the measure (0 when prior),
+    ``measured`` is whether real tests drove it, ``note`` a short human reason. Pure
+    given ``stats`` so it is cheap + trivially testable; ``stats=None`` loads the
+    on-disk log.
+    """
+    log = load_wake_stats() if stats is None else stats
+    scalar, tested = measured_reliability(word, log)
+    if scalar is not None:
+        return (round(scalar, 3), tested, True, f"measured {scalar:.2f} over {tested} tests")
     if word in OFFICIAL_WAKE_WORDS:
-        return ("green", "official, trained on large data", None)
-    recall = SELF_TRAINED_RECALL.get(word)
-    if recall is None:
-        return ("red", "self-trained, recall not measured", None)
-    if recall >= WAKE_TIER_GREEN:
-        tier = "green"
-    elif recall >= WAKE_TIER_ORANGE:
-        tier = "orange"
-    else:
-        tier = "red"
-    return (tier, f"self-trained, recall {recall:.2f}", recall)
+        return (OFFICIAL_PRIOR, 0, False, "official, fires reliably")
+    return (SELF_TRAINED_PRIOR, 0, False, "self-trained, weak on non-native accents")
+
+
+def wake_word_tier(
+    word: str, stats: dict[str, list[dict[str, Any]]] | None = None
+) -> tuple[str, str, float]:
+    """Reliability ``(tier, note, reliability)`` for a wake word (GUI contract).
+
+    ``tier`` (``"green" | "orange" | "red"``) is DERIVED from the 0..1
+    ``reliability`` scalar via :func:`_tier_from_reliability`; ``note`` is a short
+    human reason. So an official model is green and a self-trained one is red (its
+    0.3 prior), each updating to the MEASURED value once this user's tests accrue.
+    """
+    reliability, _tested, _measured, note = wake_word_reliability(word, stats)
+    return (_tier_from_reliability(reliability), note, reliability)
 
 
 def wake_word_info(
     wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR,
+    stats: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Per-available-wake-word reliability metadata for ``settings_dict``.
 
-    Returns ``{"<word>": {"tier": "green"|"orange"|"red", "note": str,
-    "recall": float | None}}`` for every wake word present on disk (see
-    :func:`available_wake_words`). Consumed by the GUI to colour the wake-word
-    picker by reliability and steer users toward the green (official / high-recall)
-    models. Empty dict when no models are present.
+    Returns, for every wake word present on disk (see :func:`available_wake_words`),
+    ``{"<word>": {"tier", "note", "reliability": float 0-1, "tested": int,
+    "measured": bool}}``. ``reliability`` is the data-driven scalar (measured for this
+    user when tests exist, else a static prior); ``tier`` is derived from it. The GUI
+    renders a reliability BAR (width = reliability) + tier colour + ``note`` tooltip.
+    The on-disk wake-test log is loaded ONCE and shared across all words. Empty dict
+    when no models are present.
     """
+    log = load_wake_stats() if stats is None else stats
     info: dict[str, dict[str, object]] = {}
     for word in available_wake_words(wakewords_dir):
-        tier, note, recall = wake_word_tier(word)
-        info[word] = {"tier": tier, "note": note, "recall": recall}
+        reliability, tested, measured, note = wake_word_reliability(word, log)
+        info[word] = {
+            "tier": _tier_from_reliability(reliability),
+            "note": note,
+            "reliability": reliability,
+            "tested": tested,
+            "measured": measured,
+        }
     return info
 
 

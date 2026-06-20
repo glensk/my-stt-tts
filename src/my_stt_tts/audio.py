@@ -655,6 +655,20 @@ def _clip_hash8(clip: np.ndarray) -> str:
     return hashlib.sha256(int16).hexdigest()[:8]
 
 
+def _sanitize_word(word: str) -> str:
+    """A filesystem-safe per-word folder segment (no path separators / traversal).
+
+    Keeps the word recognizable while guaranteeing it can never escape the
+    recordings dir: anything that is not ``[A-Za-z0-9._-]`` collapses to ``_`` and a
+    leading dot is stripped, so ``..``/``/``/`` `` can't form a traversal segment.
+    Empty input -> ``"_"`` so a path segment always exists.
+    """
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(word or "").strip()).lstrip(".")
+    return safe or "_"
+
+
 def save_recording(
     clip: np.ndarray,
     sample_rate: int,
@@ -667,12 +681,17 @@ def save_recording(
 
     The shared contract for EVERY server-captured OR browser-posted diagnostic clip:
     the clip is resampled to 16 kHz mono and written as
-    ``<YYYYmmdd-HHMMSS>-<kind>-<source>[-<word>]-<hash8>.wav`` where ``kind`` is
-    ``mic`` / ``wake``, ``source`` is ``server`` / ``browser`` and ``hash8`` is the
-    first 8 hex of ``sha256`` over the int16 PCM (so the GUI can address it and the
-    server can replay it). Returns ``(path, hash8, wav_url)`` with
-    ``wav_url="/recordings/<filename>"``. Defensive — a disk error yields an empty
-    ``path`` (the hash/url are still computed) so a diagnostic never crashes.
+    ``<YYYYmmdd-HHMMSS>-<source>-<hash8>.wav`` where ``source`` is ``server`` /
+    ``browser`` and ``hash8`` is the first 8 hex of ``sha256`` over the int16 PCM (so
+    the GUI can address it and the server can replay it).
+
+    **Wake clips are kept as training data** in a PER-WORD subfolder
+    ``debug/recordings/wake/<word>/<file>`` (ALL of them — every test is a labelled
+    sample); mic-check clips stay flat in ``debug/recordings/``. Returns
+    ``(path, hash8, wav_url)`` where ``wav_url`` is the ``/recordings/<rel>`` link
+    (``/recordings/wake/<word>/<file>`` for a wake clip). Defensive — a disk error
+    yields an empty ``path`` (the hash/url are still computed) so a diagnostic never
+    crashes.
     """
     import time as _time
 
@@ -681,15 +700,16 @@ def save_recording(
     clip16k = resample_to(np.asarray(clip, dtype=np.float32).ravel(), int(sample_rate), 16000)
     hash8 = _clip_hash8(clip16k)
     ts = _time.strftime("%Y%m%d-%H%M%S", _time.localtime())
-    parts = [ts, kind, source]
-    if word:
-        parts.append(str(word))
-    parts.append(hash8)
-    filename = "-".join(parts) + ".wav"
-    wav_url = f"/recordings/{filename}"
-    target = os.path.join(recordings_dir(), filename)
+    filename = "-".join([ts, source, hash8]) + ".wav"
+    if kind == "wake":
+        # Per-word training folder: debug/recordings/wake/<word>/<file>.
+        rel = os.path.join("wake", _sanitize_word(word or "unknown"), filename)
+    else:
+        rel = filename
+    wav_url = "/recordings/" + rel.replace(os.sep, "/")
+    target = os.path.join(recordings_dir(), rel)
     try:
-        os.makedirs(recordings_dir(), exist_ok=True)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as fh:
             fh.write(wav_bytes_from_float(clip16k, 16000))
         path = target
@@ -697,6 +717,53 @@ def save_recording(
         log.warning("recording save failed (%s): %s", target, exc)
         path = ""
     return path, hash8, wav_url
+
+
+def resolve_recording(name: str) -> str | None:
+    """Resolve a saved recording's BASENAME to its absolute path (traversal-safe).
+
+    Wake clips now live in per-word subfolders (``wake/<word>/<file>``) while
+    mic-check clips stay flat, so the GUI ``/recordings/`` route and the
+    ``play_recording`` action address a clip by basename alone. This searches
+    ``recordings_dir()`` AND its subfolders for ``<basename>.wav``, returning the
+    first match (or ``None``). Only the basename is honoured — any ``..`` / path
+    separators in ``name`` are discarded BEFORE the search and every candidate is
+    re-checked to live under ``recordings_dir()`` (``os.path.commonpath``), so a
+    crafted ``/recordings/../../etc/passwd`` can never escape the directory.
+    """
+    base = os.path.basename(str(name or ""))
+    if not base.endswith(".wav") or base != name:
+        return None
+    root = os.path.realpath(recordings_dir())
+    # Flat (mic-check) clip first, then any per-word wake subfolder.
+    flat = os.path.join(root, base)
+    if os.path.isfile(flat):
+        return flat
+    for dirpath, _dirs, files in os.walk(root):
+        if base in files:
+            cand = os.path.realpath(os.path.join(dirpath, base))
+            try:
+                if os.path.commonpath([root, cand]) == root:
+                    return cand
+            except ValueError:  # different drive on Windows -> not under root
+                continue
+    return None
+
+
+def find_recordings(pattern: str) -> list[str]:
+    """All saved recordings matching a glob ``pattern`` (flat + per-word subfolders).
+
+    Wake clips live in ``wake/<word>/`` subfolders, so a flat
+    ``glob(recordings_dir()/<pattern>)`` no longer finds them. This globs the
+    recordings dir AND recurses into subfolders (``**/<pattern>``), deduplicated,
+    so callers addressing a clip by hash (``*-<hash8>.wav``) or by word still match.
+    """
+    import glob
+
+    root = recordings_dir()
+    hits = set(glob.glob(os.path.join(root, pattern)))
+    hits |= set(glob.glob(os.path.join(root, "**", pattern), recursive=True))
+    return sorted(hits)
 
 
 # A preflight is considered failed when this fraction (or more) of capture frames

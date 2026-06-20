@@ -1662,14 +1662,14 @@ def _play_recording(hash8: str) -> None:
     user hears exactly what was captured. Never raises — a missing hash / file / player
     degrades to a clear log line so the worker thread stays alive.
     """
-    import glob
     import wave
 
     hash8 = str(hash8 or "").strip()
     if not hash8:
         bus.log("play_recording: no hash given", "error")
         return
-    matches = glob.glob(os.path.join(audio.recordings_dir(), f"*-{hash8}.wav"))
+    # Search flat (mic) AND per-word wake subfolders for the hash-named clip.
+    matches = audio.find_recordings(f"*-{hash8}.wav")
     if not matches:
         bus.log(f"play_recording: no saved recording for {hash8}", "error")
         return
@@ -1825,6 +1825,10 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
     confidence, fired, score_trace = score_wake_clip(
         clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
     )
+    # Persist the outcome so per-word reliability is data-driven from REAL tests.
+    from .config import record_wake_outcome
+
+    record_wake_outcome(word, confidence=confidence, fired=fired, source="server")
     wav_path = _save_wake_test_wav(clip16k, word, "server")
     _, hash8, wav_url = audio.save_recording(
         clip16k, 16000, kind="wake", source="server", word=word
@@ -1872,6 +1876,10 @@ def _run_wake_test_browser(
     confidence, fired, score_trace = score_wake_clip(
         clip, rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
     )
+    # Persist the outcome so per-word reliability is data-driven from REAL tests.
+    from .config import record_wake_outcome
+
+    record_wake_outcome(word, confidence=confidence, fired=fired, source="browser")
     clip16k = audio.resample_to(clip, rate, 16000)
     wav_path = _save_wake_test_wav(clip16k, word, "browser")
     _, hash8, wav_url = audio.save_recording(
@@ -1887,8 +1895,9 @@ def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | No
     """Resolve a SAVED wake clip to ``(clip16k, hash, basename)`` for re-scoring.
 
     Addresses a clip in ``debug/recordings/`` either by its 8-hex content ``hash``
-    (``*-<hash8>.wav``) or, when ``hash8`` is falsy, by the NEWEST wake recording for
-    ``word`` (``wake-*-<word>-*.wav`` by mtime). The WAV is already 16 kHz mono (see
+    (``*-<hash8>.wav``, searched flat + per-word subfolders) or, when ``hash8`` is
+    falsy, by the NEWEST wake recording for ``word`` (the per-word training folder
+    ``wake/<word>/*.wav`` by mtime). The WAV is already 16 kHz mono (see
     :func:`audio.save_recording`). Returns ``(None, "", "")`` when nothing matches or
     the file is unreadable — the caller turns that into a clear "no clip" message. The
     returned ``hash`` is the resolved 8-hex id parsed from the filename.
@@ -1899,12 +1908,15 @@ def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | No
     rec_dir = audio.recordings_dir()
     h = str(hash8 or "").strip()
     if h:
-        matches = glob.glob(os.path.join(rec_dir, f"*-{h}.wav"))
+        matches = audio.find_recordings(f"*-{h}.wav")
     else:
-        # Newest wake clip for this word: filenames are <ts>-wake-<source>-<word>-<hash>.wav.
+        # Newest wake clip for this word: it lives in the per-word folder
+        # debug/recordings/wake/<word>/<ts>-<source>-<hash>.wav.
+        from .audio import _sanitize_word
+
+        word_dir = os.path.join(rec_dir, "wake", _sanitize_word(word))
         matches = sorted(
-            glob.glob(os.path.join(rec_dir, f"wake-*-{word}-*.wav"))
-            + glob.glob(os.path.join(rec_dir, f"*-wake-*-{word}-*.wav")),
+            glob.glob(os.path.join(word_dir, "*.wav")),
             key=lambda p: os.path.getmtime(p) if os.path.isfile(p) else 0.0,
             reverse=True,
         )

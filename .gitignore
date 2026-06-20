@@ -59,8 +59,10 @@ CLAUDE.local.md
 # per-session churn, machine-local
 .claude-code-sessions
 
-# Mic / wake diagnostic recordings (debug/recordings/*.wav) — saved per run for
-# the GUI's /recordings/ route + the play_recording action; never source.
+# Mic / wake diagnostics — saved per run for the GUI's /recordings/ route + the
+# play_recording action; never source. Mic checks: debug/recordings/*.wav. Wake
+# tests: kept as training data in per-word folders debug/recordings/wake/<word>/*.wav
+# plus the data-driven reliability log debug/wake_stats.json. The whole tree is ignored.
 debug/
 
 # Voice enrollment profiles (private)
