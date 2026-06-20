@@ -34,12 +34,24 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import datetime
 import json
+import logging
+import os
 import queue
 import threading
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any
+from typing import IO, Any
+
+log = logging.getLogger("my_stt_tts.events")
+
+# Env var naming a file to append every published event to as JSON Lines (one
+# event per line, prefixed with a wall-clock timestamp). quickstart.sh sets this
+# to logs/events-<ts>.jsonl so a full EVENT LOG of each run is captured to disk
+# for after-the-fact investigation (e.g. why a wake word didn't fire). Empty /
+# unset -> no file sink (default; tests + library use write nothing).
+_EVENT_LOG_ENV = "MSTT_EVENT_LOG"
 
 # State machine the UI renders (the order a turn flows through):
 STATES = (
@@ -207,11 +219,49 @@ class EventBus:
         self._subs: list[_Subscriber] = []
         self._lock = threading.Lock()
         self._last_state: str | None = None
+        self._sink: IO[str] | None = None
+        self._sink_lock = threading.Lock()
+        self._sink_checked = False  # lazy one-time auto-attach from $MSTT_EVENT_LOG
+
+    def attach_file_sink(self, path: str) -> None:
+        """Append every published event (as JSON Lines) to ``path`` from now on.
+
+        Captures the full EVENT LOG to disk for after-the-fact investigation. Opened
+        line-buffered in append mode so the file is readable live (``tail -f``). Called
+        automatically when :data:`MSTT_EVENT_LOG` is set (see :meth:`_write_sink`), or
+        explicitly. Failures are logged, never raised — logging must not break the bus.
+        """
+        with self._sink_lock:
+            with contextlib.suppress(OSError):
+                if self._sink is not None:
+                    self._sink.close()
+            try:
+                self._sink = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+            except OSError as exc:  # pragma: no cover - unwritable path
+                self._sink = None
+                log.warning("event log sink %s could not be opened: %s", path, exc)
+
+    def _write_sink(self, event: dict[str, Any]) -> None:
+        """Append one event to the file sink (lazy auto-attach from env on first call)."""
+        if not self._sink_checked:
+            self._sink_checked = True
+            path = os.environ.get(_EVENT_LOG_ENV, "").strip()
+            if path:
+                self.attach_file_sink(path)
+        if self._sink is None:
+            return
+        line = json.dumps(
+            {"ts": datetime.datetime.now().isoformat(timespec="milliseconds"), **event},
+            ensure_ascii=False,
+        )
+        with self._sink_lock, contextlib.suppress(OSError, ValueError):
+            self._sink.write(line + "\n")
 
     def publish(self, event: dict[str, Any]) -> None:
         """Classify + fan out an event dict to all subscribers (G2 priority rules)."""
         if event.get("type") == "state":
             self._last_state = json.dumps(event, ensure_ascii=False)
+        self._write_sink(event)
         frame = Frame.of(event)
         with self._lock:
             subs = list(self._subs)

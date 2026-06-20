@@ -73,9 +73,14 @@ cd "${here}"
 # captured too. Override the directory with QUICKSTART_LOG_DIR.
 log_dir="${QUICKSTART_LOG_DIR:-logs}"
 mkdir -p "${log_dir}"
-logfile="${log_dir}/quickstart-$(date +%Y%m%d-%H%M%S).log"
+stamp="$(date +%Y%m%d-%H%M%S)"
+logfile="${log_dir}/quickstart-${stamp}.log"
 exec > >(tee -a "${logfile}") 2>&1
-echo "quickstart: logging this run to ${logfile} (also shown live below)."
+# Capture the full in-app EVENT LOG (state/transcript/response/wake/debug events)
+# to disk too — the bus auto-attaches this sink from MSTT_EVENT_LOG.
+export MSTT_EVENT_LOG="${log_dir}/events-${stamp}.jsonl"
+echo "quickstart: logging this run to ${logfile}"
+echo "            EVENT LOG -> ${MSTT_EVENT_LOG} (both also shown live below)."
 
 if ! command -v uv >/dev/null 2>&1; then
 	echo "quickstart: 'uv' is not installed (it manages the Python env)." >&2

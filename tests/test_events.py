@@ -203,3 +203,34 @@ def test_publish_dict_passthrough_for_metrics():
     bus.publish({"type": "metrics", "speech_id": "t1", "stages_ms": {}})
     evt = json.loads(sub.get_nowait())
     assert evt["type"] == "metrics" and evt["speech_id"] == "t1"
+
+
+def test_file_sink_explicit_writes_jsonl(tmp_path):
+    path = tmp_path / "ev.jsonl"
+    bus = EventBus()
+    bus.attach_file_sink(str(path))
+    bus.state("listening")
+    bus.transcript("hi", source="wake")
+    bus.debug("wake", wake_score=0.42)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3
+    objs = [json.loads(line) for line in lines]
+    assert all("ts" in o for o in objs)  # every line carries a wall-clock timestamp
+    assert objs[0]["type"] == "state" and objs[0]["state"] == "listening"
+    assert objs[1]["source"] == "wake"
+    assert objs[2]["type"] == "debug" and objs[2]["wake_score"] == 0.42
+
+
+def test_file_sink_auto_attaches_from_env(tmp_path, monkeypatch):
+    path = tmp_path / "auto.jsonl"
+    monkeypatch.setenv("MSTT_EVENT_LOG", str(path))
+    bus = EventBus()  # lazy attach happens on first publish
+    bus.wake()
+    assert json.loads(path.read_text(encoding="utf-8").splitlines()[0])["type"] == "wake"
+
+
+def test_no_sink_is_a_noop(monkeypatch):
+    monkeypatch.delenv("MSTT_EVENT_LOG", raising=False)
+    bus = EventBus()
+    bus.log("nothing is written anywhere")  # must not raise without a sink
+    assert bus._sink is None
