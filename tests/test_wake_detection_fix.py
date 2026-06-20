@@ -298,8 +298,12 @@ def test_run_mic_record_replay_records_plays_and_reports(monkeypatch: pytest.Mon
     clip = (np.sin(np.linspace(0, 30, 16000)) * 0.5).astype(np.float32)
     monkeypatch.setattr(main_mod.audio, "record_fixed", lambda _sr, seconds=3.0: (clip, 48000))
     monkeypatch.setattr(main_mod.audio, "mic_permission_status", lambda *_a: "authorized")
-    played: list[np.ndarray] = []
-    monkeypatch.setattr(main_mod, "_play", lambda s: played.append(np.asarray(s)))
+    played: list[tuple[np.ndarray, int]] = []
+    # Replay goes through audio.play(clip, device_rate) so it plays at the CAPTURE
+    # rate (faithful pitch) — not _play (which hardcodes the 24 kHz chime rate).
+    monkeypatch.setattr(
+        main_mod.audio, "play", lambda s, sr, *_a, **_k: played.append((np.asarray(s), sr))
+    )
     events: list[dict] = []
     sub = bus.subscribe()
 
@@ -311,7 +315,10 @@ def test_run_mic_record_replay_records_plays_and_reports(monkeypatch: pytest.Mon
         events.append(json.loads(sub.get_nowait()))
     bus.unsubscribe(sub)
     # It played the recording back (the user hears their own mic)…
-    assert played and played[0].size == clip.size
+    assert played and played[0][0].size == clip.size
+    # …at the SAME rate it was captured at (48 kHz device rate, not 16/24 kHz) so
+    # the round-trip is faithful — this is the speed/pitch fix.
+    assert played[0][1] == 48000
     # …and emitted an ok mic_result (the hide-permission-hint signal).
     results = [e for e in events if e.get("type") == "mic_result"]
     assert results and results[-1]["ok"] is True

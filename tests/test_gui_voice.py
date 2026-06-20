@@ -108,26 +108,85 @@ def test_ptt_blank_capture_logs_mic_hint_and_skips_respond() -> None:
     assert any("microphone permission" in str(c.args[0]) for c in buslog.call_args_list)
 
 
-def test_ptt_blocked_while_wake_loop_active() -> None:
-    started = threading.Event()
+def test_ptt_pauses_captures_and_restores_wake_loop() -> None:
+    """Push-to-talk works WHILE the wake loop is listening: the loop is paused for
+    the capture+respond (so PTT owns the mic) and restarted afterwards — the same
+    pause/restore pattern the record-replay diagnostic uses. No more refusal."""
+    starts: list[threading.Event] = []
 
     def fake_loop(*_args, stop: threading.Event | None = None, **_kwargs) -> int:
-        started.set()
         assert stop is not None
-        stop.wait(timeout=5)
+        starts.append(stop)
+        stop.wait(timeout=5)  # exit only when paused/stopped
         return 0
 
     ctrl = _controller()
+    cap = main_mod._Captured(text="hello there")
+    done = threading.Event()
+
+    def fake_respond(*_a, **_k) -> None:
+        done.set()
+
     with (
         patch.object(main_mod, "run_wake_loop", side_effect=fake_loop),
-        patch.object(main_mod, "_capture_ptt") as capture,
+        patch.object(main_mod, "_capture_ptt", return_value=cap) as capture,
+        patch.object(main_mod, "_respond", side_effect=fake_respond) as respond,
     ):
         ctrl.start_wake()
-        assert started.wait(timeout=2)
-        ctrl.push_to_talk()  # refused while listening
-        time.sleep(0.1)
-        capture.assert_not_called()
+        assert _wait_until(lambda: len(starts) == 1), "wake loop never started"
+        # PTT while listening: the capture runs (loop paused), respond fires…
+        ctrl.push_to_talk()
+        assert done.wait(timeout=3), "ptt capture+respond never ran while wake was active"
+        capture.assert_called_once()
+        respond.assert_called_once()
+        assert respond.call_args.args[4] == "hello there"
+        # …and the wake loop was RESTORED afterwards (a fresh stop event = restart).
+        assert _wait_until(lambda: len(starts) == 2, timeout=3), "wake loop not restored after ptt"
+        assert _wait_until(lambda: ctrl._ptt_busy is False)
         ctrl.stop_wake()
+
+
+def test_ptt_works_when_wake_off() -> None:
+    """With no wake loop running, push-to-talk still captures+responds directly."""
+    ctrl = _controller()
+    cap = main_mod._Captured(text="hi")
+    done = threading.Event()
+    with (
+        patch.object(main_mod, "run_wake_loop") as loop,
+        patch.object(main_mod, "_capture_ptt", return_value=cap) as capture,
+        patch.object(main_mod, "_respond", side_effect=lambda *a, **k: done.set()),
+    ):
+        ctrl.push_to_talk()
+        assert done.wait(timeout=2), "ptt never ran respond with wake off"
+    capture.assert_called_once()
+    loop.assert_not_called()  # nothing to pause/restore when wake is off
+
+
+def test_ptt_reentrancy_guarded_second_press_refused() -> None:
+    """A second push-to-talk while one is still capturing is refused (no two captures
+    fight over the mic) — the only remaining refusal."""
+    ctrl = _controller()
+    release = threading.Event()
+    in_capture = threading.Event()
+
+    def slow_capture(*_a, **_k) -> main_mod._Captured:
+        in_capture.set()
+        release.wait(timeout=5)  # hold the first capture open
+        return main_mod._Captured(text="hi")
+
+    with (
+        patch.object(main_mod, "_capture_ptt", side_effect=slow_capture) as capture,
+        patch.object(main_mod, "_respond"),
+        patch.object(main_mod.bus, "log") as buslog,
+    ):
+        ctrl.push_to_talk()
+        assert in_capture.wait(timeout=2), "first ptt never started capturing"
+        ctrl.push_to_talk()  # refused: one already in flight
+        time.sleep(0.1)
+        release.set()
+        assert _wait_until(lambda: ctrl._ptt_busy is False)
+    capture.assert_called_once()  # the second press did NOT start a second capture
+    assert any("already capturing" in str(c.args[0]) for c in buslog.call_args_list)
 
 
 # --------------------------------------------------------------------------- #
@@ -284,6 +343,15 @@ def test_settings_dict_defaults_voice_off() -> None:
     s = settings_dict(Config(sample_rate=16000))
     assert s["voice_available"] is False
     assert s["voice_hint"] == ""
+
+
+def test_settings_dict_exposes_host_app() -> None:
+    # The GUI labels the server mic "uses <host_app>'s microphone permission".
+    from my_stt_tts import platform as plat
+
+    with patch.object(plat, "host_app_name", return_value="iTerm"):
+        s = settings_dict(Config(sample_rate=16000))
+    assert s["host_app"] == "iTerm"
 
 
 # --------------------------------------------------------------------------- #

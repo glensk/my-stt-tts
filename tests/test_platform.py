@@ -254,3 +254,50 @@ def test_config_accepts_webrtc_aec_mode():
     cfg = Config(anthropic_api_key="x")
     cfg.aec_mode = "webrtc"
     cfg.validate()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# host_app_name — friendly name of the app the SERVER runs in (TERM_PROGRAM)
+# ---------------------------------------------------------------------------
+
+
+def test_host_app_name_maps_known_term_programs():
+    # The exact TERM_PROGRAM values the common emulators set -> friendly names.
+    cases = {
+        "iTerm.app": "iTerm",
+        "Apple_Terminal": "Terminal",
+        "vscode": "VS Code",
+        "ghostty": "Ghostty",
+        "WezTerm": "WezTerm",
+        "Hyper": "Hyper",
+        "Tabby": "Tabby",
+        "alacritty": "Alacritty",
+        "WarpTerminal": "Warp",
+    }
+    for term_program, friendly in cases.items():
+        assert plat.host_app_name({"TERM_PROGRAM": term_program}) == friendly
+
+
+def test_host_app_name_is_case_insensitive():
+    assert plat.host_app_name({"TERM_PROGRAM": "ITERM.APP"}) == "iTerm"
+    assert plat.host_app_name({"TERM_PROGRAM": "APPLE_TERMINAL"}) == "Terminal"
+
+
+def test_host_app_name_unset_falls_back_to_generic():
+    assert plat.host_app_name({}) == "your terminal app"
+    assert plat.host_app_name({"TERM_PROGRAM": ""}) == "your terminal app"
+    assert plat.host_app_name({"TERM_PROGRAM": "   "}) == "your terminal app"
+
+
+def test_host_app_name_unknown_value_is_titlecased_best_guess():
+    # An emulator we don't have in the table is still named (an app IS set), with a
+    # trailing ".app" stripped, rather than the generic fallback.
+    assert plat.host_app_name({"TERM_PROGRAM": "SomeNewTerm"}) == "SomeNewTerm"
+    assert plat.host_app_name({"TERM_PROGRAM": "fancyterm.app"}) == "Fancyterm"
+
+
+def test_host_app_name_reads_os_environ_by_default(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    assert plat.host_app_name() == "Ghostty"
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    assert plat.host_app_name() == "your terminal app"

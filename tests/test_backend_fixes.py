@@ -496,3 +496,98 @@ def test_wake_detect_tracks_last_score() -> None:
     w._model.predict.return_value = {"maziko": 0.10}
     assert w.detect(np.ones(1280, dtype=np.float32)) is False
     assert w.last_score == 0.10
+
+
+# --------------------------------------------------------------------------- #
+# record-and-replay sample-rate fix — record rate == play rate (no speed-up)  #
+# --------------------------------------------------------------------------- #
+
+
+class _FixedSd:
+    """sounddevice stand-in that delivers ``seconds`` of audio at ``device_rate``."""
+
+    def __init__(self, device_rate: int, *, honour_requested: bool = False) -> None:
+        self._device_rate = device_rate
+        self._honour = honour_requested
+
+    def check_input_settings(self, **_kw: object) -> None:
+        if not self._honour:
+            raise ValueError("requested rate not supported")
+
+    def query_devices(self, **_kw: object) -> dict:
+        return {"default_samplerate": float(self._device_rate)}
+
+    def InputStream(self, *, callback, samplerate, blocksize, **_kw):  # noqa: N802, ANN001
+        # One ~0.1s block at the (device) rate it was opened with so the timed loop
+        # collects something before the deadline.
+        n = max(1, int(samplerate * 0.1))
+        callback(np.full((n, 1), 0.5, dtype=np.float32), n, None, None)
+        return _NullStream()
+
+
+def test_record_fixed_returns_raw_at_device_rate_no_resample() -> None:
+    # 48 kHz device, 16 kHz requested: the RAW clip stays at 48 kHz (NOT resampled to
+    # 16 kHz). Resampling to 16 kHz here is what made the human replay sped-up.
+    fake = _FixedSd(48_000, honour_requested=False)
+    with patch.object(audio, "_sd", return_value=fake):
+        clip, device_rate = audio.record_fixed(16_000, seconds=0.3)
+    assert device_rate == 48_000
+    # The clip length matches the DEVICE rate, not the 16 kHz pipeline rate.
+    assert clip.size >= int(48_000 * 0.1)  # at least the one ~0.1s @48k block
+    assert clip.size > int(16_000 * 0.1)  # would be smaller if it had been resampled
+
+
+def test_record_fixed_uses_requested_rate_when_device_honours_it() -> None:
+    fake = _FixedSd(16_000, honour_requested=True)
+    with patch.object(audio, "_sd", return_value=fake):
+        clip, device_rate = audio.record_fixed(16_000, seconds=0.3)
+    assert device_rate == 16_000
+    assert clip.size >= int(16_000 * 0.1)
+
+
+def test_record_replay_round_trip_plays_at_record_rate() -> None:
+    # End-to-end: a 48 kHz capture is replayed at 48 kHz (record rate == play rate),
+    # so a 3 s recording replays as 3 s with faithful pitch — not 1.5×/3× too fast.
+    device_rate = 48_000
+    clip = (np.sin(np.linspace(0, 200, device_rate * 3)) * 0.5).astype(np.float32)
+    played: list[tuple[int, int]] = []  # (num_samples, play_rate)
+
+    def fake_play(samples, sample_rate, *_a, **_k):  # noqa: ANN001
+        played.append((np.asarray(samples).size, sample_rate))
+
+    with (
+        patch.object(audio, "record_fixed", return_value=(clip, device_rate)),
+        patch.object(audio, "mic_permission_status", return_value="authorized"),
+        patch.object(main_mod.audio, "play", side_effect=fake_play),
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.bus, "state"),
+        patch.object(main_mod.bus, "mic_result"),
+    ):
+        main_mod._run_mic_record_replay(Config(anthropic_api_key="x"), seconds=3.0)
+
+    assert played, "the recording was never played back"
+    samples_played, play_rate = played[0]
+    assert play_rate == device_rate  # plays at the rate it recorded at (the fix)
+    assert samples_played == clip.size  # whole clip, un-resampled
+    # Duration is preserved: samples / play_rate ≈ the captured 3 s.
+    assert abs(samples_played / play_rate - 3.0) < 0.01
+
+
+def test_record_replay_reports_duration_at_device_rate() -> None:
+    # The human-facing duration must use the DEVICE rate (samples/device_rate). With
+    # the old bug it divided by 16 kHz and reported 3× too long for a 48 kHz clip.
+    device_rate = 48_000
+    clip = (np.sin(np.linspace(0, 90, device_rate * 2)) * 0.5).astype(np.float32)  # 2 s @48k
+    logs: list[str] = []
+
+    with (
+        patch.object(audio, "record_fixed", return_value=(clip, device_rate)),
+        patch.object(audio, "mic_permission_status", return_value="authorized"),
+        patch.object(main_mod.audio, "play"),
+        patch.object(main_mod.bus, "log", side_effect=lambda msg, *_a, **_k: logs.append(str(msg))),
+        patch.object(main_mod.bus, "state"),
+        patch.object(main_mod.bus, "mic_result"),
+    ):
+        main_mod._run_mic_record_replay(Config(anthropic_api_key="x"), seconds=2.0)
+
+    assert any("2.0s" in m and "48000 Hz" in m for m in logs), logs
