@@ -539,7 +539,7 @@ def maybe_handle_music(cfg: Config, tts: TTSRouter, gate: audio.MicGate, text: s
         return False
     action = intent["action"]
     player = music.get_player(player=cfg.music_player, volume=cfg.music_volume)
-    bus.transcript(text)
+    bus.transcript(text, source=SOURCE_TYPED)
     if action == "play":
         query = intent.get("query") or "popular music playlist"
         bus.state("music_search", query)
@@ -547,25 +547,100 @@ def maybe_handle_music(cfg: Config, tts: TTSRouter, gate: audio.MicGate, text: s
         if result.ok:
             bus.state("music_playing", result.title)
             bus.log(f"▶ Playing: {result.title}")
-            _speak(tts, gate, f"Playing {result.title}.")
+            bus.music("playing", title=result.title, video_id=result.video_id, url=result.url)
+            _music_respond(
+                cfg, tts, gate, f"▶ Playing: {result.title}.", f"Playing {result.title}."
+            )
         else:
             bus.log(result.reason, "error")
-            _speak(tts, gate, result.reason)
+            _music_respond(cfg, tts, gate, result.reason, result.reason)
     elif action == "stop":
         was = player.stop()
-        bus.state("idle")
         bus.log("⏹ Stopped the music" if was else "no music was playing")
-        _speak(tts, gate, "Stopped the music." if was else "Nothing is playing.")
+        if was:
+            bus.music("stopped")
+            _music_respond(cfg, tts, gate, "⏹ Stopped the music.", "Stopped the music.")
+        else:
+            _music_respond(
+                cfg, tts, gate, "Nothing is playing right now.", "Nothing is playing right now."
+            )
     elif action == "pause":
         ok = player.pause()
         bus.log("⏸ Paused the music" if ok else "could not pause")
-        _speak(tts, gate, "Paused." if ok else "I can't pause this track.")
+        if ok:
+            snap = player.status()
+            bus.music("paused", title=snap["title"], video_id=snap["video_id"], url=snap["url"])
+            _music_respond(cfg, tts, gate, "⏸ Paused.", "Paused.")
+        elif player.is_playing():
+            _music_respond(cfg, tts, gate, "I can't pause this track.", "I can't pause this track.")
+        else:
+            _music_respond(
+                cfg, tts, gate, "Nothing is playing right now.", "Nothing is playing right now."
+            )
     elif action == "resume":
         ok = player.resume()
         bus.log("▶ Resumed the music" if ok else "could not resume")
-        _speak(tts, gate, "Resuming." if ok else "There's nothing to resume.")
+        if ok:
+            snap = player.status()
+            bus.music("resumed", title=snap["title"], video_id=snap["video_id"], url=snap["url"])
+            _music_respond(cfg, tts, gate, "▶ Resumed.", "Resumed.")
+        else:
+            _music_respond(
+                cfg, tts, gate, "There's nothing to resume.", "There's nothing to resume."
+            )
     bus.state("idle")
     return True
+
+
+def _music_respond(
+    cfg: Config, tts: TTSRouter, gate: audio.MicGate, display: str, spoken: str
+) -> None:
+    """Render an assistant bubble for a locally-handled music turn AND speak it.
+
+    The music intent router answers WITHOUT the LLM, so it must emit the same bus
+    surface a normal reply does or the transcript shows no assistant bubble (the
+    original bug: music turns produced only a log line). Emits a brief
+    ``llm_response`` state + a final :meth:`EventBus.response` carrying ``display``
+    (with the ▶/⏹/⏸ glyph the page renders) and the active model label (so the page
+    draws an "ASSISTANT · <model>" bubble), then speaks the glyph-free ``spoken``
+    text through the normal half-duplex TTS path (the symbols must not be read
+    aloud). The trailing ``idle`` state is set by the caller."""
+    model = _model_label(cfg)
+    bus.state("llm_response", model)
+    bus.response(display, final=True, model=model)
+    _speak(tts, gate, spoken)
+
+
+def _music_action(name: str, *, player: str = "auto", volume: int | None = None) -> None:
+    """Drive the shared player from a GUI button (``music_stop``/``pause``/``resume``).
+
+    Mirrors the intent-router control path so a GUI button and a spoken "stop" act
+    on the SAME process-wide player and publish the SAME structured ``music`` event
+    + log line. Server-side mpv playback is unchanged — this only adds the control
+    surface + the event the page listens for. Never raises (a missing player simply
+    no-ops with a log)."""
+    from . import music
+
+    plr = music.get_player(player=player, volume=volume)
+    if name == "music_stop":
+        was = plr.stop()
+        bus.log("⏹ Stopped the music" if was else "no music was playing")
+        if was:
+            bus.music("stopped")
+    elif name == "music_pause":
+        if plr.pause():
+            snap = plr.status()
+            bus.music("paused", title=snap["title"], video_id=snap["video_id"], url=snap["url"])
+            bus.log("⏸ Paused the music")
+        else:
+            bus.log("could not pause")
+    elif name == "music_resume":
+        if plr.resume():
+            snap = plr.status()
+            bus.music("resumed", title=snap["title"], video_id=snap["video_id"], url=snap["url"])
+            bus.log("▶ Resumed the music")
+        else:
+            bus.log("could not resume")
 
 
 def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
@@ -1500,6 +1575,8 @@ def _run_browser(
                 controller.stop_wake()
             else:  # ptt
                 controller.push_to_talk()
+        elif name in {"music_stop", "music_pause", "music_resume"}:
+            _music_action(name, player=cfg.music_player, volume=cfg.music_volume)
         else:
             bus.log(f"unknown action '{name}'", "error")
 
