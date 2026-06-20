@@ -211,7 +211,10 @@ def test_run_wake_test_server_records_scores_saves_emits(
     cfg = Config(anthropic_api_key="sk-test")
     clip = (np.sin(np.linspace(0, 100, 32000)) * 0.4).astype(np.float32)
     monkeypatch.setattr(audio, "record_fixed", lambda *_a, **_k: (clip, 16000))
-    monkeypatch.setattr("my_stt_tts.wake.score_wake_clip", lambda *_a, **_k: (0.73, True))
+    monkeypatch.setattr(
+        "my_stt_tts.wake.score_wake_clip",
+        lambda *_a, **k: (0.73, True, [0.1, 0.73]) if k.get("with_trace") else (0.73, True),
+    )
     monkeypatch.setattr(audio, "recordings_dir", lambda: str(tmp_path / "rec"))
 
     wav = tmp_path / "wake-test-maziko-server.wav"
@@ -288,7 +291,10 @@ def test_run_wake_test_browser_scores_saves_emits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     cfg = Config(anthropic_api_key="sk-test")
-    monkeypatch.setattr("my_stt_tts.wake.score_wake_clip", lambda *_a, **_k: (0.31, False))
+    monkeypatch.setattr(
+        "my_stt_tts.wake.score_wake_clip",
+        lambda *_a, **k: (0.31, False, [0.05, 0.31]) if k.get("with_trace") else (0.31, False),
+    )
     monkeypatch.setattr(audio, "recordings_dir", lambda: str(tmp_path / "rec"))
     wav = tmp_path / "wake-test-nexus-browser.wav"
     monkeypatch.setattr(main_mod, "_wake_test_wav_path", lambda *_a: str(wav))
