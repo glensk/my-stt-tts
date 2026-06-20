@@ -341,15 +341,19 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
 
 
 def record_fixed(sample_rate: int, *, seconds: float = 3.0) -> tuple[np.ndarray, int]:
-    """Capture a fixed ``seconds`` of mic audio at ``sample_rate`` (float32 mono).
+    """Capture a fixed ``seconds`` of mic audio at the device rate (float32 mono).
 
-    Returns ``(clip, device_rate)`` where ``clip`` is resampled to ``sample_rate``
-    (the device may open at its native rate, commonly 48 kHz, when 16 kHz isn't
-    honoured — see :func:`_supported_capture_rate`) and ``device_rate`` is the rate
-    the input device actually delivered. Unlike :func:`record_until_silence` there is
-    no VAD/endpointing — it records the full window, so the "record & replay" mic
-    test plays back exactly what the mic heard. Raises on a device/PortAudio failure;
-    the caller (a worker thread) is expected to guard it.
+    Returns ``(clip, device_rate)`` where ``clip`` is the RAW capture at the rate the
+    device actually opened (``device_rate`` — commonly 48 kHz when 16 kHz isn't
+    honoured, see :func:`_supported_capture_rate`) and is **NOT** resampled. This is
+    the human "record & replay" path: the caller must play ``clip`` back at the SAME
+    ``device_rate`` it was captured at, or the replay is sped up / high-pitched
+    (a 16 kHz clip played at 24/48 kHz plays 1.5×/3× too fast). Resampling to the
+    16 kHz pipeline rate is only for STT/wake — never for this faithful round-trip.
+    ``sample_rate`` is the *requested* rate (the device-rate probe starts from it).
+    Unlike :func:`record_until_silence` there is no VAD/endpointing — it records the
+    full window, so the replay plays back exactly what the mic heard. Raises on a
+    device/PortAudio failure; the caller (a worker thread) is expected to guard it.
     """
     sd = _sd()
     device_rate = _supported_capture_rate(sd, sample_rate)
@@ -379,7 +383,9 @@ def record_fixed(sample_rate: int, *, seconds: float = 3.0) -> tuple[np.ndarray,
         except queue.Empty:
             break
     raw = np.concatenate(collected) if collected else np.zeros(0, dtype=np.float32)
-    return resample_to(raw, device_rate, sample_rate), device_rate
+    # Return the RAW capture at the device rate — the replay plays it at this same
+    # rate for faithful pitch/speed. (Do NOT resample to 16 kHz here.)
+    return raw, device_rate
 
 
 def play(samples: np.ndarray, sample_rate: int, cfg: Any = None) -> None:
