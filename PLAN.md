@@ -11,6 +11,53 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave M5: wake-gain diagnostics (the dead-wake fix)
+
+PRIME suspect for the dead wake word (maziko/nexus score ~0.001 live, STT fine):
+openWakeWord has **no input gain normalization** — a quiet mic → low mel energies →
+the score collapses regardless of the word. Centerpiece is a **gain stage before
+`predict()` in the LIVE loop** + a **gain sweep** to prove/find the right value.
+Branch `wake-gain-diag` (worktree `.worktree-wakegain`), Python only — no
+README / webui.html / clients / esp32. 716 → 755 tests core (+39), green core-only
+(755 + 5 skips: 4 extras-gated + the pyloudnorm-absent gate) and `--extra all` (759
+
++ 1 skip). Lint clean (ruff format + check, mypy `src`, pylint — no new substantive
+warnings; the new `hash`-wire-field emitters reuse the pre-existing `# noqa: A002`
+pattern). A GUI agent builds the front-end against the SHARED CONTRACT in parallel.
+
+What landed (backend, against the shared GUI contract):
+
++ **`wake_gain` config field (THE fix knob)** — `config.py` (field default **1.0**,
+  `WAKE_GAIN` env, `validate` 0<g≤10), `webui.settings_dict`/`apply_settings`
+  (clamped round-trip), `settings_text` wake row, `.env.example`. In the LIVE path
+  (`audio.listen_for_wake(..., gain=)`, wired from `run_wake_loop` as `cfg.wake_gain`)
+  each 16 kHz frame is `apply_gain`-multiplied (clip-protected to ±1.0) BEFORE
+  `WakeWord.detect` — and the SAME gained frame is what the debug recorder taps.
+  Default 1.0 = identity (no behaviour change until the user/sweep picks a value).
++ **`score_wake_clip(..., gain=1.0, with_trace=False)`** — gain param (clip-protected)
+  + an optional per-frame `score_trace` (max-over-phases). `@overload`-typed so the
+  2-tuple vs 3-tuple return narrows on `with_trace` (mypy-clean for existing callers).
++ **`wake_gain_sweep` action** (`_run_wake_gain_sweep`) — load the SAVED clip by hash
+  (`*-<hash8>.wav`) or the newest `wake-*-<word>-*.wav`, re-score at each gain
+  (sweep allows up to 64x — deliberately beyond the persistent `wake_gain` bound),
+  emit `wake_gain_sweep_result` with `points:[{gain,confidence,fired}]`. THE smoking
+  gun: confidence climbing with gain proves a too-quiet capture was the cause.
++ **`score_clip` action** (`_run_score_clip`) — score the EXACT saved WAV (no extra
+  processing); emit `score_clip_result` with `confidence`/`fired`/`int16_peak`. The
+  capture-vs-model fork: a known clip scoring ~0 here ⇒ the model/word, not capture.
++ **int16 level stats + `expected_level` + audio metrics** — `audio.capture_stats`
+  extended with `int16_peak`/`int16_rms` (the ±32768 magnitude the model actually
+  sees), `expected_level` (low <2000 / ok / high >30000), `crest_db`, `dc_offset`,
+  `true_peak_db` (4× `scipy.signal.resample_poly`, degrades to sample peak without
+  scipy), `snr_db` (quietest-10% noise floor, or VAD-gated; None when N/A), `lufs`
+  (via the NEW `debug` optional-dep `pyloudnorm`; None when absent so **core stays
+  clean**). Surfaced on `mic_check_result` AND `wake_test_result` (the latter also
+  gets `score_trace`) via a shared `_capture_metric_fields` (events.py stays
+  stdlib-only). New `bus.wake_gain_sweep_result(...)` + `bus.score_clip_result(...)`.
++ **`debug` extra** = `pyloudnorm` (added to `all`); LUFS computed only if importable.
+
+---
+
 ## Build status (2026-06-20) — Wave M4: unify the two log streams (EVENT LOG ⇄ terminal)
 
 Make the GUI EVENT LOG (bus events → SSE + `logs/events-*.jsonl` file sink) and the
@@ -23,7 +70,7 @@ complexity warnings unchanged). `events.py` stays stdlib-only (core import).
 
 Two bridges close the gaps (each stream lacked things the other had):
 
-- **(A) Bus → stderr console sink** (`EventBus._write_console`, called from
++ **(A) Bus → stderr console sink** (`EventBus._write_console`, called from
   `publish`). Every published bus event is mirrored to stderr as a concise human
   one-liner (`[event:state] listening`, `[event:response] [final] …`,
   `[event:music] playing "<title>"`; unknown types fall back to a `key=value` dump
@@ -34,7 +81,7 @@ Two bridges close the gaps (each stream lacked things the other had):
   library — see B) → no double-print. **Gated**: ON when `MSTT_EVENT_CONSOLE` is set
   (1/true/on), else default ON whenever the file sink is active (`MSTT_EVENT_LOG`
   set — quickstart sets it), else silent (library/test). Thread-safe + suppressed.
-- **(B) Python logging → bus bridge** (`LogBusHandler` + `_BusBridgeFilter` +
++ **(B) Python logging → bus bridge** (`LogBusHandler` + `_BusBridgeFilter` +
   `install_log_bridge`, installed ONCE in `main()` after `basicConfig`). Each log
   record is republished as `bus.publish({"type":"log","level":…,"message":…,
   "_log_bridge":True})`, and `logging.captureWarnings(True)` routes `warnings.warn(...)`
@@ -74,7 +121,7 @@ Lint clean (ruff check + format, mypy `src`, pylint). `music.py`/`wake.py` still
 import CORE-only (no yt-dlp / openWakeWord). No README / webui.html / clients /
 esp32 changes (backend only).
 
-- **(1) `music_playback` setting (server vs hybrid).** New `Config.music_playback`
++ **(1) `music_playback` setting (server vs hybrid).** New `Config.music_playback`
   (`"hybrid"` default; env `MUSIC_PLAYBACK`; validated to {server,hybrid} via new
   `MUSIC_PLAYBACK_MODES`). Audio ALWAYS plays server-side via mpv — the setting only
   tells the GUI whether to ALSO show the (muted) YouTube video when the control room
@@ -82,7 +129,7 @@ esp32 changes (backend only).
   list), accepted in `apply_settings` (unknown value ignored), shown in
   `settings_text` ("playback <mode>"), documented in `.env.example`. The server keeps
   emitting `video_id` on the `music` event (unchanged).
-- **(2) Wake-word TEST action + scoring.** New `wake.score_wake_clip(clip, sample_rate,
++ **(2) Wake-word TEST action + scoring.** New `wake.score_wake_clip(clip, sample_rate,
   word, *, threshold, phases, wakewords_dir) -> (confidence, fired)`: loads the
   `WakeWord` for `word` via `wake_model_for(word)` (NOT necessarily the configured
   one), resamples the clip to 16 kHz, reframes to 1280-sample frames, and feeds them
@@ -96,7 +143,7 @@ esp32 changes (backend only).
   `{"type":"wake_test_result","word","source","confidence":0..1,"fired":bool,
   "message","wav_path"}`. The error/idle log is emitted BEFORE the (DATA) result so a
   SYSTEM error frame doesn't flush it.
-- **(3) EVENT LOG relabel — human button names.** `_AudioDebug.action(name, **fields)`
++ **(3) EVENT LOG relabel — human button names.** `_AudioDebug.action(name, **fields)`
   now emits a friendly message using the EXACT GUI button label
   (`ptt`→"clicked PUSH-TO-TALK", `wake_start`→"clicked START WAKE", … `turn`→"submitted
   a turn"; unknown → "clicked <NAME>") via `_AudioDebug.action_label`, while still
@@ -112,7 +159,7 @@ extras-gated skips) and `--extra all` (616). Lint clean (ruff check + format,
 mypy `src`). `music.py` still imports CORE-only without yt-dlp. No webui.html /
 clients / esp32 changes (backend only).
 
-- **(1) ALWAYS emit an assistant response on a music action.** A music turn used
++ **(1) ALWAYS emit an assistant response on a music action.** A music turn used
   to emit only `bus.log` → NO assistant bubble in the transcript. New
   `_music_respond(cfg, tts, gate, display, spoken)` in `__main__.py` emits a brief
   `bus.state("llm_response", model)` + a final `bus.response(display, final=True,
@@ -120,7 +167,7 @@ clients / esp32 changes (backend only).
   glyph) AND speaks the **glyph-free** `spoken` text (symbols must not be read
   aloud). Play → "▶ Playing: <title>." / stop → "⏹ Stopped the music." / pause →
   "⏸ Paused." / resume → "▶ Resumed."
-- **(2) Reliable stop/pause/resume — never falls through to the LLM.** Root cause:
++ **(2) Reliable stop/pause/resume — never falls through to the LLM.** Root cause:
   `_STOP_RE` did not allow trailing politeness, so **"stop the music please"** failed
   to match → `match_music_intent` returned `None` → the turn reached the LLM (which
   hallucinated "there's no music playing"). Fix: `_strip_politeness()` strips a
@@ -128,23 +175,23 @@ clients / esp32 changes (backend only).
   "s'il te/vous plaît"/"stp"/"svp"/"maintenant") BEFORE matching control phrases.
   Any matched control intent is ALWAYS handled locally; a stop/pause with nothing
   playing is answered BY THE ROUTER ("Nothing is playing right now."), never the LLM.
-- **(3) System-state awareness in the LLM context.** New `music.music_state_line()`
++ **(3) System-state awareness in the LLM context.** New `music.music_state_line()`
   reads the process-wide `get_player()` singleton (side-effect-free; no player ⇒
   "System state: no music is playing.") and is injected into `brain._system_prompt()`
   on EVERY turn, right next to `current_time_line()`. So an LLM-routed question like
   "what's playing?" is answered from LIVE state ("System state: music is currently
   playing: \"<title>\".", or "…is paused…"), not just chat history.
-- **(4) Rich music events + GUI control actions + video_id.** `search`/`play` now
++ **(4) Rich music events + GUI control actions + video_id.** `search`/`play` now
   extract the 11-char YouTube `video_id` (from yt-dlp's `id` or the page URL) onto
   `Track`/`PlayResult`; a new `bus.music(status, title, video_id, url)` emitter
   publishes `{"type":"music","status":"playing|stopped|paused|resumed","title",
   "video_id","url"}` on every play/stop/pause/resume (so a later GUI wave can embed
-  - control the video). New `_music_action("music_stop"|"music_pause"|"music_resume")`
+  + control the video). New `_music_action("music_stop"|"music_pause"|"music_resume")`
   server actions are wired into the `on_action` handler (GUI buttons) and drive the
   SAME singleton + emit the SAME event. `MusicPlayer.status()` exposes a live
   snapshot (status/title/video_id/url) and `_paused` is tracked. Server-side mpv
   playback unchanged.
-- **Tests (+32, `tests/test_music.py`):** trailing-politeness control matching
++ **Tests (+32, `tests/test_music.py`):** trailing-politeness control matching
   EN/DE/FR (router-level + turn-hook level, incl. "stop the music please" and the
   nothing-playing case); always-respond (`bus.response` final + glyph-free spoken
   text + the `music` event with video_id/url for play AND stop); `music_state_line()`
@@ -162,7 +209,7 @@ in the turn path** (not only a tool) because the default `claude-cli` brain does
 NOT do our tool-calling — so a turn is intercepted BEFORE the LLM and handled
 locally, working for every brain.
 
-- **(1) `music.py` — the player.** `search(query)` resolves the best match via
++ **(1) `music.py` — the player.** `search(query)` resolves the best match via
   **yt-dlp** `ytsearch1:` (extract_info, no download → webpage_url + title).
   `MusicPlayer.play(query)` plays through a **stoppable background process**:
   prefers `mpv --no-video` (streams the YouTube page URL, pause/resume/stop via
@@ -173,7 +220,7 @@ locally, working for every brain.
   extra; missing yt-dlp/player → a clear spoken reason, never a crash. A
   process-wide `get_player()` singleton lets a later "stop" act on an earlier
   "play".
-- **(2) Intent router in the turn path.** `match_music_intent(text)` recognises,
++ **(2) Intent router in the turn path.** `match_music_intent(text)` recognises,
   case-insensitively, EN/DE/FR: play ("play/put on <X>", "play <X> from youtube",
   "play some music"; DE "spiel(e) <X>", "mach Musik an"; FR "joue/mets <X>", "mets
   de la musique") and stop/pause/resume (EN/DE "stopp/halt/pausiere/weiter"/FR
@@ -183,19 +230,19 @@ locally, working for every brain.
   path** ("Playing …" / "Stopped the music."), emits `bus.state` / `bus.log` (GUI
   shows "▶ Playing: <title>"), and SKIPS the LLM. Covers terminal PTT, the wake
   loop, and the GUI server-side PTT/typed paths (all converge on `_respond`).
-- **(3) Tool for API brains + system prompt.** `make_music_tools()` registers
++ **(3) Tool for API brains + system prompt.** `make_music_tools()` registers
   `play_music`/`stop_music` so anthropic/openai providers can also call them (the
   router stays primary); wired through `default_tools()` ← `brain.py` from config.
   System prompt (`prompts/system_prompt.md` + the `_DEFAULT_SYSTEM_PROMPT`
   fallback) now states the assistant CAN play YouTube music, so it stops saying "I
   can't play music".
-- **(4) Config + deps.** `music_enabled=True`, `music_player="auto"`,
++ **(4) Config + deps.** `music_enabled=True`, `music_player="auto"`,
   `music_volume: int|None` with `MUSIC_ENABLED`/`MUSIC_PLAYER`/`MUSIC_VOLUME` env,
   validated (`MUSIC_PLAYERS` = auto|mpv|ffplay|download; volume ∈ [0,100]), shown
   in `--settings`, documented in `.env.example`. `yt-dlp` added to a new `music`
   extra in `pyproject.toml` and folded into `all`; mpv/ffmpeg documented as system
   tools (`brew install mpv`).
-- **Tests (+66, `tests/test_music.py`):** intent matching across EN/DE/FR
++ **Tests (+66, `tests/test_music.py`):** intent matching across EN/DE/FR
   play/stop/pause/resume + non-music negatives; `search`/`play` with yt-dlp + the
   player subprocess MOCKED (no network/audio); graceful missing-deps (yt-dlp/player
   absent → spoken reason, no crash); mpv IPC pause/resume; ffplay fallback; the turn
@@ -211,7 +258,7 @@ clean (ruff check + format, mypy); `node --check` passes on the inline `webui.ht
 script. CSP + demo mode intact; all existing field ids / `data-key` wiring / POST
 contract preserved.
 
-- **(1) Wake sensitivity is now a real VOICE setting.** `config.wake_threshold`
++ **(1) Wake sensitivity is now a real VOICE setting.** `config.wake_threshold`
   default lowered **0.5 → 0.4** (env `WAKE_THRESHOLD`, validated to [0, 1] in
   `validate()`). `WakeWord.from_config` already reads `cfg.wake_threshold`, so the
   configured value drives detection (the old debug `threshold=0.5` was just the old
@@ -219,22 +266,22 @@ contract preserved.
   `apply_settings` as a float **clamped to [0, 1]**; added to `--settings`
   (`settings_text`) on the wake line. `.env.example` `WAKE_THRESHOLD` default +
   hint updated.
-- **(2) CONFIGURATION panel split into 4 labeled sections** (each its own header +
++ **(2) CONFIGURATION panel split into 4 labeled sections** (each its own header +
   hairline divider, mission-control aesthetic):
-  - **🧠 MODEL** — Brain preset (primary) + the existing "Advanced — manual
+  + **🧠 MODEL** — Brain preset (primary) + the existing "Advanced — manual
     override" foldable (Provider / Model / Model (deep)).
-  - **🔊 VOICE** — Voice selector (+ ▶ TEST), Length scale, Wake phrase dropdown,
+  + **🔊 VOICE** — Voice selector (+ ▶ TEST), Length scale, Wake phrase dropdown,
     and the NEW **Wake sensitivity** slider (`data-key="wake_threshold"`, 0–1,
     default 0.4, with a lower=more-sensitive / higher=stricter hint).
-  - **🤖 AGENT** — Agent model (MOVED here from beside Wake phrase — it's the
+  + **🤖 AGENT** — Agent model (MOVED here from beside Wake phrase — it's the
     "agent, …" tool-dispatch model, not the conversation brain) + Agent workspace.
-  - **⚙️ ADVANCED / GENERAL** — foldable `<details>` holding System prompt (the
+  + **⚙️ ADVANCED / GENERAL** — foldable `<details>` holding System prompt (the
     remaining rendered field).
-  - JS: generalized the `[data-key]` range handler to update the value readout named
+  + JS: generalized the `[data-key]` range handler to update the value readout named
     by a new `data-val` attribute (so the wake slider writes `#wakeThresholdVal`, not
     `#lengthVal`); `populate()` seeds the slider; `DEMO_SETTINGS` carries
     `wake_threshold:0.4`.
-- **Tests (+7):** `wake_threshold` default 0.4 / env override / [0,1] validation
++ **Tests (+7):** `wake_threshold` default 0.4 / env override / [0,1] validation
   (`test_config.py`); `settings_dict` carries it, `apply_settings` sets + clamps it,
   `WakeWord.from_config` uses the configured value (`test_wakeword_select.py`).
 
@@ -244,7 +291,7 @@ Three backend fixes (branch `backend-fixes2`, worktree `.worktree-fixes2`).
 490 → 502 tests (+12), green with `--extra all` and core-only (500 + 2
 extras-gated skips). Lint clean (ruff check + format, mypy).
 
-- **(1) Push-to-talk works WHILE the wake loop is listening.** `--browser --wake`
++ **(1) Push-to-talk works WHILE the wake loop is listening.** `--browser --wake`
   auto-starts the wake loop (holding the mic), so the GUI `ptt` action was REFUSED
   with "push-to-talk unavailable while the wake loop is listening." Fix: removed the
   refusal; `_WakeController.push_to_talk` now runs its capture+respond inside
@@ -254,7 +301,7 @@ extras-gated skips). Lint clean (ruff check + format, mypy).
   back listening. Re-entrancy is still guarded (`_ptt_busy`): a second PTT while one
   is in flight is refused. PTT also still works with wake off (nothing to pause).
   `_ptt_target` now delegates to a new `_capture_and_respond` helper.
-- **(2) Record-and-replay no longer plays back sped-up / high-pitched.** Classic
++ **(2) Record-and-replay no longer plays back sped-up / high-pitched.** Classic
   record-rate ≠ playback-rate bug: `audio.record_fixed` recorded at the device rate
   (commonly 48 kHz) but RESAMPLED the clip to 16 kHz, and `_run_mic_record_replay`
   then played it via `_play` (the 24 kHz chime rate). A 16 kHz clip played at 24/48
@@ -263,14 +310,14 @@ extras-gated skips). Lint clean (ruff check + format, mypy).
   replay plays it with `audio.play(clip, device_rate)` at that SAME rate, so a 3 s
   recording replays as 3 s with faithful pitch. Duration/stats are computed at
   `device_rate` too (the old code reported 3× too long).
-- **(3) Server-mic host-app detection.** New `platform.host_app_name(env=None) ->
++ **(3) Server-mic host-app detection.** New `platform.host_app_name(env=None) ->
   str` maps `TERM_PROGRAM` to the friendly app whose macOS mic permission governs
   the SERVER capture (`iTerm.app`→"iTerm", `Apple_Terminal`→"Terminal",
   `vscode`→"VS Code", `ghostty`→"Ghostty", `WezTerm`, `Hyper`, `Tabby`,
   `Alacritty`, `Warp`, …; unknown values title-cased, unset → "your terminal app";
   case-insensitive). Exposed as `host_app` in `webui.settings_dict` so the GUI can
   label the server mic "uses <App>'s microphone permission".
-- **Tests (+12):** PTT pause→capture→resume around an active wake loop, PTT with
++ **Tests (+12):** PTT pause→capture→resume around an active wake loop, PTT with
   wake off, PTT re-entrancy refusal (`test_gui_voice.py`); `record_fixed` raw-at-
   device-rate + same-rate replay round-trip + duration-at-device-rate
   (`test_backend_fixes.py`); `host_app_name` mapping/case/unknown/unset + `host_app`
@@ -288,7 +335,7 @@ mic queue flooded (`inbound mic queue full; dropping a frame` / PortAudio
 refuses to launch** when capture is broken. Branch `audio-preflight`. 457 → 476
 tests (+19), green with `--extra all` and CI core-only (474 + 2 extras-gated skips).
 
-- **`audio.audio_preflight(sample_rate=16000) -> PreflightResult`** (`audio.py`,
++ **`audio.audio_preflight(sample_rate=16000) -> PreflightResult`** (`audio.py`,
   pure-ish + faked in tests): opens a short (~0.5 s) REAL capture and checks (a) a
   usable input device exists; (b) the device delivers a rate resolvable to 16 kHz
   mono (records `device_rate`); (c) frames are consumed without **persistent**
@@ -298,7 +345,7 @@ tests (+19), green with `--extra all` and CI core-only (474 + 2 extras-gated ski
   `overflow`/`permission_denied`/`error`) / actionable `message` + `device_rate` /
   `drop_ratio` / `permission`. **Never raises**; reuses `mic_permission_status()`
   (a conclusively `denied` permission wins immediately).
-- **HARD STOP wiring** (`__main__.main`): `_audio_preflight_gate` runs BEFORE the
++ **HARD STOP wiring** (`__main__.main`): `_audio_preflight_gate` runs BEFORE the
   heavy STT load / GUI / capture for the mic-using modes — `--wake`, `--browser
   --wake`, `--browser --browser-audio`, and the default terminal push-to-talk — and
   on `not ok` prints the `message` to stderr + `bus.log(..., "error")` and returns
@@ -306,10 +353,10 @@ tests (+19), green with `--extra all` and CI core-only (474 + 2 extras-gated ski
   (`--type`, `--text`, plain `--browser`, and the network/telephony servers whose
   mic lives on a remote client). A passing-but-marginal preflight still logs its
   device-rate / drop-ratio / reason via the audio debug instrument.
-- **Escape hatch**: `--skip-audio-preflight` (+ `SKIP_AUDIO_PREFLIGHT` env, +
++ **Escape hatch**: `--skip-audio-preflight` (+ `SKIP_AUDIO_PREFLIGHT` env, +
   `Config.skip_audio_preflight`) bypasses the gate for power users; the hard-stop
   message names it.
-- **Tests** (+19, `test_audio_preflight.py`): preflight OK on a fake 16 kHz device,
++ **Tests** (+19, `test_audio_preflight.py`): preflight OK on a fake 16 kHz device,
   a 48 kHz device that resamples, a tolerated warm-up overflow; hard-stop on a fake
   overflowing device (high drop ratio), unresolvable rate (no positive rate / no
   frames), no-device, denied permission, and a raising/missing-sounddevice error
@@ -317,7 +364,7 @@ tests (+19), green with `--extra all` and CI core-only (474 + 2 extras-gated ski
   (`_ExplodingUI`) / start the wake loop / push-to-talk on a failing preflight;
   mic-less modes never call it; the skip flag short-circuits. `sounddevice` is
   mocked entirely — no real mic.
-- **Caveats:** verified only with a mocked `sounddevice` — no real microphone, no
++ **Caveats:** verified only with a mocked `sounddevice` — no real microphone, no
   real 48 kHz device, and no real PortAudio overflow were exercised here. The
   bounded-queue drop count is a secondary backpressure signal; the authoritative
   overflow signal is PortAudio's `input_overflow` status flag.
@@ -330,7 +377,7 @@ construction with `AudioFeatures.__init__() got an unexpected keyword argument
 (server mic vs. permission). Branch `fix-wake-mic`. 385 → 407 tests (+22), green
 both with `--extra all` and CI core-only (no extras).
 
-- **BUG 1 — version-tolerant openWakeWord construction** (`wake.py`): the installed
++ **BUG 1 — version-tolerant openWakeWord construction** (`wake.py`): the installed
   `openwakeword==0.4.0` `Model.__init__` takes `wakeword_model_paths=[...]` and has
   **no** `inference_framework` arg; the modern `wakeword_models=`/`inference_framework=`
   kwargs leak through `**kwargs` into `AudioFeatures` and raise `TypeError`.
@@ -340,36 +387,36 @@ both with `--extra all` and CI core-only (no extras).
   0.4.0 API loads; `predict()` on a silent frame returns `{'maziko': 0.0}` — the score
   key is the **model-file stem**, and `detect()` reads `.values()`, so the key naming
   is irrelevant (confirmed correct, no change needed there).
-- **BUG 1 — fail-once, don't spin** (`wake.py` + `__main__.py`): a new
++ **BUG 1 — fail-once, don't spin** (`wake.py` + `__main__.py`): a new
   `WakeUnavailable` error is raised **once** on unrecoverable construction/predict
   failure (sticky `_broken` flag — a second `detect()` re-raises without retrying).
   `run_wake_loop` catches it, logs a single clear hint, sets state idle, and returns
   `2` — instead of re-raising the same error on every audio frame forever.
-- **BUG 2 — server mic test** (`audio.py`): `mic_test(sample_rate)` captures ~1.5 s
++ **BUG 2 — server mic test** (`audio.py`): `mic_test(sample_rate)` captures ~1.5 s
   from the input device and returns a `MicTestResult`; the pure `mic_test_verdict(...)`
   maps it to **working** ("✓ Microphone OK — level NN%"), **silent** ("✗ No audio —
   grant microphone permission … System Settings › Privacy & Security › Microphone …"),
   **no_device**, or **error** (the exact sounddevice/PortAudio reason). Never raises.
-- **BUG 2 — action + event plumbing** (`__main__.py` + `events.py`): new `mic_test`
++ **BUG 2 — action + event plumbing** (`__main__.py` + `events.py`): new `mic_test`
   action on `/api/action`; `bus.mic_result(...)` event. Runs **regardless of wake
   state** — with a controller it stops/joins the wake loop, captures, then restarts
   it (the test owns the mic); without one (voice off — when you most need to diagnose)
   it runs a standalone capture in a worker thread, never blocking the HTTP handler.
-- **BUG 2 — web GUI** (`webui.html`): a **"🎤 Test mic"** button in CONTROLS, a
++ **BUG 2 — web GUI** (`webui.html`): a **"🎤 Test mic"** button in CONTROLS, a
   prominent result chip that turns **green/red** with the verdict + a level meter; the
   **MIC COLD/HOT** indicator now goes HOT during the real capture and back to COLD on
   the verdict. A one-line macOS permission hint sits under the voice controls. BONUS:
   a **browser-mic** getUserMedia level meter ("Test browser mic"), clearly labelled
   distinct from the server "Test mic", with its own permission handling.
-- **Tests** (+22): `test_wake_model.py` — both Model API branches via a **fake
++ **Tests** (+22): `test_wake_model.py` — both Model API branches via a **fake
   openwakeword module**, `detect()` reading score values, and `WakeUnavailable` raised
   once + sticky. `test_mic_test.py` — the verdict mapping (loud/silent/no-device/error,
   level clamp) and `mic_test` capture with a **faked sounddevice** (loud → ok, zero →
   silent, raising stream → error, missing sounddevice → error, never raises).
   `test_gui_voice.py` — `run_wake_loop` stops once on `WakeUnavailable`; `_run_mic_test`
-  - controller `mic_test` publish the verdict and pause/restore the wake loop.
+  + controller `mic_test` publish the verdict and pause/restore the wake loop.
   `test_run_browser.py` — the `mic_test` action fires even with no voice controller.
-- **Caveats:** the verification model `wakewords/maziko.onnx` was a shipped
++ **Caveats:** the verification model `wakewords/maziko.onnx` was a shipped
   openwakeword model copied locally (uncommitted) — there is no committed maziko
   model. Could not test a **real** microphone or a real macOS permission denial here;
   the silent/permission path is asserted via mocked capture. JS `node --check`ed, not
@@ -383,34 +430,34 @@ Goal: ship several trained wake-word models in `wakewords/` (e.g. `maziko.onnx`,
 whatever `.onnx` models are present, never depending on specific files. No
 regression to the 371-test baseline (now 385).
 
-- **Discovery + name→path convention** (`config.py`): `available_wake_words(dir)`
++ **Discovery + name→path convention** (`config.py`): `available_wake_words(dir)`
   lists the stems of the `*.onnx` models on disk (sorted; `[]` when the dir is
   missing/empty). `wake_model_for(phrase, dir)` is the one path convention
   (`<dir>/<phrase>.onnx`), and `WAKEWORDS_DIR` names the default folder.
-- **Selecting = setting the phrase** (`config.py`): `Config.from_env` now reads
++ **Selecting = setting the phrase** (`config.py`): `Config.from_env` now reads
   `WAKE_PHRASE` and **auto-derives** `wake_model_path` as `wakewords/<phrase>.onnx`
   when `WAKE_MODEL_PATH` isn't set; an explicit `WAKE_MODEL_PATH` still wins.
   `Config.select_wake_word(name)` sets the phrase + re-derives the path in one call.
-- **CLI** (`__main__.py`): new `--wake-word NAME` (alias that selects by name) and
++ **CLI** (`__main__.py`): new `--wake-word NAME` (alias that selects by name) and
   `--wake-model-path PATH` (explicit override, wins over `--wake-word`). `--settings`
   now shows the selected wake word, its model path, whether the file **exists**, and
   the `[available]` wake words discovered on disk.
-- **Web UI** (`webui.py` + `webui.html`): `settings_dict` adds `wake_words: [...]`;
++ **Web UI** (`webui.py` + `webui.html`): `settings_dict` adds `wake_words: [...]`;
   `apply_settings` accepts `wake_phrase` and re-derives the path via
   `select_wake_word`. The **Wake phrase** control renders as a **dropdown** of
   `wake_words` (with a *custom…* entry that reveals a free-text box), and falls back
   to free text when the list is empty. Selecting one POSTs `{wake_phrase: NAME}`.
-- **Docs** (`wakewords/WAKEWORD.md`): new "Pre-shipped wake words" section — the repo
++ **Docs** (`wakewords/WAKEWORD.md`): new "Pre-shipped wake words" section — the repo
   ships several, how to select (UI / `--wake-word` / `WAKE_PHRASE`), and that custom
   ones can still be trained. Notes "alexa"/"jarvis" are third-party trademarks
   (community models, personal use).
-- **Tests** (`tests/test_wakeword_select.py`, +14): `available_wake_words` over a
++ **Tests** (`tests/test_wakeword_select.py`, +14): `available_wake_words` over a
   **temp dir** of fake `.onnx` (sorted, ignores non-onnx, empty/missing dir), the
   `wake_phrase → path` derivation (default + explicit-override precedence),
   `select_wake_word`, the `--wake-word` flag + `--wake-model-path` override,
   `settings_text` surfacing, the `settings_dict` `wake_words` list, and
   `apply_settings` re-derivation. Never touches the real `wakewords/`.
-- **Caveats:** the `.onnx` model files are committed separately by the orchestrator
++ **Caveats:** the `.onnx` model files are committed separately by the orchestrator
   (gitignored binaries); the JS was `node --check`ed; not exercised in a real browser.
 
 ## Build status (2026-06-19) — Wave G++: GUI voice controls actually work
@@ -422,13 +469,13 @@ just logged *"runs from the terminal in this build"*. Now those buttons drive th
 **server-side** pipeline when it is available, and are **honestly disabled** when
 it is not. No regression to the 356-test baseline (now 371).
 
-- **`run_wake_loop` is now cleanly stoppable** (`__main__.py`): accepts an optional
++ **`run_wake_loop` is now cleanly stoppable** (`__main__.py`): accepts an optional
   `stop: threading.Event`. It is checked at the top of both the outer wake-listen
   loop and the inner record loop, and passed into `audio.listen_for_wake(...)` so a
   GUI-driven loop tears down promptly even while idle waiting for the phrase.
   `audio.listen_for_wake` grew a `stop` param and now returns `bool` (True = fired,
   False = stopped). `None` keeps the classic run-forever terminal behaviour.
-- **GUI-controlled voice via `_WakeController`** (`__main__.py`): one lock-guarded
++ **GUI-controlled voice via `_WakeController`** (`__main__.py`): one lock-guarded
   controller owns the three GUI voice actions. `wake_start` → starts the wake loop
   in a daemon thread (idempotent; double-start is a no-op log); `wake_stop` → sets
   the stop event and returns to idle; `ptt` → runs one `_capture_ptt` → `_respond`
@@ -436,11 +483,11 @@ it is not. No regression to the 356-test baseline (now 371).
   PTT is still capturing). A blank capture logs a macOS mic-permission hint instead
   of failing silently. `_run_browser`'s `on_action` now dispatches to it; with no
   pipeline it logs an honest `unavailable: <reason>` error.
-- **Launch flag that enables it:** `./mstt --browser --wake` (already loads STT via
++ **Launch flag that enables it:** `./mstt --browser --wake` (already loads STT via
   `needs_stt`) now also makes the GUI buttons live, and `--wake` on launch starts
   the loop immediately (still stoppable from the GUI). Plain `./mstt --browser
   --type` stays typed-only (voice off). `--browser-audio` still gates Live Audio.
-- **Honest UI when voice is unavailable** (`webui.py` + `webui.html`): `settings_dict`
++ **Honest UI when voice is unavailable** (`webui.py` + `webui.html`): `settings_dict`
   / the `/api/settings` payload gained `voice_available: bool` + `voice_hint: str`,
   set true only when STT is loaded **and** the wake model exists **and** a mic is
   usable (`audio.mic_available()` — a new defensive sounddevice probe). When false
@@ -448,18 +495,18 @@ it is not. No regression to the 356-test baseline (now 371).
   click/keydown so they can't POST) and shows a one-line note
   (*"Voice off — relaunch with `./mstt --browser --wake` and grant mic access"*).
   Live Audio still keys off `audio_enabled` (R2-5).
-- **`quickstart.sh`** keeps typed mode as the instant, mic-free default but now
++ **`quickstart.sh`** keeps typed mode as the instant, mic-free default but now
   prints a clear hint after sync — `🎙️  To talk to it (wake word / mic), run:
   ./mstt --browser --wake` — noting macOS asks for mic permission on first capture.
   `shellcheck`-clean.
-- **Tests** (`tests/test_gui_voice.py`, +15): `_WakeController` wake_start/stop
++ **Tests** (`tests/test_gui_voice.py`, +15): `_WakeController` wake_start/stop
   toggling the loop (mock `run_wake_loop`/thread, assert the stop event fires),
   double-start guard, PTT one-shot + blank-capture mic hint + PTT-blocked-while-wake,
   `run_wake_loop` stop-event exit, `voice_available` true/false in `settings_dict`,
   `_voice_status` capability resolution (no STT / no wake model / no mic / all
   present), and `_run_browser`'s `on_action` dispatching to the controller (voice on)
   vs logging honestly (voice off). All mic/model/network boundaries mocked.
-- **Caveats:** not exercised in a real browser or against a real mic in this env —
++ **Caveats:** not exercised in a real browser or against a real mic in this env —
   the JS was `node --check`ed, the settings payload smoke-tested over loopback, and
   the Python paths unit-tested with the audio/wake/STT layers mocked. macOS will
   prompt for Terminal mic permission on the first real server-side capture.
@@ -473,16 +520,16 @@ Fixed: quickstart now **auto-detects a key-free brain**; a new `codex-cli` provi
 was added; the browser URL is shown + opened; and the no-key error self-guides.
 No regression to the 348-test baseline (now 356).
 
-- **`quickstart.sh` auto-detects a key-free brain** after `uv sync --extra all`, in
++ **`quickstart.sh` auto-detects a key-free brain** after `uv sync --extra all`, in
   order: (1) `claude` CLI on PATH → `--brain haiku-sub` (Claude CLI, no key);
   (2) else `ollama` on PATH **and** at least one model pulled (`ollama list`) →
   `LLM_PROVIDER=ollama` + the first installed model + `LLM_BASE_URL=
   http://localhost:11434/v1`; (3) else `codex` CLI on PATH → `--brain codex`
   (OpenAI codex CLI, no key); (4) else a friendly message (install claude / ollama
-  - pull / codex, or set `ANTHROPIC_API_KEY`) and exit 1 — no stack trace. Prints
+  + pull / codex, or set `ANTHROPIC_API_KEY`) and exit 1 — no stack trace. Prints
   which brain it chose. `-h`/`--help` and the 100755 git mode preserved;
   `shellcheck`-clean.
-- **New `codex-cli` brain provider** (`brain.py` `_stream_codex_cli` + `config.py`):
++ **New `codex-cli` brain provider** (`brain.py` `_stream_codex_cli` + `config.py`):
   mirrors `claude-cli` but shells out to the OpenAI `codex` CLI in non-interactive
   `codex exec` mode (uses your logged-in codex auth, no API key). Isolated:
   `--sandbox read-only`, `--skip-git-repo-check` in a scratch cwd, and
@@ -496,18 +543,18 @@ No regression to the 348-test baseline (now 356).
   OpenAI Codex CLI reference (developers.openai.com/codex/cli/reference) and were
   **NOT verified against a live binary** (codex is not installed in this env).
   Override with `CODEX_CLI_CMD` if a build differs; noted in code + `.env.example`.
-- **`__main__.py` `_run_browser`** now announces the URL via a small
++ **`__main__.py` `_run_browser`** now announces the URL via a small
   `_announce_browser_url(url)` helper that **prints it prominently**
   (`▶ Open in your browser:  http://127.0.0.1:8765/`) **and auto-opens** it with
   `webbrowser.open(url)`. (Extracted to a helper so `_run_browser` gains no extra
   local and pylint stays at the prior warning count.)
-- **Friendlier no-key error** (`config.py`): the `ANTHROPIC_API_KEY is required`
++ **Friendlier no-key error** (`config.py`): the `ANTHROPIC_API_KEY is required`
   message now points at the easy fixes — run `./quickstart.sh`, or `--brain
   haiku-sub`, or `LLM_PROVIDER=ollama`, or `--brain codex` — so even a bare `./mstt`
   failure self-guides.
-- **Tests** (`tests/test_logic.py`, `tests/test_config.py`, new
++ **Tests** (`tests/test_logic.py`, `tests/test_config.py`, new
   `tests/test_run_browser.py`): codex-cli runs `codex exec` with the isolation flags
-  - returns stdout, error propagation, `CODEX_CLI_CMD` override; `codex-cli` in
+  + returns stdout, error propagation, `CODEX_CLI_CMD` override; `codex-cli` in
   `PROVIDERS`, the codex PATH-gate, the `codex` preset, and the self-guiding no-key
   message; and `_run_browser` prints + `webbrowser.open`s the URL. All subprocess /
   browser boundaries are mocked — nothing runs live.
@@ -518,20 +565,20 @@ Goal: make the assistant generally **location- and units-aware**, ship a **real
 weather tool**, and get a brand-new user **talking to the LLM in one command**. All
 wired + tested; no regression to the prior 326-test baseline (now 345).
 
-- **Location + units settings** (`config.py`): new `location` (default
++ **Location + units settings** (`config.py`): new `location` (default
   `"Lausanne, Switzerland"`) and `units` (`metric` | `imperial`, default `metric`)
   fields with env overrides (`LOCATION`, `UNITS`), fail-fast validation (units in
   the set; location non-empty), CLI flags (`--location` / `--units`), a `locale`
   row in `--settings`, and the **web-UI settings** (`settings_dict` + `apply_settings`,
   plus a `units_modes` choice list).
-- **System-prompt locale injection** (`config.locale_prompt_line` +
++ **System-prompt locale injection** (`config.locale_prompt_line` +
   `Brain._system_prompt`): the editable base prompt (`prompts/system_prompt.md`,
   `cfg.system_prompt`) is kept verbatim and a single line —
   "The user is in {location} and uses {units} units; answer measurements…
   accordingly." — is appended at the backend boundary for **every** provider path
   (claude-cli, anthropic, openai, both tool-call loops). The base prompt is never
   mutated, so the UI/`--settings` still show the editable text.
-- **Real `get_weather` tool** (`tools.py`): uses **Open-Meteo (NO API KEY)** —
++ **Real `get_weather` tool** (`tools.py`): uses **Open-Meteo (NO API KEY)** —
   geocodes the place via the geocoding endpoint, fetches current conditions from the
   forecast endpoint, and returns a concise units-aware summary (°C/km·h for metric,
   °F/mph for imperial; WMO code → phrase). Defaults to `cfg.location`/`cfg.units` but
@@ -539,19 +586,19 @@ wired + tested; no regression to the prior 326-test baseline (now 345).
   get_time/calculator/home_control (built with the config's location+units in
   `Brain.__init__`). Dependency-light `urllib`; network/parse failures return a clear
   "weather unavailable" message and never crash the turn.
-- **One-command quickstart** (`quickstart.sh`): checks for `uv` (prints an install
++ **One-command quickstart** (`quickstart.sh`): checks for `uv` (prints an install
   hint if missing), runs `uv sync --extra all`, then launches `./mstt --browser
   --type` — the web control room in typed mode (no mic), so a new user is typing to
   a real LLM in seconds. `-h`/`--help` print purpose/usage and exit 0; executable
   bit set in the git index. (Superseded by the key-free auto-detect below — the
   default provider is actually `anthropic`, so a bare launch needed a key.)
-- **Tests** (`tests/test_weather.py` new, `tests/test_config.py` extended): weather
++ **Tests** (`tests/test_weather.py` new, `tests/test_config.py` extended): weather
   metric vs imperial formatting + the unit params sent, default-vs-explicit location,
   graceful network/unknown-place/empty failures, WMO mapping, the full `urllib`
   wiring (only `urlopen` faked) hitting the documented endpoints, plus location/units
   config defaults + env override + validation and the system-prompt injection line.
   **Open-Meteo is never hit live** — every HTTP boundary is mocked.
-- **`.env.example`**: documents `LOCATION` + `UNITS`.
++ **`.env.example`**: documents `LOCATION` + `UNITS`.
 
 ## Build status (2026-06-19) — Wave E: multi-user / household maturity (G1/G2/G4/G7/G8)
 
@@ -560,7 +607,7 @@ Mac — multi-user, on-device, natural, interruptible — and close the code-ach
 maturity gaps a judge cited vs `pipecat`. All wired + tested; no regression to the
 prior 265-test baseline (now 307+).
 
-- **G1 — Pluggable backend registry + real cloud adapters** (`registry.py`,
++ **G1 — Pluggable backend registry + real cloud adapters** (`registry.py`,
   `stt_cloud.py`, `tts_cloud.py`): a `ServiceRegistry` (name→builder, namespaced by
   `stt`/`tts`/`llm`) formalises the existing `Transcriber`/TTS/`Brain` seams.
   **Real, key-gated** adapters speak the actual provider APIs with graceful
@@ -569,7 +616,7 @@ prior 265-test baseline (now 307+).
   a dependency-light `urllib` HTTP fallback. Selected via `stt_backend`/`tts_backend`
   (env, `--stt-backend`/`--tts-backend`, `--settings`); validation cross-checks names
   against the registry. Tested against **mocked** SDK/HTTP responses (no live keys).
-- **G8 — Cross-platform brain (off-Mac)** (`stt.py` whisper.cpp + faster-whisper,
++ **G8 — Cross-platform brain (off-Mac)** (`stt.py` whisper.cpp + faster-whisper,
   `platform.py`, `aec.py` WebRTC-APM): the central brain can run on a **Linux** box
   with Mac/ESP32 satellites. Non-MLX STT backends (`whispercpp` via `pywhispercpp`,
   `faster-whisper` via CTranslate2); a `platform` module (OS detect + override)
@@ -578,7 +625,7 @@ prior 265-test baseline (now 307+).
   AEC backend (`aec_mode=webrtc`/`auto`) behind the `EchoCanceller` seam with NLMS
   fallback. **macOS path unchanged** when auto-detected. `platform`/`playback_backend`/
   `whispercpp_model`/`faster_whisper_compute` config + flags. Selection/fallback faked.
-- **G2 — Typed, prioritized, non-droppable events** (`events.py`): a typed `Frame`
++ **G2 — Typed, prioritized, non-droppable events** (`events.py`): a typed `Frame`
   model with two priority classes. **SYSTEM** frames (interruption / error /
   end-of-turn) **never drop**, **bypass** queued data, and **flush** stale data ahead
   of them; **DATA** frames ride a bounded queue and may drop under back-pressure.
@@ -586,7 +633,7 @@ prior 265-test baseline (now 307+).
   across every transport** (local, ws, webrtc, telephony). The ad-hoc interruption
   emitters are now backed by this; the public API + wire types are unchanged
   (back-compat). Tested: classification, bypass, flush, non-drop under load, ordering.
-- **G7 — Per-speaker persistent memory + provider-agnostic context** (`memory.py`):
++ **G7 — Per-speaker persistent memory + provider-agnostic context** (`memory.py`):
   a `ContextAggregator` assembles a neutral `[{role,content}]` list (per-speaker
   recall + live session, deduped at the seam, budget-bounded) **independent of the
   LLM provider**; a persistent `MemoryStore` (**SQLite** default, **JSON** for `.json`
@@ -598,7 +645,7 @@ prior 265-test baseline (now 307+).
   barge-in). `memory_store`/`memory_max_turns` config + `--memory-store`. Tested:
   persistence (both backends), per-speaker isolation, context assembly, the flow,
   Brain integration. Fixed a real aliasing bug (`reset_live` rebound instead of cleared).
-  - **G7 wiring fix (2026-06-19)** — closed a real correctness gap: `set_speaker` /
+  + **G7 wiring fix (2026-06-19)** — closed a real correctness gap: `set_speaker` /
     `EcapaEmbedder` / `SpeakerIdentifier.identify` were unit-tested but **never
     invoked in the live loop**, so the speaker was always `None` and per-speaker
     memory never keyed to a real person. New `speaker_pipeline.py` builds the
@@ -616,7 +663,7 @@ prior 265-test baseline (now 307+).
     row. Tested in `test_speaker_wiring.py` (live `run_turn`/transport paths call
     `identify`→`set_speaker`; graceful-skip when no pipeline; gating + centroid
     loading).
-- **G4 — Smart-Turn latency bench + language matrix** (`scripts/bench_smart_turn.py`):
++ **G4 — Smart-Turn latency bench + language matrix** (`scripts/bench_smart_turn.py`):
   measures Smart Turn v3 on-device inference latency (warm + p50/p95) and **asserts**
   the p95 fits inside the silence window (`vad_silence_seconds`) with headroom — so
   smart endpointing can't clip the user. Pure assertion logic (`fits_silence_window`,
@@ -648,7 +695,7 @@ Closed the final four round-3 breadth/ops gaps a fair judge still ranked `pipeca
 above us on (speech-to-speech, observability, first-run reliability, telephony).
 All wired + tested; no regression to the 170 baseline.
 
-- **R3-5 — Speech-to-speech / realtime LLM** (`realtime.py`): a `RealtimeBrain` +
++ **R3-5 — Speech-to-speech / realtime LLM** (`realtime.py`): a `RealtimeBrain` +
   `RealtimeClient` speaking the **real OpenAI Realtime WS protocol** (`session.update`,
   `input_audio_buffer.append`/`commit`, `response.create`, `response.audio.delta`,
   `response.done`). `run_realtime_session(transport, cfg)` bypasses the STT→LLM→TTS
@@ -658,7 +705,7 @@ All wired + tested; no regression to the 170 baseline.
   the cascade. `RealtimeProtocol` (event encode/decode, base64 PCM ⇄ int16) is **pure**
   and unit-tested; the WS connect is isolated + lazy. `brain=realtime` config +
   `--brain realtime`. Tested against a **mocked realtime WS server** (no key/network).
-- **R3-7 — Per-stage latency telemetry** (`metrics.py`): `TurnMetrics` now records
++ **R3-7 — Per-stage latency telemetry** (`metrics.py`): `TurnMetrics` now records
   per-turn `stt` / `llm_first_token` / `tts` / `first_audio` latencies keyed by a
   `speech_id`, emits each turn to `events.bus` (`metrics` event) **and** a structured
   JSON-lines log (`MetricsLog`), with `mark()`/`stage()` driven by an **injectable clock**
@@ -666,7 +713,7 @@ All wired + tested; no regression to the 170 baseline.
   **OpenTelemetry span hook** is lazy-imported and OFF by default (`telemetry_otel`).
   Wired into `_respond` (`__main__`) + `respond_over_transport`/`capture_turn`
   (`net_loop`). `telemetry` / `telemetry_log_file` / `telemetry_otel` config.
-- **R3-8 — Verified first-run bootstrap** (`preflight.py`, `turn.py`): `my-stt-tts
++ **R3-8 — Verified first-run bootstrap** (`preflight.py`, `turn.py`): `my-stt-tts
   --preflight` fetches **and SHA-256-checksums** the Smart-Turn ONNX (pinned hash) plus
   the configured Piper voices ahead of time and prints a clear ready/again report.
   `verify_checksum` + `ensure_smart_turn_model(expected_sha256=...)` reject a corrupt
@@ -674,14 +721,14 @@ All wired + tested; no regression to the 170 baseline.
   `SmartTurnAnalyzer` now surfaces an **explicit warning** (log + a `bus` `endpoint_fallback`
   event + an optional one-time spoken cue) instead of silently degrading. Tested: the
   checksum verify, the missing/corrupt-download path, and the fallback warning.
-- **R3-9 — Telephony reach** (`telephony.py`): a `TwilioMediaStreamSerializer` over the
++ **R3-9 — Telephony reach** (`telephony.py`): a `TwilioMediaStreamSerializer` over the
   existing WebSocket transport — decodes Twilio's **base64 μ-law 8 kHz** media frames ⇄
   our int16 PCM with an **8k↔16k resample**, and handles the Twilio WS event protocol
   (`connected` / `start` / `media` / `stop`, outbound `media` frames with `streamSid`).
   `serve_twilio()` answers a phone call into the same pipeline (`run_transport_session`).
   μ-law transcode (`ulaw_encode`/`ulaw_decode`, the ITU-T G.711 algorithm) + the frame
   protocol are **pure** and unit-tested with fakes (no Twilio/network). `telephony` config
-  - `--telephony`; the `transport` extra (websockets) suffices.
+  + `--telephony`; the `transport` extra (websockets) suffices.
 
 **202 tests passing** (170 baseline + 32 in `tests/test_round3d.py`); lint-clean
 (ruff format/check + mypy clean on every touched file; pylint at parity with the
@@ -703,7 +750,7 @@ speech) and standard-G.711-compatible so Twilio reconstructs it exactly.
 Closed the five gaps a round-3 judge ranked `pipecat` above us on (transport/audio
 robustness). All wired + tested; no regression to the 146 baseline.
 
-- **R3-2 — Full-duplex barge-in over the NETWORK transport** (`net_loop.py`):
++ **R3-2 — Full-duplex barge-in over the NETWORK transport** (`net_loop.py`):
   `respond_over_transport` is now duplex when `barge_in` is on — a shared
   `_MicSource` keeps the inbound mic live during TTS playout and a `_TransportBargeIn`
   monitor runs the same VAD + `InterruptGate` + AEC + `InterruptPredictor` chain as
@@ -711,14 +758,14 @@ robustness). All wired + tested; no regression to the 146 baseline.
   **and** the in-flight LLM stream (`stream.close()` + `commit_spoken`) and the
   captured audio seeds the next turn (chained in `run_transport_session`). So
   satellite/browser users can interrupt, not just the local user.
-- **R3-3 — Streamed, low-latency TTS playout** (`tts.py`, `text.py`): a `ClauseChunker`
-  - `TTSRouter.synth_pcm_stream` (per-clause synthesis) + `StreamingPlayback` that
++ **R3-3 — Streamed, low-latency TTS playout** (`tts.py`, `text.py`): a `ClauseChunker`
+  + `TTSRouter.synth_pcm_stream` (per-clause synthesis) + `StreamingPlayback` that
   pipes PCM into a `sounddevice` `OutputStream` as each clause renders, so first audio
   is the first clause (~200–300 ms), not the whole sentence. `start_speaking_stream`
   returns the same cancel surface as `Playback` so `monitor_during_playback` /
   barge-in are unchanged. The network sink streams clause PCM too. `tts_streaming`
   config + `--no-tts-streaming`.
-- **R3-4 — macOS hardware-AEC capture** (`aec.py` `VoiceProcessingCapture`): captures
++ **R3-4 — macOS hardware-AEC capture** (`aec.py` `VoiceProcessingCapture`): captures
   THROUGH the `AVAudioEngine` VoiceProcessingIO node (PyObjC) — enables VP, installs a
   tap on the input bus, bridges the already-echo-cancelled channel-0 float32 PCM
   (48 kHz → pipeline rate) into Python. Wired into the `--wake` capture + barge-in
@@ -726,7 +773,7 @@ robustness). All wired + tested; no regression to the 146 baseline.
   NLMS is bypassed when HW capture is live. **Verified on arm64**: the tap delivers
   OS-cancelled buffers to numpy. Falls back to sounddevice + NLMS if PyObjC/VP is
   unavailable. `aec_hw_capture` config.
-- **R3-1 — True WebRTC transport** (`webrtc_transport.py`): a third `AudioTransport`
++ **R3-1 — True WebRTC transport** (`webrtc_transport.py`): a third `AudioTransport`
   (`WebRtcTransport`) backed by **aiortc** — real `RTCPeerConnection`, **Opus**, jitter
   buffer, RTP/SRTP, ICE NAT traversal. The queue bridge is pure (numpy + queues, tested
   with fakes); the SDP signaling (`negotiate_answer`) is tested with a fake peer; the
@@ -735,7 +782,7 @@ robustness). All wired + tested; no regression to the 146 baseline.
   16 kHz frames). Browser path uses a real `RTCPeerConnection` +
   `getUserMedia({echoCancellation:true})`, signaled via `/api/webrtc/offer`; the WS PCM
   path stays as a fallback (CSP/demo intact). `transport=webrtc` + `--transport webrtc`.
-- **R3-6 — Drop-in noise suppression** (`denoise.py`): a `Denoiser` seam +
++ **R3-6 — Drop-in noise suppression** (`denoise.py`): a `Denoiser` seam +
   `SpectralGateDenoiser` (pure-numpy spectral gate, always available, raises SNR on
   steady noise) + `RnnoiseDenoiser` (optional wheel, graceful fallback) + null. Applied
   to mic frames AFTER AEC and BEFORE VAD/STT in both loops. `denoiser` config +
@@ -755,7 +802,7 @@ reuses the GUI signaling server).
 
 **Phase 7 round 2 — closing the pipecat gaps (this session):**
 
-- **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` protocol +
++ **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` protocol +
   three backends — `VoiceProcessingEchoCanceller` (macOS **hardware** AEC via
   `AVAudioEngine`/`VoiceProcessingIO` through PyObjC; the `aec` extra installs on
   arm64 and the API is live), a pure-numpy **NLMS adaptive filter** (`NlmsEchoCanceller`,
@@ -764,22 +811,22 @@ reuses the GUI signaling server).
   `audio.monitor_during_playback` feeds it to the canceller, processes every mic
   frame before VAD, and **relaxes the energy floor when AEC is active**. `aec_mode`
   config (`off`/`nlms`/`voiceprocessing`/`auto`) + `--aec` flag + web UI.
-- **R2-2 — Bounded sliding-window streaming STT** (`stt.py`): replaced whole-buffer
++ **R2-2 — Bounded sliding-window streaming STT** (`stt.py`): replaced whole-buffer
   re-decode with a `window_s`-bounded trailing re-decode stitched onto a committed
   prefix (`stitch_partial` de-dupes word overlap). Per-partial decode is bounded
   (≤ ~1.5× window) regardless of utterance length; `final()` still decodes the full
   clip for accuracy. `stt_window_s` config + `--stt-window` flag + web UI.
-- **R2-3 — Acoustic interruption prediction** (`interrupt.py` `InterruptPredictor`):
++ **R2-3 — Acoustic interruption prediction** (`interrupt.py` `InterruptPredictor`):
   a 3rd barge-in guard scoring sustained voiced energy + spectral flux + ZCR for
   intent-to-take-the-floor; composes with the duration/word gate in the monitor
   loop (either may fire), so it talks through backchannels but yields to a sustained
   interruption before two words transcribe. `interrupt_predict*` config + flag + UI.
-- **R2-4 — Smart-turn by default** (`turn.py`): `turn_analyzer` now defaults to
++ **R2-4 — Smart-turn by default** (`turn.py`): `turn_analyzer` now defaults to
   **`smart`**; the Smart Turn v3 ONNX is **auto-downloaded on first run**
   (`ensure_smart_turn_model`, mirroring `_ensure_piper_voice`), with a clean
   fallback to silence when the model/runtime is genuinely unavailable.
   `smart_turn_model_url` / `smart_turn_auto_download` config.
-- **R2-6 — Robust interrupt plumbing** (`events.py`, `__main__.py`): interruption is
++ **R2-6 — Robust interrupt plumbing** (`events.py`, `__main__.py`): interruption is
   now formalised as **bus events** (`interrupt_start`/`interrupt_stop`/
   `bot_stopped_speaking`); on barge-in the captured audio is handed **straight into
   the streaming transcriber** (`StreamingTranscriber.feed_clip`) for the next turn
@@ -787,7 +834,7 @@ reuses the GUI signaling server).
 
 **Phase 7 round 3 — network transport + tool calling (this session):**
 
-- **R2-5 — Network audio transport** (`transport.py`, `ws_transport.py`,
++ **R2-5 — Network audio transport** (`transport.py`, `ws_transport.py`,
   `net_loop.py`, `satellite.py`, `ws_frame.py`, browser audio): an `AudioTransport`
   seam (PCM frames in/out + control) with `LocalTransport` (sounddevice, default)
   and a `WebSocketTransport`. A real `websockets` server (`serve_websocket` /
@@ -800,7 +847,7 @@ reuses the GUI signaling server).
   streamed back for Web-Audio playback — implemented on the stdlib `http.server`
   with a hand-rolled RFC-6455 codec (`ws_frame.py`), so the GUI keeps zero web deps
   and the demo fallback is intact. `transport` config + `--transport`/`--browser-audio`.
-- **R2-7 — In-conversation tool calling + cloud backends** (`tools.py`, `brain.py`,
++ **R2-7 — In-conversation tool calling + cloud backends** (`tools.py`, `brain.py`,
   `stt.py`, `tts.py`): a `Tool`/`ToolRegistry` that serializes to **both** Anthropic
   and OpenAI wire formats, with the full tool-use round-trip wired into
   `Brain.stream` (model requests a tool → executed → result fed back → final answer
@@ -1005,93 +1052,93 @@ Lint gate before every commit: `ruff format && ruff check && mypy && pylint`
 
 ### Phase 0 — Scaffold, spine & environment ✅ done
 
-- [ ] Read `$mygit/README_SETUP_PYTHON_ENVIRONMENT.md`; `uv init --package`; `pyproject.toml` (PEP 621, `license = "Apache-2.0"`); commit `uv.lock`
-- [ ] `config.py`: central Config (string-dispatch backends) + fail-fast `validate()`; `.env.example`; `config.toml`
-- [ ] `spine.py`: threaded producer-consumer (queue per stage, generator stages, `SESSION_END`/`PIPELINE_END`) — HF `speech-to-speech` pattern
-- [ ] `metrics.py` first: per-stage timing keyed by shared **`speech_id`** (we tune by numbers) — LiveKit pattern
-- [ ] `scripts/bench.py`: measure real STT/TTS/LLM latency on *this* M1
++ [ ] Read `$mygit/README_SETUP_PYTHON_ENVIRONMENT.md`; `uv init --package`; `pyproject.toml` (PEP 621, `license = "Apache-2.0"`); commit `uv.lock`
++ [ ] `config.py`: central Config (string-dispatch backends) + fail-fast `validate()`; `.env.example`; `config.toml`
++ [ ] `spine.py`: threaded producer-consumer (queue per stage, generator stages, `SESSION_END`/`PIPELINE_END`) — HF `speech-to-speech` pattern
++ [ ] `metrics.py` first: per-stage timing keyed by shared **`speech_id`** (we tune by numbers) — LiveKit pattern
++ [ ] `scripts/bench.py`: measure real STT/TTS/LLM latency on *this* M1
 
 ### Phase 1 — Core loop (push-to-talk, English, batch) ✅ done (code; live mic test pending)
 
-- [ ] `audio.py`: `sounddevice` capture, explicit device, **pre-roll ring buffer** (no clipped onset), push-to-talk hotkey, max-recording cap
-- [ ] `stt.py`: `parakeet-mlx` warm-loaded
-- [ ] `brain.py`: Claude streaming (Haiku); **strip non-spoken text** before TTS (markdown, `(parentheticals)`, reasoning blocks) — GLaDOS pattern
-- [ ] `tts.py`: Piper English **via subprocess** → playback
-- [ ] `chimes.py`: wake chime; `--debug` spoken cues (the original "yes/recorded/analyzing" narration, off by default)
-- [ ] End-to-end: press key → speak → hear Claude; log per-stage latency
++ [ ] `audio.py`: `sounddevice` capture, explicit device, **pre-roll ring buffer** (no clipped onset), push-to-talk hotkey, max-recording cap
++ [ ] `stt.py`: `parakeet-mlx` warm-loaded
++ [ ] `brain.py`: Claude streaming (Haiku); **strip non-spoken text** before TTS (markdown, `(parentheticals)`, reasoning blocks) — GLaDOS pattern
++ [ ] `tts.py`: Piper English **via subprocess** → playback
++ [ ] `chimes.py`: wake chime; `--debug` spoken cues (the original "yes/recorded/analyzing" narration, off by default)
++ [ ] End-to-end: press key → speak → hear Claude; log per-stage latency
 
 ### Phase 2 — Responsiveness (streaming + safety) ✅ done (barge-in → Phase 7)
 
-- [ ] **Prosody-preserving fragment streaming**: Claude tokens → sentence/fragment chunker (first-fragment-fast, full prosody after) with **decimal/comma guard** (keep `3.14` / German `3,14`) — RealtimeTTS + GLaDOS patterns; BufferStream bridge (Linguflex)
-- [ ] Overlap stages on the spine; confirm pre-roll + streaming feel
-- [ ] Half-duplex **mic gating** during playback + 200 ms tail, **barge-in-ready** (D9)
-- [ ] Graceful failure: catch every stage; play **pre-synthesized** error clips even if TTS is what failed
-- [ ] Runaway guard: per-minute request cap + cooldown (self-trigger / cost protection)
++ [ ] **Prosody-preserving fragment streaming**: Claude tokens → sentence/fragment chunker (first-fragment-fast, full prosody after) with **decimal/comma guard** (keep `3.14` / German `3,14`) — RealtimeTTS + GLaDOS patterns; BufferStream bridge (Linguflex)
++ [ ] Overlap stages on the spine; confirm pre-roll + streaming feel
++ [ ] Half-duplex **mic gating** during playback + 200 ms tail, **barge-in-ready** (D9)
++ [ ] Graceful failure: catch every stage; play **pre-synthesized** error clips even if TTS is what failed
++ [ ] Runaway guard: per-minute request cap + cooldown (self-trigger / cost protection)
 
 ### Phase 3 — Multilingual (DE / FR / EN) ✅ done
 
-- [ ] STT multilingual: Parakeet v3 language-ID (or Whisper auto-detect); expose detected language
-- [ ] `tts.py` **Router**: `lingua-py` detection on the answer → voice map (`de→thorsten-high`, `fr→tom-medium`, `en→Kokoro/lessac`), `say` premium + low-confidence fallback
-- [ ] Test Hochdeutsch + French end-to-end; verify pronunciation
-- [ ] (Optional) Kokoro-via-`mlx-audio` for higher-quality English
++ [ ] STT multilingual: Parakeet v3 language-ID (or Whisper auto-detect); expose detected language
++ [ ] `tts.py` **Router**: `lingua-py` detection on the answer → voice map (`de→thorsten-high`, `fr→tom-medium`, `en→Kokoro/lessac`), `say` premium + low-confidence fallback
++ [ ] Test Hochdeutsch + French end-to-end; verify pronunciation
++ [ ] (Optional) Kokoro-via-`mlx-audio` for higher-quality English
 
 ### Phase 4 — Wake word & always-listening ◑ wired — needs the trained "maziko" model
 
-- [ ] Train + integrate **openWakeWord** for **"maziko"** (custom model, ~1 h via the training notebook; no vendor lock)
-- [ ] Replace PTT with wake-word + **two-stage VAD** (WebRTC gate → Silero confirm) — RealtimeSTT pattern; tune `silero_sensitivity`, silence durations
-- [ ] **smart-turn** model-based endpointing (vendor pipecat smart-turn, CoreML variant for the Neural Engine) to augment the silence timeout
-- [ ] Wake-word debounce; conversation **follow-up window** (~8 s open mic, no re-wake); multi-turn **memory** (rolling `messages`, capped, idle reset)
++ [ ] Train + integrate **openWakeWord** for **"maziko"** (custom model, ~1 h via the training notebook; no vendor lock)
++ [ ] Replace PTT with wake-word + **two-stage VAD** (WebRTC gate → Silero confirm) — RealtimeSTT pattern; tune `silero_sensitivity`, silence durations
++ [ ] **smart-turn** model-based endpointing (vendor pipecat smart-turn, CoreML variant for the Neural Engine) to augment the silence timeout
++ [ ] Wake-word debounce; conversation **follow-up window** (~8 s open mic, no re-wake); multi-turn **memory** (rolling `messages`, capped, idle reset)
 
 ### Phase 5 — Speaker identification (bespoke) ◑ logic + calibration done — needs enrollment recordings
 
-- [ ] `scripts/enroll.py`: ~30 s/person across 5–10 clips per language → L2-normalized ECAPA **centroid** (gitignored)
-- [ ] `speaker_id.py`: extract embedding **in parallel** with STT; cosine `argmax` over centroids
-- [ ] Rejection: absolute threshold (~0.40–0.50, **calibrated on our family + guest clips**) + margin gate (~0.06) → `unknown` / `ambiguous`
-- [ ] Bias to `unknown` over misattribution; **never gate safety-critical actions on child ID**; re-enroll children quarterly
-- [ ] Pass identified speaker into the Brain prompt for personalization
++ [ ] `scripts/enroll.py`: ~30 s/person across 5–10 clips per language → L2-normalized ECAPA **centroid** (gitignored)
++ [ ] `speaker_id.py`: extract embedding **in parallel** with STT; cosine `argmax` over centroids
++ [ ] Rejection: absolute threshold (~0.40–0.50, **calibrated on our family + guest clips**) + margin gate (~0.06) → `unknown` / `ambiguous`
++ [ ] Bias to `unknown` over misattribution; **never gate safety-critical actions on child ID**; re-enroll children quarterly
++ [ ] Pass identified speaker into the Brain prompt for personalization
 
 ### Phase 6 — LLM flexibility & agent orchestration ✅ agent dispatch + presets done
 
-- [ ] Model routing: Haiku fast / Opus deep via trigger or per-speaker default
-- [ ] Prompt caching for the stable system prompt
-- [ ] **Layered context** assembly (system + prefs + tools + compacted history) — GLaDOS `context.py`
-- [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
-- [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
++ [ ] Model routing: Haiku fast / Opus deep via trigger or per-speaker default
++ [ ] Prompt caching for the stable system prompt
++ [ ] **Layered context** assembly (system + prefs + tools + compacted history) — GLaDOS `context.py`
++ [ ] Tool-use / **MCP** wiring to dispatch to other home/work agents; tool pre-filtering (Linguflex)
++ [ ] Per-speaker + per-language context (Swiss defaults: metric, ISO-8601)
 
 ### Phase 7 — Barge-in & native audio ◑ round-3 closed network transport (R2-5) + tool calling / cloud backends (R2-7); only the full HW-AEC HAL path + menubar packaging remain
 
-- [x] **Barge-in** (G1): cancellable TTS playback (`tts.Playback` kills the `afplay`/`say` subprocess mid-utterance; `TTSRouter.start_speaking`), mic kept LIVE during playback (`audio.monitor_during_playback`), in-flight LLM stream cancelled (generator `.close()`), `bus.interrupted(...)` event for the UI. Configurable `barge_in` mode (`off`/`headphones`/`always`) + energy gate (`barge_in_energy`) for open-speaker bleed.
-- [x] **Smart-turn / prosodic end-of-turn** (G2 + R2-4): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). **Now the DEFAULT** `turn_analyzer`, with the ONNX **auto-downloaded on first run** (`ensure_smart_turn_model`).
-- [x] **False-interrupt suppression** (G4): `interrupt.InterruptGate` — min speech duration AND/OR min word count (pipecat `MinWords` equivalent) so backchannels/coughs/TV don't abort the assistant. Thresholds in config (`interrupt_min_speech_ms`, `interrupt_min_words`).
-- [x] **Post-interruption context repair** (G5): track voiced prefix; `Brain.commit_spoken()` stores only what was actually spoken (dropping the assistant turn if nothing was voiced) — fixed the `finally`-block full-append.
-- [x] **Streaming STT** (G6 + R2-2): `stt.StreamingTranscriber` emits `bus.transcript(text, partial=True)` during the turn; finalises on end-of-turn. Now uses a **bounded sliding-window** re-decode (`stt_window_s`) stitched onto a committed prefix (`stitch_partial`) so latency/CPU don't grow with utterance length. Toggle via `stt_streaming`.
-- [x] **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` seam + macOS hardware `VoiceProcessingEchoCanceller` (PyObjC `aec` extra) + pure-numpy `NlmsEchoCanceller` (~19 dB ERLE) + null. `Playback` carries the synthesized PCM reference; the monitor loop cancels per-frame and relaxes the energy floor when AEC is active. `aec_mode` config + `--aec`.
-- [x] **R2-3 — Acoustic interruption prediction** (`interrupt.InterruptPredictor`): a 3rd, purely-acoustic barge-in guard (sustained voiced energy + spectral flux + ZCR) composed with the gate so a real interruption wins before two words transcribe while backchannels are talked through. `interrupt_predict*` config + `--no-interrupt-predict`.
-- [x] **R2-6 — Robust interrupt plumbing**: interruption formalised as bus events (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`); captured barge-in audio fed straight into the streaming transcriber (`feed_clip`) — no from-scratch re-transcribe.
-- [x] **G3 / R3-4 — full hardware-AEC path end-to-end**: `aec.VoiceProcessingCapture` captures THROUGH the `AVAudioEngine` VoiceProcessingIO node (PyObjC tap) so already-OS-cancelled PCM reaches Python (48 kHz → pipeline rate); wired into the `--wake` capture + barge-in path (`source=` on `record_turn`/`monitor_during_playback`), SW NLMS bypassed when HW capture is live. Verified on arm64; falls back to sounddevice+NLMS otherwise. `aec_hw_capture` config.
-- [x] **R3-1 — true WebRTC transport**: `webrtc_transport.WebRtcTransport` (aiortc) — real `RTCPeerConnection`, Opus, jitter buffer, ICE NAT traversal; browser uses a real `RTCPeerConnection` + `getUserMedia({echoCancellation:true})` signaled via `/api/webrtc/offer`, WS PCM fallback intact. `transport=webrtc` + the `webrtc` extra.
-- [x] **R3-2 — full-duplex barge-in over the network transport**: `net_loop.respond_over_transport` keeps the mic live during TTS playout (`_MicSource` + `_TransportBargeIn`) and cancels TTS + the LLM stream on a confirmed interruption, chaining the captured audio to the next turn.
-- [x] **R3-3 — streamed low-latency TTS**: clause-chunked synthesis (`ClauseChunker`/`synth_pcm_stream`) piped into a `sounddevice` `OutputStream` (`StreamingPlayback`) / the transport sink; first audio in ~200–300 ms, cancel semantics preserved. `tts_streaming` config.
-- [x] **R3-6 — pre-VAD noise suppression**: `denoise.SpectralGateDenoiser` (pure-numpy, default) + optional RNNoise (graceful fallback), applied after AEC and before VAD/STT in both loops. `denoiser` config.
-- [x] **G7 / R2-5 — network audio transport**: `AudioTransport` seam (`transport.py`) with `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a real `websockets` server (`ws_transport.serve_websocket`/`WsSession`, the `transport` extra) bridges remote clients into the pipeline via `net_loop.run_transport_session`; a `satellite.py` client streams mic up + plays TTS back; the **browser GUI carries real audio** (`getUserMedia` → 16 kHz PCM over a same-origin `/ws/audio` WebSocket, TTS PCM streamed back), implemented on the stdlib `http.server` with a hand-rolled RFC-6455 codec (`ws_frame.py`). `transport`/`transport_*` config + `--transport`/`--browser-audio`.
-- [x] **R2-7 — In-conversation tool calling + cloud backends**: `tools.ToolRegistry` (Anthropic + OpenAI schemas) + the full tool-use round-trip in `Brain.stream` for both providers (request → execute → feed result back → stream the answer); example tools `get_time`/`calculator`/`home_control` (→ agent/HA dispatch); legacy "agent, …" still works. Optional **local-first** cloud STT (`CloudTranscriber`) + cloud TTS (`CloudTTS`) behind the seams, key-gated with graceful fallback. `tools_enabled`/`stt_backend`/`tts_backend` config.
-- [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
-- [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
++ [x] **Barge-in** (G1): cancellable TTS playback (`tts.Playback` kills the `afplay`/`say` subprocess mid-utterance; `TTSRouter.start_speaking`), mic kept LIVE during playback (`audio.monitor_during_playback`), in-flight LLM stream cancelled (generator `.close()`), `bus.interrupted(...)` event for the UI. Configurable `barge_in` mode (`off`/`headphones`/`always`) + energy gate (`barge_in_energy`) for open-speaker bleed.
++ [x] **Smart-turn / prosodic end-of-turn** (G2 + R2-4): `turn.TurnAnalyzer` protocol + `SilenceTurnAnalyzer` (always-available fallback) + `SmartTurnAnalyzer` (loads `pipecat-ai/smart-turn-v3` ONNX via Whisper feature extractor; silence-gated inference; **graceful fallback** to silence when the model/deps are missing). **Now the DEFAULT** `turn_analyzer`, with the ONNX **auto-downloaded on first run** (`ensure_smart_turn_model`).
++ [x] **False-interrupt suppression** (G4): `interrupt.InterruptGate` — min speech duration AND/OR min word count (pipecat `MinWords` equivalent) so backchannels/coughs/TV don't abort the assistant. Thresholds in config (`interrupt_min_speech_ms`, `interrupt_min_words`).
++ [x] **Post-interruption context repair** (G5): track voiced prefix; `Brain.commit_spoken()` stores only what was actually spoken (dropping the assistant turn if nothing was voiced) — fixed the `finally`-block full-append.
++ [x] **Streaming STT** (G6 + R2-2): `stt.StreamingTranscriber` emits `bus.transcript(text, partial=True)` during the turn; finalises on end-of-turn. Now uses a **bounded sliding-window** re-decode (`stt_window_s`) stitched onto a committed prefix (`stitch_partial`) so latency/CPU don't grow with utterance length. Toggle via `stt_streaming`.
++ [x] **R2-1 — Acoustic echo cancellation** (`aec.py`): `EchoCanceller` seam + macOS hardware `VoiceProcessingEchoCanceller` (PyObjC `aec` extra) + pure-numpy `NlmsEchoCanceller` (~19 dB ERLE) + null. `Playback` carries the synthesized PCM reference; the monitor loop cancels per-frame and relaxes the energy floor when AEC is active. `aec_mode` config + `--aec`.
++ [x] **R2-3 — Acoustic interruption prediction** (`interrupt.InterruptPredictor`): a 3rd, purely-acoustic barge-in guard (sustained voiced energy + spectral flux + ZCR) composed with the gate so a real interruption wins before two words transcribe while backchannels are talked through. `interrupt_predict*` config + `--no-interrupt-predict`.
++ [x] **R2-6 — Robust interrupt plumbing**: interruption formalised as bus events (`interrupt_start`/`interrupt_stop`/`bot_stopped_speaking`); captured barge-in audio fed straight into the streaming transcriber (`feed_clip`) — no from-scratch re-transcribe.
++ [x] **G3 / R3-4 — full hardware-AEC path end-to-end**: `aec.VoiceProcessingCapture` captures THROUGH the `AVAudioEngine` VoiceProcessingIO node (PyObjC tap) so already-OS-cancelled PCM reaches Python (48 kHz → pipeline rate); wired into the `--wake` capture + barge-in path (`source=` on `record_turn`/`monitor_during_playback`), SW NLMS bypassed when HW capture is live. Verified on arm64; falls back to sounddevice+NLMS otherwise. `aec_hw_capture` config.
++ [x] **R3-1 — true WebRTC transport**: `webrtc_transport.WebRtcTransport` (aiortc) — real `RTCPeerConnection`, Opus, jitter buffer, ICE NAT traversal; browser uses a real `RTCPeerConnection` + `getUserMedia({echoCancellation:true})` signaled via `/api/webrtc/offer`, WS PCM fallback intact. `transport=webrtc` + the `webrtc` extra.
++ [x] **R3-2 — full-duplex barge-in over the network transport**: `net_loop.respond_over_transport` keeps the mic live during TTS playout (`_MicSource` + `_TransportBargeIn`) and cancels TTS + the LLM stream on a confirmed interruption, chaining the captured audio to the next turn.
++ [x] **R3-3 — streamed low-latency TTS**: clause-chunked synthesis (`ClauseChunker`/`synth_pcm_stream`) piped into a `sounddevice` `OutputStream` (`StreamingPlayback`) / the transport sink; first audio in ~200–300 ms, cancel semantics preserved. `tts_streaming` config.
++ [x] **R3-6 — pre-VAD noise suppression**: `denoise.SpectralGateDenoiser` (pure-numpy, default) + optional RNNoise (graceful fallback), applied after AEC and before VAD/STT in both loops. `denoiser` config.
++ [x] **G7 / R2-5 — network audio transport**: `AudioTransport` seam (`transport.py`) with `LocalTransport` (sounddevice, default) + `WebSocketTransport`; a real `websockets` server (`ws_transport.serve_websocket`/`WsSession`, the `transport` extra) bridges remote clients into the pipeline via `net_loop.run_transport_session`; a `satellite.py` client streams mic up + plays TTS back; the **browser GUI carries real audio** (`getUserMedia` → 16 kHz PCM over a same-origin `/ws/audio` WebSocket, TTS PCM streamed back), implemented on the stdlib `http.server` with a hand-rolled RFC-6455 codec (`ws_frame.py`). `transport`/`transport_*` config + `--transport`/`--browser-audio`.
++ [x] **R2-7 — In-conversation tool calling + cloud backends**: `tools.ToolRegistry` (Anthropic + OpenAI schemas) + the full tool-use round-trip in `Brain.stream` for both providers (request → execute → feed result back → stream the answer); example tools `get_time`/`calculator`/`home_control` (→ agent/HA dispatch); legacy "agent, …" still works. Optional **local-first** cloud STT (`CloudTranscriber`) + cloud TTS (`CloudTTS`) behind the seams, key-gated with graceful fallback. `tools_enabled`/`stt_backend`/`tts_backend` config.
++ [ ] Multi-agent floor-control ("conch" lock — voicemode) so two agents don't talk at once
++ [ ] Package as menubar app (`rumps`) / `launchd` with a **stable bundle id** (TCC keyed to it); idle model unload
 
 ### Phase 8 — Whole-house / Home Assistant (future) ⬜ future
 
-- [ ] Move brain to a server, mics/speakers to satellites; integrate with `home-assistant-sandbox` Assist + Wyoming; revisit Sonos vs satellite-local playback latency
++ [ ] Move brain to a server, mics/speakers to satellites; integrate with `home-assistant-sandbox` Assist + Wyoming; revisit Sonos vs satellite-local playback latency
 
 ### Phase 9 — External polish / OSS readiness (parallel track) ◑ most done — Homebrew tap & hero MP4 pending
 
-- [x] LICENSE (Apache-2.0), public AGENTS.md, gitignored CLAUDE.md shim, README with install methods + license note
-- [x] Repo description + topics + (todo) social-preview image
-- [ ] `pyproject.toml` (PEP 621, SPDX license string, extras for opt-in backends), `uv.lock`, src layout
-- [ ] pre-commit: add **ruff** hooks beside gitleaks; `pytest` smoke suite
-- [ ] GitHub Actions CI on **`macos-15`** (arm64): `brew install` native deps → `uv sync --locked` → ruff/mypy/pytest (audio mocked); Dependabot (uv + actions)
-- [ ] SECURITY.md, CHANGELOG.md (Keep a Changelog), CONTRIBUTING.md, YAML issue forms
-- [ ] README hero **demo with audio** (MP4 — a voice app must be heard; VHS GIF secondary); GitHub Pages **voice-sample gallery** (`<audio>` can't play inline in README); comparison table
-- [ ] Homebrew tap (`glensk/tap/my-stt-tts`) — primary install; PyPI + `uv tool install` secondary; Docker documented as unsupported on macOS
++ [x] LICENSE (Apache-2.0), public AGENTS.md, gitignored CLAUDE.md shim, README with install methods + license note
++ [x] Repo description + topics + (todo) social-preview image
++ [ ] `pyproject.toml` (PEP 621, SPDX license string, extras for opt-in backends), `uv.lock`, src layout
++ [ ] pre-commit: add **ruff** hooks beside gitleaks; `pytest` smoke suite
++ [ ] GitHub Actions CI on **`macos-15`** (arm64): `brew install` native deps → `uv sync --locked` → ruff/mypy/pytest (audio mocked); Dependabot (uv + actions)
++ [ ] SECURITY.md, CHANGELOG.md (Keep a Changelog), CONTRIBUTING.md, YAML issue forms
++ [ ] README hero **demo with audio** (MP4 — a voice app must be heard; VHS GIF secondary); GitHub Pages **voice-sample gallery** (`<audio>` can't play inline in README); comparison table
++ [ ] Homebrew tap (`glensk/tap/my-stt-tts`) — primary install; PyPI + `uv tool install` secondary; Docker documented as unsupported on macOS
 
 ---
 

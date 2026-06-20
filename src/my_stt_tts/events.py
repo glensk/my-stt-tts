@@ -149,6 +149,20 @@ def _fmt_wake_test_result(e: dict[str, Any]) -> str:
     return f"{e.get('word', '')} {fired} conf={e.get('confidence', 0)} ({e.get('source', '')})"
 
 
+def _fmt_wake_gain_sweep_result(e: dict[str, Any]) -> str:
+    pts = e.get("points", []) or []
+    body = " ".join(f"{p.get('gain')}x:{p.get('confidence')}" for p in pts)
+    return f"{e.get('word', '')} [{body}]".rstrip()
+
+
+def _fmt_score_clip_result(e: dict[str, Any]) -> str:
+    fired = "FIRED" if e.get("fired") else "no-fire"
+    return (
+        f"{e.get('word', '')} {fired} conf={e.get('confidence', 0)} "
+        f"int16_peak={e.get('int16_peak', 0)}"
+    )
+
+
 def _fmt_metrics(e: dict[str, Any]) -> str:
     return f"speech_id={e.get('speech_id', '')} stages_ms={e.get('stages_ms', {})}"
 
@@ -169,6 +183,8 @@ _CONSOLE_FORMATTERS = {
     "speaker": _fmt_speaker,
     "mic_result": _fmt_mic_result,
     "wake_test_result": _fmt_wake_test_result,
+    "wake_gain_sweep_result": _fmt_wake_gain_sweep_result,
+    "score_clip_result": _fmt_score_clip_result,
     "metrics": _fmt_metrics,
     "wake": _fmt_wake,
 }
@@ -324,6 +340,36 @@ class _Subscriber:
         with self._lock:
             n_sys = len(self._system)
         return n_sys + self._data.qsize()
+
+
+# The capture-metric fields a mic_check_result / wake_test_result carries on top of
+# the level meter (sourced from audio.capture_stats). Pulled into both events so the
+# GUI can classify a too-quiet capture (int16_peak<2000 -> "low") — the PRIME
+# wake-failure suspect. Kept stdlib-only here (no numpy/audio import) so the bus stays
+# a core module; the values are already plain Python from capture_stats.
+_CAPTURE_METRIC_DEFAULTS: dict[str, Any] = {
+    "int16_peak": 0,
+    "int16_rms": 0,
+    "expected_level": "low",
+    "crest_db": 0.0,
+    "dc_offset": 0.0,
+    "true_peak_db": -120.0,
+    "snr_db": None,
+    "lufs": None,
+}
+
+
+def _capture_metric_fields(stats: dict[str, Any] | None) -> dict[str, Any]:
+    """The int16/level/quality fields for a result event, from a ``capture_stats`` dict.
+
+    Picks the contract keys (``int16_peak`` / ``int16_rms`` / ``expected_level`` /
+    ``crest_db`` / ``dc_offset`` / ``true_peak_db`` / ``snr_db`` / ``lufs``) out of a
+    :func:`audio.capture_stats` dict, falling back to neutral defaults (a silent-clip
+    shape) when ``stats`` is None or a key is absent — so the event always carries the
+    full set and the GUI never sees a missing field.
+    """
+    src = stats or {}
+    return {key: src.get(key, default) for key, default in _CAPTURE_METRIC_DEFAULTS.items()}
 
 
 class EventBus:
@@ -497,6 +543,7 @@ class EventBus:
         hash: str,  # noqa: A002 — wire field name per the shared GUI contract
         wav_url: str,
         message: str,
+        stats: dict[str, Any] | None = None,
     ) -> None:
         """Publish the outcome of a unified 2.0 s microphone check (GUI "mic check").
 
@@ -508,6 +555,12 @@ class EventBus:
         the graph; ``processing`` carries ``{agc, ns, ec, gain}`` (browser echo/AGC/NS
         flags or null + the applied server ``gain``); ``hash`` is the 8-hex content id
         and ``wav_url`` the ``/recordings/<file>.wav`` link to the saved clip.
+
+        ``stats`` (the :func:`audio.capture_stats` dict) extends the event with the
+        int16-scale magnitudes + audio quality metrics the GUI surfaces to diagnose a
+        too-quiet capture: ``int16_peak`` / ``int16_rms`` (the ±32768 magnitude the
+        wake model actually sees), ``expected_level`` (low/ok/high), ``crest_db``,
+        ``dc_offset``, ``true_peak_db``, ``snr_db`` (or null) and ``lufs`` (or null).
         """
         self.publish(
             {
@@ -523,6 +576,7 @@ class EventBus:
                 "hash": hash,
                 "wav_url": wav_url,
                 "message": message,
+                **_capture_metric_fields(stats),
             }
         )
 
@@ -570,6 +624,8 @@ class EventBus:
         processing: dict[str, Any] | None = None,
         hash: str = "",  # noqa: A002 — wire field name per the shared GUI contract
         wav_url: str = "",
+        stats: dict[str, Any] | None = None,
+        score_trace: list[float] | None = None,
     ) -> None:
         """Publish the outcome of a wake-word test (GUI "Wake test"); DATA priority.
 
@@ -585,6 +641,11 @@ class EventBus:
         ``sample_rate``, ``processing`` (``{agc, ns, ec, gain}``), the ``hash`` content
         id, and the ``wav_url`` ``/recordings/<file>.wav`` link. Mirrors the live wake
         path so a never-firing word is diagnosable.
+
+        ``stats`` (the :func:`audio.capture_stats` dict) adds the int16-scale / quality
+        metrics (see :meth:`mic_check_result`). ``score_trace`` is the per-frame wake
+        score across the clip — drawn under the waveform so a localized sub-threshold
+        spike (the word IS scoring) is distinguishable from a flat-zero dead capture.
         """
         self.publish(
             {
@@ -604,6 +665,73 @@ class EventBus:
                 "processing": processing or {},
                 "hash": hash,
                 "wav_url": wav_url,
+                "score_trace": [round(float(v), 4) for v in (score_trace or [])],
+                **_capture_metric_fields(stats),
+            }
+        )
+
+    def wake_gain_sweep_result(
+        self,
+        *,
+        word: str,
+        hash: str,  # noqa: A002 — wire field name per the shared GUI contract
+        points: list[dict[str, Any]],
+        message: str = "",
+    ) -> None:
+        """Publish a wake gain-sweep result (GUI ``wake_gain_sweep``); DATA priority.
+
+        THE smoking-gun diagnostic for the dead wake word: re-score the SAME saved
+        clip (addressed by its 8-hex content ``hash``) at a series of input gains and
+        report each ``{gain, confidence, fired}``. If ``confidence`` climbs with gain,
+        a too-quiet capture (low mel energy → collapsed openWakeWord score) was the
+        cause — and ``wake_gain`` is the fix. ``points`` is the per-gain list; each
+        ``gain``/``confidence`` is rounded for a stable wire shape; ``message`` is the
+        human one-liner the UI shows.
+        """
+        self.publish(
+            {
+                "type": "wake_gain_sweep_result",
+                "word": word,
+                "hash": hash,
+                "points": [
+                    {
+                        "gain": round(float(p.get("gain", 0.0)), 3),
+                        "confidence": round(float(p.get("confidence", 0.0)), 4),
+                        "fired": bool(p.get("fired", False)),
+                    }
+                    for p in points
+                ],
+                "message": message,
+            }
+        )
+
+    def score_clip_result(
+        self,
+        *,
+        word: str,
+        hash: str,  # noqa: A002 — wire field name per the shared GUI contract
+        confidence: float,
+        fired: bool,
+        int16_peak: int,
+        message: str,
+    ) -> None:
+        """Publish the result of scoring the EXACT saved WAV (GUI ``score_clip``).
+
+        DATA priority — the capture-vs-model isolation fork: score a KNOWN saved clip
+        through the model with NO extra processing. If a clip that should fire also
+        scores ~0 here, the model/word is the problem, not capture. ``confidence`` is
+        the max openWakeWord score (0..1); ``int16_peak`` is the clip's magnitude on
+        the ±32768 scale the model sees (so a low value explains a low score).
+        """
+        self.publish(
+            {
+                "type": "score_clip_result",
+                "word": word,
+                "hash": hash,
+                "confidence": round(float(confidence), 4),
+                "fired": bool(fired),
+                "int16_peak": int(int16_peak),
+                "message": message,
             }
         )
 

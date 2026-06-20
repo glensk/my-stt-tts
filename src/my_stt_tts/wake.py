@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 import numpy as np
 
@@ -211,6 +211,34 @@ class WakeWord:
         self.last_score = 0.0
 
 
+@overload
+def score_wake_clip(
+    clip: np.ndarray,
+    sample_rate: int,
+    word: str,
+    *,
+    threshold: float = ...,
+    phases: int = ...,
+    gain: float = ...,
+    wakewords_dir: str = ...,
+    with_trace: Literal[False] = ...,
+) -> tuple[float, bool]: ...
+
+
+@overload
+def score_wake_clip(
+    clip: np.ndarray,
+    sample_rate: int,
+    word: str,
+    *,
+    threshold: float = ...,
+    phases: int = ...,
+    gain: float = ...,
+    wakewords_dir: str = ...,
+    with_trace: Literal[True],
+) -> tuple[float, bool, list[float]]: ...
+
+
 def score_wake_clip(
     clip: np.ndarray,
     sample_rate: int,
@@ -218,38 +246,53 @@ def score_wake_clip(
     *,
     threshold: float = 0.4,
     phases: int = 8,
+    gain: float = 1.0,
     wakewords_dir: str = WAKEWORDS_DIR,
-) -> tuple[float, bool]:
+    with_trace: bool = False,
+) -> tuple[float, bool] | tuple[float, bool, list[float]]:
     """Score a recorded clip against the wake model for ``word`` (the GUI diagnostic).
 
     Loads the :class:`WakeWord` for ``word`` via :func:`wake_model_for` — NOT
     necessarily the configured wake word — resamples ``clip`` to the 16 kHz the
-    model expects, reframes it to 1280-sample (80 ms) frames, and feeds them through
-    the REAL :meth:`WakeWord.detect` path frame-by-frame (so it is phase-diverse,
-    exactly what the always-listening loop sees). Returns ``(confidence, fired)``
-    where ``confidence`` is the MAX ``last_score`` over the whole clip and ``fired``
-    is ``confidence >= threshold``.
+    model expects, applies ``gain`` (clip-protected to ±1.0 — the gain-sweep knob
+    that proves a too-quiet capture is the cause), reframes it to 1280-sample (80 ms)
+    frames, and feeds them through the REAL :meth:`WakeWord.detect` path
+    frame-by-frame (so it is phase-diverse, exactly what the always-listening loop
+    sees). Returns ``(confidence, fired)`` where ``confidence`` is the MAX
+    ``last_score`` over the whole clip and ``fired`` is ``confidence >= threshold``.
+
+    ``with_trace=True`` returns ``(confidence, fired, score_trace)`` instead, where
+    ``score_trace`` is the per-frame MAX-over-phases score across the clip — the
+    trace the GUI draws under the waveform so a localized spike (the word IS scoring,
+    just sub-threshold) is distinguishable from a flat-zero dead capture.
 
     Defensive: an empty clip, a missing model file, or an unavailable openWakeWord
-    backend all return ``(0.0, False)`` rather than raising — the caller turns that
-    into a clear "model unavailable" message instead of crashing.
+    backend all return zero confidence (and an empty trace) rather than raising — the
+    caller turns that into a clear "model unavailable" message instead of crashing.
     """
-    from .audio import reframe, resample_to
+    from .audio import apply_gain, reframe, resample_to
+
+    def _result(conf: float, fired: bool, trace: list[float]) -> Any:  # noqa: ANN401
+        return (conf, fired, trace) if with_trace else (conf, fired)
 
     model_path = wake_model_for(word, wakewords_dir)
     if not Path(model_path).is_file():
-        return 0.0, False
+        return _result(0.0, False, [])
     arr = np.asarray(clip, dtype=np.float32).ravel()
     if arr.size == 0:
-        return 0.0, False
+        return _result(0.0, False, [])
     arr = resample_to(arr, int(sample_rate), 16000)
+    if gain != 1.0:
+        arr = apply_gain(arr, gain)
     detector = WakeWord(model_path, threshold, phases=phases)
     best = 0.0
+    trace: list[float] = []
     try:
         for frame in reframe(arr, FRAME_SAMPLES):
             detector.detect(frame)
+            trace.append(round(detector.last_score, 4))
             best = max(best, detector.last_score)
     except WakeUnavailable as exc:
         log.warning("wake-test scoring unavailable for %r: %s", word, exc)
-        return 0.0, False
-    return best, best >= threshold
+        return _result(0.0, False, [])
+    return _result(best, best >= threshold, trace)

@@ -428,17 +428,164 @@ def _supported_capture_rate(sd: Any, requested: int) -> int:
             return requested
 
 
-def capture_stats(samples: np.ndarray, sample_rate: int) -> dict[str, Any]:
-    """Summarise a captured clip for the debug instrument (#samples / dur / rms / peak)."""
+# The ±full-scale of the int16 PCM the wake model actually consumes. The float32
+# pipeline carries [-1, 1]; openWakeWord's AudioFeatures re-casts to int16, so the
+# magnitude it truly sees is the float amplitude × 32767. The GUI classifies the
+# capture by this int16 magnitude, NOT the abstract 0..1 float (which hides "is
+# this loud enough for the model to score?" — the PRIME wake-failure suspect).
+_INT16_FULL_SCALE = 32767.0
+# int16-peak thresholds for ``expected_level``: a near-silent built-in mic peaks
+# at a few hundred (the model sees near-zero mels → score collapses); a healthy
+# capture sits in the low thousands; anything brushing full-scale is clipping.
+_INT16_LOW_PEAK = 2000  # below this the capture is too quiet for the wake model
+_INT16_HIGH_PEAK = 30000  # above this the capture is hot / clipping (±32768 wraps)
+
+
+def _expected_level(int16_peak: int) -> str:
+    """Classify an int16 peak magnitude as ``low`` / ``ok`` / ``high`` (pure).
+
+    The single most useful wake-failure tell: a ``low`` capture (int16 peak under
+    :data:`_INT16_LOW_PEAK`) starves openWakeWord's mel features and pins the score
+    near zero regardless of the word — exactly the dead-wake symptom. ``high`` flags
+    a clipping/overloaded capture; ``ok`` is the usable band in between.
+    """
+    if int16_peak < _INT16_LOW_PEAK:
+        return "low"
+    if int16_peak > _INT16_HIGH_PEAK:
+        return "high"
+    return "ok"
+
+
+def _snr_db(arr: np.ndarray, sample_rate: int, *, vad: Any = None) -> float | None:
+    """Estimate speech-vs-noise-floor SNR in dB over short windows (None if N/A).
+
+    Splits the clip into 20 ms windows and computes each window's RMS. The noise
+    floor is the quietest 10% of windows (or, when a Silero ``vad`` is supplied, the
+    NON-speech windows); the signal is the loudest. ``SNR = 20·log10(sig / noise)``.
+    Returns ``None`` when the clip is too short to have ≥2 windows or the noise floor
+    is exactly zero (digital silence — an undefined ratio). Pure + dependency-free
+    in the quietest-10% path; the VAD path is used only when an extra is installed.
+    """
+    if arr.size == 0 or sample_rate <= 0:
+        return None
+    win = max(1, int(0.02 * sample_rate))  # 20 ms windows
+    n_win = arr.size // win
+    if n_win < 2:
+        return None
+    trimmed = arr[: n_win * win].reshape(n_win, win)
+    win_rms = np.sqrt(np.mean(np.square(trimmed), axis=1))
+    speech_mask: np.ndarray | None = None
+    if vad is not None:
+        with contextlib.suppress(Exception):
+            flags = [bool(vad.is_speech(trimmed[i])) for i in range(n_win)]
+            mask = np.asarray(flags, dtype=bool)
+            if mask.any() and (~mask).any():
+                speech_mask = mask
+    if speech_mask is not None:
+        noise = float(np.median(win_rms[~speech_mask]))
+        signal = float(np.median(win_rms[speech_mask]))
+    else:
+        order = np.sort(win_rms)
+        k = max(1, n_win // 10)  # quietest 10% as the noise floor
+        noise = float(np.mean(order[:k]))
+        signal = float(np.mean(order[-k:]))
+    if noise <= 0.0 or signal <= 0.0:
+        return None
+    return round(20.0 * float(np.log10(signal / noise)), 2)
+
+
+def _lufs(arr: np.ndarray, sample_rate: int) -> float | None:
+    """Integrated loudness (LUFS) via ``pyloudnorm`` — ``None`` if unimportable.
+
+    ``pyloudnorm`` lives in the optional ``debug`` extra so the core package stays
+    clean: when it (or its scipy dependency) is missing, or the clip is too short
+    for the meter's 400 ms block, this returns ``None`` and the field is simply
+    absent-as-null. Best-effort — never raises into a diagnostic.
+    """
+    if arr.size == 0 or sample_rate <= 0:
+        return None
+    try:
+        import pyloudnorm as pyln
+    except Exception:  # noqa: BLE001 — the `debug` extra isn't installed; degrade to None
+        return None
+    if arr.size < sample_rate * 0.4:  # the BS.1770 meter needs a ≥400 ms block
+        return None
+    try:
+        meter = pyln.Meter(sample_rate)
+        value = float(meter.integrated_loudness(arr.astype(np.float64)))
+    except Exception:  # noqa: BLE001 — silent/degenerate input -> undefined loudness
+        return None
+    if not np.isfinite(value):  # pyloudnorm returns -inf for digital silence
+        return None
+    return round(value, 2)
+
+
+def _true_peak_db(arr: np.ndarray) -> float:
+    """Inter-sample (true) peak in dBFS via 4× oversampling (scipy when available).
+
+    A signal can peak BETWEEN samples above its sample peak (inter-sample / true
+    peak), which is what a DAC reconstructs and can clip. Oversamples 4× with
+    ``scipy.signal.resample_poly`` (a band-limited polyphase resampler), then takes
+    the peak. ``scipy`` is only pulled in by extras, so without it this degrades to
+    the plain sample peak (still correct, just not inter-sample). dBFS relative to
+    full scale 1.0; ``-inf``-ish silence is floored to a large negative dB.
+    """
+    if arr.size == 0:
+        return -120.0
+    peak = float(np.max(np.abs(arr)))
+    with contextlib.suppress(Exception):
+        from scipy.signal import resample_poly  # type: ignore[import-untyped]
+
+        upsampled = resample_poly(arr.astype(np.float64), 4, 1)
+        peak = max(peak, float(np.max(np.abs(upsampled))))
+    if peak <= 0.0:
+        return -120.0
+    return round(20.0 * float(np.log10(min(peak, 1.0) if peak <= 1.0 else peak)), 2)
+
+
+def capture_stats(samples: np.ndarray, sample_rate: int, *, vad: Any = None) -> dict[str, Any]:
+    """Summarise a captured clip for the debug instrument and the wake diagnostics.
+
+    The base fields (``sample_rate`` / ``samples`` / ``duration_s`` / ``rms`` /
+    ``peak``) are the original capture summary. The extended fields make the PRIME
+    wake-failure suspect — a too-quiet capture — instantly visible:
+
+    * ``int16_peak`` / ``int16_rms`` — the magnitude on the ±32768 int16 scale the
+      wake model ACTUALLY sees (float amplitude × 32767). A built-in mic peaking at
+      0.05 float = ~1638 int16 → starved mel features → score collapses.
+    * ``expected_level`` — ``low`` / ``ok`` / ``high`` classification of ``int16_peak``
+      (see :func:`_expected_level`): the at-a-glance "is the capture loud enough?".
+    * ``crest_db`` — crest factor ``20·log10(peak / rms)``: speech runs ~12–20 dB; a
+      near-flat value hints at a DC-y / clipped / noise-only capture.
+    * ``dc_offset`` — the signal mean (a non-zero bias starves the model + biases VAD).
+    * ``true_peak_db`` — inter-sample true peak in dBFS (4× oversampled; see
+      :func:`_true_peak_db`).
+    * ``snr_db`` — speech-vs-noise-floor SNR in dB (None when indeterminable); a
+      Silero ``vad`` (the ``vad`` extra) gates speech windows, else quietest-10%.
+    * ``lufs`` — integrated loudness via the optional ``debug`` extra's ``pyloudnorm``
+      (None when the extra is absent), so core stays clean.
+    """
     arr = np.asarray(samples, dtype=np.float32).ravel()
     peak = float(np.max(np.abs(arr))) if arr.size else 0.0
     rms = float(np.sqrt(np.mean(np.square(arr)))) if arr.size else 0.0
+    int16_peak = int(round(min(peak, 1.0) * _INT16_FULL_SCALE))
+    int16_rms = int(round(min(rms, 1.0) * _INT16_FULL_SCALE))
+    dc_offset = float(np.mean(arr)) if arr.size else 0.0
+    crest_db = round(20.0 * float(np.log10(peak / rms)), 2) if rms > 0.0 and peak > 0.0 else 0.0
     return {
         "sample_rate": int(sample_rate),
         "samples": int(arr.size),
         "duration_s": round(arr.size / sample_rate, 3) if sample_rate else 0.0,
         "rms": round(rms, 4),
         "peak": round(peak, 4),
+        "int16_peak": int16_peak,
+        "int16_rms": int16_rms,
+        "expected_level": _expected_level(int16_peak),
+        "crest_db": crest_db,
+        "dc_offset": round(dc_offset, 6),
+        "true_peak_db": _true_peak_db(arr),
+        "snr_db": _snr_db(arr, int(sample_rate), vad=vad),
+        "lufs": _lufs(arr, int(sample_rate)),
     }
 
 
@@ -1236,6 +1383,7 @@ def listen_for_wake(
     *,
     frame_samples: int = 1280,
     poll_seconds: float = 0.1,
+    gain: float = 1.0,
     stop: threading.Event | None = None,
     on_debug: Any = None,
     recorder: WakeDebugRecorder | None = None,
@@ -1250,6 +1398,13 @@ def listen_for_wake(
     symptom). Returns ``True`` when the wake word fired, or ``False`` if ``stop`` was
     set before it fired. ``on_debug`` (optional) is fed the per-evaluation wake
     max-score + model so the instrument can show why it isn't firing.
+
+    ``gain`` (default 1.0 = no change) multiplies each 16 kHz frame, clip-protected
+    to ±1.0, BEFORE :meth:`WakeWord.detect` — THE fix for the dead wake word: a quiet
+    mic produces low mel energies and openWakeWord (which has no input normalization)
+    collapses the score to ~0.001; lifting the gain restores the energy the model
+    needs. Applied to the EXACT frame the model scores (the same frame the debug
+    recorder taps), so the saved WAV reflects what the model actually sees.
     """
     sd = _sd()
     device_rate = _supported_capture_rate(sd, sample_rate)
@@ -1277,13 +1432,16 @@ def listen_for_wake(
             pending = np.concatenate([pending, resample_to(block, device_rate, sample_rate)])
             while pending.size >= frame_samples:
                 frame, pending = pending[:frame_samples], pending[frame_samples:]
-                fired = wake.detect(frame)
+                # Lift the quiet capture to a level the wake model can actually score
+                # (clip-protected). gain==1.0 is an identity pass (no behaviour change).
+                scored_frame = apply_gain(frame, gain) if gain != 1.0 else frame
+                fired = wake.detect(scored_frame)
                 score = getattr(wake, "last_score", 0.0)
                 # Tap the EXACT 16 kHz frame fed to the model (post-resample,
-                # post-reframe) into the debug recorder — this is the audio the wake
-                # model truly sees, so the saved WAV is what to inspect.
+                # post-reframe, post-GAIN) into the debug recorder — this is the audio
+                # the wake model truly sees, so the saved WAV is what to inspect.
                 if recorder is not None and not recorder.done:
-                    recorder.feed(frame, score)
+                    recorder.feed(scored_frame, score)
                 if on_debug is not None:
                     on_debug(
                         "wake_score",

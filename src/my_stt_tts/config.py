@@ -318,6 +318,14 @@ class Config:
     # models ever seeing wrapped samples. Reported to the GUI as processing.gain.
     # Must be > 0 and ≤ 10. Env: MIC_GAIN.
     mic_gain: float = 2.0
+    # Software input gain applied to each frame in the LIVE wake loop BEFORE it is
+    # scored by openWakeWord (clip-protected to ±1.0). THE fix knob for the dead-wake
+    # bug: openWakeWord has no input normalization, so a quiet mic produces low mel
+    # energies and the score collapses (~0.001 regardless of the word). Lifting the
+    # gain restores the energy the model needs. Default 1.0 = no behaviour change
+    # until the user (or the gain-sweep diagnostic) picks a value. Must be > 0 and
+    # ≤ 10. Env: WAKE_GAIN.
+    wake_gain: float = 1.0
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
     vad_silence_seconds: float = 0.7
@@ -672,6 +680,8 @@ class Config:
             cfg.vad_silence_seconds = float(env["VAD_SILENCE_SECONDS"])
         if env.get("MIC_GAIN"):
             cfg.mic_gain = float(env["MIC_GAIN"])
+        if env.get("WAKE_GAIN"):
+            cfg.wake_gain = float(env["WAKE_GAIN"])
         if env.get("AEC_NLMS_TAPS"):
             cfg.aec_nlms_taps = int(env["AEC_NLMS_TAPS"])
         if env.get("AEC_NLMS_MU"):
@@ -745,6 +755,8 @@ class Config:
             errors.append(f"sample_rate must be > 0; got {self.sample_rate}")
         if not 0.0 < self.mic_gain <= 10.0:
             errors.append(f"mic_gain must be in (0, 10]; got {self.mic_gain}")
+        if not 0.0 < self.wake_gain <= 10.0:
+            errors.append(f"wake_gain must be in (0, 10]; got {self.wake_gain}")
         if not 0.0 < self.speaker_threshold < 1.0:
             errors.append(f"speaker_threshold must be in (0, 1); got {self.speaker_threshold}")
         if self.requests_per_minute <= 0:

@@ -175,6 +175,8 @@ class _AudioDebug:
         "live_audio": "clicked LIVE AUDIO",
         "reset": "clicked RESET",
         "wake_test": "clicked WAKE TEST",
+        "wake_gain_sweep": "clicked WAKE GAIN SWEEP",
+        "score_clip": "clicked SCORE CLIP",
         "turn": "submitted a turn",
     }
 
@@ -237,6 +239,7 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
         f"  phases {blue}{cfg.wake_phases}{reset}  mic-gain {blue}{cfg.mic_gain}{reset}"
+        f"  wake-gain {blue}{cfg.wake_gain}{reset}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
@@ -1125,7 +1128,12 @@ def run_wake_loop(
         bus.state("listening", cfg.wake_phrase)
         try:
             fired = audio.listen_for_wake(
-                wake, cfg.sample_rate, stop=stop, on_debug=dbg, recorder=recorder
+                wake,
+                cfg.sample_rate,
+                gain=cfg.wake_gain,
+                stop=stop,
+                on_debug=dbg,
+                recorder=recorder,
             )
         except WakeUnavailable as exc:
             # Construction/predict failed (e.g. an openwakeword API/version
@@ -1567,6 +1575,7 @@ def _run_mic_check_server(cfg: Config, *, seconds: float = 2.0) -> None:
         hash=hash8,
         wav_url=wav_url,
         message=message,
+        stats=audio.capture_stats(clip16k, 16000),
     )
     bus.state("idle")
     _ = path  # path is informational; the GUI addresses the clip via wav_url/hash
@@ -1619,6 +1628,7 @@ def _run_mic_check_browser(
         hash=hash8,
         wav_url=wav_url,
         message=message,
+        stats=audio.capture_stats(clip16k, 16000),
     )
     bus.state("idle")
     _ = path
@@ -1727,9 +1737,20 @@ def _emit_wake_test(
 
 
 def _wake_test_stats(
-    clip16k: np.ndarray, *, processing: dict[str, Any], hash8: str, wav_url: str
+    clip16k: np.ndarray,
+    *,
+    processing: dict[str, Any],
+    hash8: str,
+    wav_url: str,
+    score_trace: list[float] | None = None,
 ) -> dict[str, Any]:
-    """The level-meter extras (peak/level/levels/processing/hash/wav_url) for a wake test."""
+    """The level-meter extras (peak/level/levels/processing/hash/wav_url) for a wake test.
+
+    Also carries ``stats`` (the full :func:`audio.capture_stats` dict — int16 magnitudes
+    + quality metrics) and the per-frame ``score_trace``, both surfaced on the
+    ``wake_test_result`` event so the GUI can diagnose a too-quiet capture / a localized
+    sub-threshold spike.
+    """
     peak, rms, level, duration_s, levels = _mic_check_stats(clip16k)
     return {
         "peak": peak,
@@ -1741,6 +1762,8 @@ def _wake_test_stats(
         "processing": processing,
         "hash": hash8,
         "wav_url": wav_url,
+        "stats": audio.capture_stats(clip16k, 16000),
+        "score_trace": list(score_trace or []),
     }
 
 
@@ -1779,8 +1802,8 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         return
     clip16k = audio.resample_to(clip, device_rate, 16000)
     clip16k = audio.apply_gain(clip16k, cfg.mic_gain)  # software input gain (clip-protected)
-    confidence, fired = score_wake_clip(
-        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    confidence, fired, score_trace = score_wake_clip(
+        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
     )
     wav_path = _save_wake_test_wav(clip16k, word, "server")
     _, hash8, wav_url = audio.save_recording(
@@ -1791,6 +1814,7 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         processing={"agc": False, "ns": False, "ec": False, "gain": cfg.mic_gain},
         hash8=hash8,
         wav_url=wav_url,
+        score_trace=score_trace,
     )
     _emit_wake_test(word, "server", confidence, fired, wav_path, stats=stats)
 
@@ -1825,16 +1849,164 @@ def _run_wake_test_browser(
     }
     clip = np.asarray(pcm, dtype=np.float32).ravel()
     rate = int(sample_rate) or cfg.sample_rate
-    confidence, fired = score_wake_clip(
-        clip, rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    confidence, fired, score_trace = score_wake_clip(
+        clip, rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
     )
     clip16k = audio.resample_to(clip, rate, 16000)
     wav_path = _save_wake_test_wav(clip16k, word, "browser")
     _, hash8, wav_url = audio.save_recording(
         clip16k, 16000, kind="wake", source="browser", word=word
     )
-    stats = _wake_test_stats(clip16k, processing=flags, hash8=hash8, wav_url=wav_url)
+    stats = _wake_test_stats(
+        clip16k, processing=flags, hash8=hash8, wav_url=wav_url, score_trace=score_trace
+    )
     _emit_wake_test(word, "browser", confidence, fired, wav_path, stats=stats)
+
+
+def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | None, str, str]:
+    """Resolve a SAVED wake clip to ``(clip16k, hash, basename)`` for re-scoring.
+
+    Addresses a clip in ``debug/recordings/`` either by its 8-hex content ``hash``
+    (``*-<hash8>.wav``) or, when ``hash8`` is falsy, by the NEWEST wake recording for
+    ``word`` (``wake-*-<word>-*.wav`` by mtime). The WAV is already 16 kHz mono (see
+    :func:`audio.save_recording`). Returns ``(None, "", "")`` when nothing matches or
+    the file is unreadable — the caller turns that into a clear "no clip" message. The
+    returned ``hash`` is the resolved 8-hex id parsed from the filename.
+    """
+    import glob
+    import wave
+
+    rec_dir = audio.recordings_dir()
+    h = str(hash8 or "").strip()
+    if h:
+        matches = glob.glob(os.path.join(rec_dir, f"*-{h}.wav"))
+    else:
+        # Newest wake clip for this word: filenames are <ts>-wake-<source>-<word>-<hash>.wav.
+        matches = sorted(
+            glob.glob(os.path.join(rec_dir, f"wake-*-{word}-*.wav"))
+            + glob.glob(os.path.join(rec_dir, f"*-wake-*-{word}-*.wav")),
+            key=lambda p: os.path.getmtime(p) if os.path.isfile(p) else 0.0,
+            reverse=True,
+        )
+    if not matches:
+        return None, "", ""
+    target = matches[0]
+    try:
+        with wave.open(target, "rb") as wf:
+            rate = wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
+        clip = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    except (OSError, wave.Error) as exc:  # unreadable WAV must not crash the worker
+        log.error("load saved wake clip read error: %s", exc)
+        return None, "", ""
+    clip16k = audio.resample_to(clip, rate, 16000)
+    base = os.path.basename(target)
+    resolved_hash = base.rsplit("-", 1)[-1].removesuffix(".wav") if "-" in base else (h or "")
+    return clip16k, resolved_hash, base
+
+
+def _run_wake_gain_sweep(cfg: Config, word: str, hash8: str | None, gains: list[float]) -> None:
+    """Re-score a SAVED wake clip at each gain (the smoking-gun diagnostic).
+
+    The GUI ``wake_gain_sweep`` action: load the clip by ``hash8`` (or the newest wake
+    recording for ``word``), run :func:`wake.score_wake_clip` at every gain in
+    ``gains``, and emit a ``wake_gain_sweep_result`` with each ``{gain, confidence,
+    fired}``. If confidence CLIMBS with gain, a too-quiet capture (low mel energy ->
+    collapsed openWakeWord score) is the cause — and ``wake_gain`` is the fix. Never
+    raises — a missing model / clip becomes a clear message with no points.
+    """
+    from .wake import score_wake_clip, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        bus.wake_gain_sweep_result(
+            word=word,
+            hash=str(hash8 or ""),
+            points=[],
+            message=f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+        )
+        bus.state("idle")
+        return
+    clip16k, resolved_hash, base = _load_saved_wake_clip(word, hash8)
+    if clip16k is None:
+        which = f"hash {hash8}" if hash8 else f"newest '{word}' recording"
+        bus.log(f"wake gain sweep: no saved clip ({which})", "error")
+        bus.wake_gain_sweep_result(
+            word=word, hash=str(hash8 or ""), points=[], message=f"no saved clip ({which})"
+        )
+        bus.state("idle")
+        return
+    # The sweep is a DIAGNOSTIC — it deliberately probes gains beyond the persistent
+    # wake_gain bound (the contract's default sweep ends at 16x) to FIND where a quiet
+    # capture starts firing. Only require each gain to be a positive, finite number;
+    # cap at 64x to reject an abusive payload while keeping the useful range.
+    clean_gains = [g for g in (float(x) for x in gains) if 0.0 < g <= 64.0] or [1.0]
+    points: list[dict[str, Any]] = []
+    for gain in clean_gains:
+        confidence, fired = score_wake_clip(
+            clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, gain=gain
+        )
+        points.append({"gain": gain, "confidence": confidence, "fired": fired})
+    climbed = len(points) >= 2 and points[-1]["confidence"] > points[0]["confidence"] + 1e-3
+    hint = " — confidence rises with gain (a quiet capture is the cause)" if climbed else ""
+    message = f"{word}: swept {len(points)} gains on {base}{hint}"
+    bus.log("✓ " + message)
+    bus.wake_gain_sweep_result(word=word, hash=resolved_hash, points=points, message=message)
+    bus.state("idle")
+
+
+def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
+    """Score the EXACT saved WAV through the model (capture-vs-model isolation).
+
+    The GUI ``score_clip`` action: load the saved clip by ``hash8`` and run it through
+    :func:`wake.score_wake_clip` with NO extra gain. If a clip that SHOULD fire also
+    scores ~0 here, the model/word is the problem, not capture. Emits a
+    ``score_clip_result`` with the confidence + the clip's ``int16_peak`` (so a low
+    score is explained by a low level). Never raises — a missing clip/model is a clear
+    message.
+    """
+    from .wake import score_wake_clip, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        bus.score_clip_result(
+            word=word,
+            hash=str(hash8 or ""),
+            confidence=0.0,
+            fired=False,
+            int16_peak=0,
+            message=f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+        )
+        bus.state("idle")
+        return
+    clip16k, resolved_hash, base = _load_saved_wake_clip(word, hash8)
+    if clip16k is None:
+        which = f"hash {hash8}" if hash8 else f"newest '{word}' recording"
+        bus.log(f"score_clip: no saved clip ({which})", "error")
+        bus.score_clip_result(
+            word=word,
+            hash=str(hash8 or ""),
+            confidence=0.0,
+            fired=False,
+            int16_peak=0,
+            message=f"no saved clip ({which})",
+        )
+        bus.state("idle")
+        return
+    confidence, fired = score_wake_clip(
+        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
+    int16_peak = int(audio.capture_stats(clip16k, 16000)["int16_peak"])
+    verdict = "detected" if fired else "not detected"
+    message = f"{word}: confidence {confidence:.2f} on {base} (int16 peak {int16_peak}) — {verdict}"
+    bus.log(("✓ " if fired else "✗ ") + message)
+    bus.score_clip_result(
+        word=word,
+        hash=resolved_hash,
+        confidence=confidence,
+        fired=fired,
+        int16_peak=int16_peak,
+        message=message,
+    )
+    bus.state("idle")
 
 
 def _voice_preset_name(voice_id: str) -> str:
@@ -2009,6 +2181,29 @@ def _run_browser(
                 threading.Thread(
                     target=lambda: _run_wake_test_server(cfg, word), daemon=True
                 ).start()
+        elif name == "wake_gain_sweep":
+            # Re-score a SAVED clip (by hash, or the newest wake recording for the
+            # word) at each gain. THE smoking-gun test: if confidence climbs with
+            # gain, a too-quiet capture was the dead-wake cause. Worker thread.
+            word = str(data.get("word") or cfg.wake_phrase)
+            hash8 = data.get("hash")
+            hash8 = str(hash8) if hash8 else None
+            raw_gains = data.get("gains")
+            gains = (
+                [float(g) for g in raw_gains]
+                if isinstance(raw_gains, list) and raw_gains
+                else [1.0, 2.0, 4.0, 8.0, 16.0]
+            )
+            threading.Thread(
+                target=lambda: _run_wake_gain_sweep(cfg, word, hash8, gains), daemon=True
+            ).start()
+        elif name == "score_clip":
+            # Score the EXACT saved WAV through the model (capture-vs-model fork): if a
+            # known clip also scores ~0, the model/word is the problem, not capture.
+            word = str(data.get("word") or cfg.wake_phrase)
+            hash8 = data.get("hash")
+            hash8 = str(hash8) if hash8 else None
+            threading.Thread(target=lambda: _run_score_clip(cfg, word, hash8), daemon=True).start()
         else:
             bus.log(f"unknown action '{name}'", "error")
 

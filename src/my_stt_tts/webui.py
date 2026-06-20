@@ -95,6 +95,11 @@ def settings_dict(
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),
         # clip-protected to ±1.0. Reported back to the page as processing.gain.
         "mic_gain": cfg.mic_gain,
+        # Software gain applied to each frame in the LIVE wake loop BEFORE openWakeWord
+        # scores it (clip-protected). THE fix knob for a dead wake word: a quiet mic
+        # starves the (un-normalized) model, collapsing the score; lifting this restores
+        # it. Default 1.0 = no change. The wake gain sweep finds the right value.
+        "wake_gain": cfg.wake_gain,
         "agent_workspace": cfg.agent_workspace or "",
         "agent_model": cfg.agent_model,
         "system_prompt": cfg.system_prompt,
@@ -163,6 +168,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Clamp to (0, 10]: a hand-crafted POST shouldn't push it past validate()'s
         # bound (0 would zero out the capture; >10 risks pure clipping).
         cfg.mic_gain = max(0.01, min(10.0, float(data["mic_gain"])))
+    if "wake_gain" in data:
+        # Clamp to (0, 10] like mic_gain — the live-loop wake gain knob (the dead-wake
+        # fix); a hand-crafted POST shouldn't push it past validate()'s bound.
+        cfg.wake_gain = max(0.01, min(10.0, float(data["wake_gain"])))
     if "agent_workspace" in data:
         cfg.agent_workspace = str(data["agent_workspace"]) or None
     if "agent_model" in data:
