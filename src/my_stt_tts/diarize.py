@@ -53,10 +53,17 @@ def _sherpa_importable() -> bool:
     """True if ``import sherpa_onnx`` actually succeeds (not just that it's installed).
 
     ``importlib.util.find_spec`` only proves the package directory exists; the native
-    C-extension can still fail to load (e.g. an onnxruntime ABI / dylib mismatch when
-    co-installed with a different onnxruntime). We probe the real import so the gating
-    in :meth:`SherpaDiarizer.from_config` skips an unusable install rather than
-    downloading models for it. Any import-time error reads as "not usable".
+    C-extension can still fail to load. We probe the real import so the gating in
+    :meth:`SherpaDiarizer.from_config` skips an unusable install rather than downloading
+    models for it. Any import-time error reads as "not usable".
+
+    The ``diarize`` extra pins ``sherpa-onnx==1.10.46`` precisely because it is the last
+    macOS arm64 wheel that *self-bundles* its onnxruntime (``libonnxruntime.1.17.1.dylib``
+    inside ``sherpa_onnx/lib/``). Newer (1.12.26+) wheels dropped the bundled dylib yet
+    still hard-link ``@rpath/libonnxruntime.1.24.4.dylib``, which the standalone
+    ``onnxruntime`` pip package does NOT satisfy (its dylib lives in ``onnxruntime/capi/``,
+    off sherpa's rpath) — so they ``dlopen``-fail. This probe is the runtime guard against
+    re-introducing such a broken pairing: it degrades to single-speaker instead of crashing.
     """
     try:
         import sherpa_onnx  # noqa: F401 — import probe only

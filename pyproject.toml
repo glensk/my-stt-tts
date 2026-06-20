@@ -78,7 +78,18 @@ debug = ["pyloudnorm>=0.1"]
 # `speaker` extra). Opt-in via SPEAKER_DIARIZE; models are auto-downloaded +
 # checksum-verified into the gitignored models/ on first use. Off by default, so the
 # core package + every other extra import cleanly without sherpa-onnx.
-diarize = ["sherpa-onnx>=1.10"]
+#
+# PINNED to ==1.10.46 — the last macOS arm64 wheel that SELF-BUNDLES its onnxruntime
+# (ships libonnxruntime.1.17.1.dylib inside sherpa_onnx/lib/, the dir its .so rpaths
+# to). From 1.12.26 onward the macOS arm64 wheel dropped the bundled dylib (2 MB vs
+# 18 MB) yet still hard-links @rpath/libonnxruntime.1.24.4.dylib — and the standalone
+# `onnxruntime` pip package installs its dylib into onnxruntime/capi/ (NOT on sherpa's
+# rpath), so those wheels FAIL to dlopen even with onnxruntime==1.24.4 co-installed
+# (the linker searches rpath dirs on disk, not already-loaded images). 1.10.46 is
+# self-contained: its bundled 1.17.1 dylib has a distinct leaf name from the standalone
+# onnxruntime that openWakeWord (`wake`) loads, so both coexist in one process. Do NOT
+# bump to 1.12.x+ until upstream ships a self-bundled or correctly-rpathed macOS wheel.
+diarize = ["sherpa-onnx==1.10.46"]
 all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,webrtc,music,debug,diarize]"]
 
 [project.scripts]
