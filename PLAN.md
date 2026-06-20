@@ -11,6 +11,42 @@
 
 Resume: `c --resume <session-id>`  <!-- fill in from `claude --resume` list; this plan was authored 2026-06-17 -->
 
+## Build status (2026-06-20) — Wave L: config-panel reorg + wake sensitivity as a VOICE setting
+
+Layout/grouping pass on the GUI CONFIGURATION panel plus one new first-class
+setting (branch `settings-reorg`, worktree `.worktree-reorg`). 502 → 509 tests
+(+7), green with `--extra all` and core-only (507 + 2 extras-gated skips). Lint
+clean (ruff check + format, mypy); `node --check` passes on the inline `webui.html`
+script. CSP + demo mode intact; all existing field ids / `data-key` wiring / POST
+contract preserved.
+
+- **(1) Wake sensitivity is now a real VOICE setting.** `config.wake_threshold`
+  default lowered **0.5 → 0.4** (env `WAKE_THRESHOLD`, validated to [0, 1] in
+  `validate()`). `WakeWord.from_config` already reads `cfg.wake_threshold`, so the
+  configured value drives detection (the old debug `threshold=0.5` was just the old
+  default, not a hardcode). Exposed in `webui.settings_dict`; accepted in
+  `apply_settings` as a float **clamped to [0, 1]**; added to `--settings`
+  (`settings_text`) on the wake line. `.env.example` `WAKE_THRESHOLD` default +
+  hint updated.
+- **(2) CONFIGURATION panel split into 4 labeled sections** (each its own header +
+  hairline divider, mission-control aesthetic):
+  - **🧠 MODEL** — Brain preset (primary) + the existing "Advanced — manual
+    override" foldable (Provider / Model / Model (deep)).
+  - **🔊 VOICE** — Voice selector (+ ▶ TEST), Length scale, Wake phrase dropdown,
+    and the NEW **Wake sensitivity** slider (`data-key="wake_threshold"`, 0–1,
+    default 0.4, with a lower=more-sensitive / higher=stricter hint).
+  - **🤖 AGENT** — Agent model (MOVED here from beside Wake phrase — it's the
+    "agent, …" tool-dispatch model, not the conversation brain) + Agent workspace.
+  - **⚙️ ADVANCED / GENERAL** — foldable `<details>` holding System prompt (the
+    remaining rendered field).
+  - JS: generalized the `[data-key]` range handler to update the value readout named
+    by a new `data-val` attribute (so the wake slider writes `#wakeThresholdVal`, not
+    `#lengthVal`); `populate()` seeds the slider; `DEMO_SETTINGS` carries
+    `wake_threshold:0.4`.
+- **Tests (+7):** `wake_threshold` default 0.4 / env override / [0,1] validation
+  (`test_config.py`); `settings_dict` carries it, `apply_settings` sets + clamps it,
+  `WakeWord.from_config` uses the configured value (`test_wakeword_select.py`).
+
 ## Build status (2026-06-20) — Wave K: PTT under wake, replay rate fix, host-app label
 
 Three backend fixes (branch `backend-fixes2`, worktree `.worktree-fixes2`).

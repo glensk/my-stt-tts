@@ -371,6 +371,26 @@ details.adv-override>.adv-summary .chev{width:12px; height:12px; flex:0 0 auto;
 details[open].adv-override>.adv-summary{color:var(--ink-dim); border-bottom:1px solid var(--line)}
 details[open].adv-override>.adv-summary .chev{transform:rotate(90deg)}
 details.adv-override .adv-body{padding:12px 11px}
+/* Configuration card is split into labeled sections (MODEL / VOICE / AGENT /
+   ADVANCED). Each section gets a small uppercase header with an emoji glyph and
+   a hairline divider above it so the three primary groups read distinctly. */
+.cfg-section{padding-top:14px; margin-top:14px; border-top:1px solid var(--line)}
+.cfg-section:first-child{padding-top:0; margin-top:0; border-top:none}
+.cfg-section-head{display:flex; align-items:center; gap:7px; margin:0 0 12px;
+  font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--cyan-dim)}
+.cfg-section-head .gly{font-size:13px; line-height:1; filter:saturate(1.2)}
+.cfg-section .field:last-child{margin-bottom:0}
+/* ADVANCED/GENERAL is itself foldable so the three primary sections stay clean. */
+details.cfg-fold{padding-top:14px; margin-top:14px; border-top:1px solid var(--line)}
+details.cfg-fold>summary{display:flex; align-items:center; gap:7px; cursor:pointer;
+  list-style:none; user-select:none; -webkit-user-select:none; margin-bottom:0;
+  font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--cyan-dim)}
+details.cfg-fold>summary::-webkit-details-marker{display:none}
+details.cfg-fold>summary .chev{width:12px; height:12px; flex:0 0 auto;
+  transition:transform .2s; color:var(--cyan-dim)}
+details.cfg-fold>summary .gly{font-size:13px; line-height:1}
+details[open].cfg-fold>summary{margin-bottom:12px}
+details[open].cfg-fold>summary .chev{transform:rotate(90deg)}
 input[type=range]{-webkit-appearance:none; appearance:none; width:100%; height:5px; border-radius:3px;
   background:linear-gradient(90deg,var(--cyan),var(--mag)); outline:none; cursor:pointer}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:17px;height:17px;border-radius:50%;
@@ -672,64 +692,71 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
           configuration <span class="tag saved-flash" id="savedFlash">✓ applied</span>
         </div>
         <div class="body">
-          <div class="field">
-            <label for="brain">Brain preset
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About brain preset"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">One-click bundle that sets Provider + Model + mode together (e.g. <code>haiku-sub</code> = Claude CLI + Haiku). This is the primary control — expand <b>Advanced</b> below only to override the individual fields.</span></span>
-            </label>
-            <select class="ctrl" id="brain"></select>
-            <!-- ADVANCED — manual override. Provider / Model / Model (deep) are
-                 driven by the preset above; this <details> (collapsed by default)
-                 lets a power user override them without cluttering the default view. -->
-            <details class="adv-override" id="brainAdvanced">
-              <summary class="adv-summary">
-                <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Advanced — manual override
-              </summary>
-              <div class="adv-body">
-                <div class="two">
-                  <div class="field">
-                    <label for="provider">Provider
-                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About provider"
-                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Which LLM backend runs the brain: <code>claude-cli</code> (no API key, uses your Claude CLI), <code>anthropic</code>, <code>openai</code>, <code>openai-compatible</code>, or <code>ollama</code> (local). Normally set by the preset.</span></span>
-                    </label>
-                    <select class="ctrl" id="provider" data-key="provider"></select>
+          <!-- ============ 🧠 MODEL — which LLM + backend answers ============ -->
+          <div class="cfg-section" aria-label="Model settings">
+            <h3 class="cfg-section-head"><span class="gly" aria-hidden="true">🧠</span>Model</h3>
+            <div class="field" style="margin-bottom:0">
+              <label for="brain">Brain preset
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About brain preset"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">One-click bundle that sets Provider + Model + mode together (e.g. <code>haiku-sub</code> = Claude CLI + Haiku). This is the primary control — expand <b>Advanced</b> below only to override the individual fields.</span></span>
+              </label>
+              <select class="ctrl" id="brain"></select>
+              <!-- ADVANCED — manual override. Provider / Model / Model (deep) are
+                   driven by the preset above; this <details> (collapsed by default)
+                   lets a power user override them without cluttering the default view. -->
+              <details class="adv-override" id="brainAdvanced">
+                <summary class="adv-summary">
+                  <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  Advanced — manual override
+                </summary>
+                <div class="adv-body">
+                  <div class="two">
+                    <div class="field">
+                      <label for="provider">Provider
+                        <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About provider"
+                              aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Which LLM backend runs the brain: <code>claude-cli</code> (no API key, uses your Claude CLI), <code>anthropic</code>, <code>openai</code>, <code>openai-compatible</code>, or <code>ollama</code> (local). Normally set by the preset.</span></span>
+                      </label>
+                      <select class="ctrl" id="provider" data-key="provider"></select>
+                    </div>
+                    <div class="field">
+                      <label for="model">Model
+                        <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model"
+                              aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">The fast model id used for normal turns. Normally set by the preset.</span></span>
+                      </label>
+                      <input class="ctrl" id="model" data-key="model" autocomplete="off">
+                    </div>
                   </div>
-                  <div class="field">
-                    <label for="model">Model
-                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model"
-                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">The fast model id used for normal turns. Normally set by the preset.</span></span>
+                  <div class="field" style="margin-bottom:0">
+                    <label for="modelDeep">Model (deep)
+                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model (deep)"
+                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Optional stronger model used for harder/"deep" turns; leave as-is if unsure. Normally set by the preset.</span></span>
                     </label>
-                    <input class="ctrl" id="model" data-key="model" autocomplete="off">
+                    <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
                   </div>
                 </div>
-                <div class="field" style="margin-bottom:0">
-                  <label for="modelDeep">Model (deep)
-                    <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About model (deep)"
-                          aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Optional stronger model used for harder/"deep" turns; leave as-is if unsure. Normally set by the preset.</span></span>
-                  </label>
-                  <input class="ctrl" id="modelDeep" data-key="model_deep" autocomplete="off">
-                </div>
-              </div>
-            </details>
-          </div>
-          <div class="field">
-            <label for="voice">Voice <span class="v" id="voiceNote"></span></label>
-            <div class="voice-row">
-              <select class="ctrl" id="voice" data-key="voice_en"></select>
-              <button class="btn voice-test" id="voiceTestBtn" type="button"
-                      title="Speak a one-line sample in the selected voice">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14l11-7-11-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-                <span id="voiceTestLabel">Test</span>
-              </button>
+              </details>
             </div>
           </div>
-          <div class="field">
-            <label for="length">Length scale <span class="v" id="lengthVal">1.00</span></label>
-            <input type="range" id="length" data-key="length_scale" min="0.8" max="1.4" step="0.01"
-                   aria-label="Speech length scale">
-          </div>
-          <div class="two">
+
+          <!-- ============ 🔊 VOICE — speaking + the wake word ============ -->
+          <div class="cfg-section" aria-label="Voice settings">
+            <h3 class="cfg-section-head"><span class="gly" aria-hidden="true">🔊</span>Voice</h3>
+            <div class="field">
+              <label for="voice">Voice <span class="v" id="voiceNote"></span></label>
+              <div class="voice-row">
+                <select class="ctrl" id="voice" data-key="voice_en"></select>
+                <button class="btn voice-test" id="voiceTestBtn" type="button"
+                        title="Speak a one-line sample in the selected voice">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14l11-7-11-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                  <span id="voiceTestLabel">Test</span>
+                </button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="length">Length scale <span class="v" id="lengthVal">1.00</span></label>
+              <input type="range" id="length" data-key="length_scale" data-val="lengthVal"
+                     min="0.8" max="1.4" step="0.01" aria-label="Speech length scale">
+            </div>
             <div class="field">
               <label for="wakeSelect">Wake phrase</label>
               <!-- Pre-shipped wake words → dropdown (settings.wake_words). When the
@@ -738,19 +765,43 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               <input class="ctrl" id="wake" autocomplete="off"
                      aria-label="Custom wake phrase" placeholder="wake phrase">
             </div>
-            <div class="field">
-              <label for="agentModel">Agent model</label>
-              <input class="ctrl" id="agentModel" data-key="agent_model" autocomplete="off">
+            <div class="field" style="margin-bottom:0">
+              <label for="wakeThreshold">Wake sensitivity <span class="v" id="wakeThresholdVal">0.40</span>
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake sensitivity"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0–1) the wake word must clear to fire. <b>Lower</b> = triggers more easily / more false-positives; <b>higher</b> = stricter (may miss a quiet "maziko"). Default 0.40.</span></span>
+              </label>
+              <input type="range" id="wakeThreshold" data-key="wake_threshold" data-val="wakeThresholdVal"
+                     min="0" max="1" step="0.01" aria-label="Wake sensitivity threshold">
             </div>
           </div>
-          <div class="field">
-            <label for="workspace">Agent workspace</label>
-            <input class="ctrl" id="workspace" data-key="agent_workspace" autocomplete="off">
+
+          <!-- ============ 🤖 AGENT — the "agent, …" tool-dispatch path ============ -->
+          <div class="cfg-section" aria-label="Agent settings">
+            <h3 class="cfg-section-head"><span class="gly" aria-hidden="true">🤖</span>Agent</h3>
+            <div class="field">
+              <label for="agentModel">Agent model
+                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About agent model"
+                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Model for the <code>"agent, …"</code> tool-dispatch path (a full MCP-capable Claude Code agent) — <b>not</b> the conversation brain above.</span></span>
+              </label>
+              <input class="ctrl" id="agentModel" data-key="agent_model" autocomplete="off">
+            </div>
+            <div class="field" style="margin-bottom:0">
+              <label for="workspace">Agent workspace</label>
+              <input class="ctrl" id="workspace" data-key="agent_workspace" autocomplete="off">
+            </div>
           </div>
-          <div class="field">
-            <label for="sysPrompt">System prompt</label>
-            <textarea class="ctrl" id="sysPrompt" data-key="system_prompt" spellcheck="false"></textarea>
-          </div>
+
+          <!-- ============ ⚙️ ADVANCED / GENERAL — the rest (foldable) ============ -->
+          <details class="cfg-fold" id="cfgAdvanced" aria-label="Advanced and general settings">
+            <summary>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span class="gly" aria-hidden="true">⚙️</span>Advanced / General
+            </summary>
+            <div class="field" style="margin-bottom:0">
+              <label for="sysPrompt">System prompt</label>
+              <textarea class="ctrl" id="sysPrompt" data-key="system_prompt" spellcheck="false"></textarea>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -1216,6 +1267,10 @@ function populate(s){
   if(isNaN(ls)) ls = 1.0;
   $("#length").value = ls;
   $("#lengthVal").textContent = ls.toFixed(2);
+  let wt = parseFloat(settings.wake_threshold);
+  if(isNaN(wt)) wt = 0.4;
+  $("#wakeThreshold").value = wt;
+  $("#wakeThresholdVal").textContent = wt.toFixed(2);
   updateVoiceNote();
   setVoiceControls(settings);
   applyHostApp(settings.host_app);
@@ -1391,7 +1446,10 @@ $("#brain").addEventListener("change", e=> applyPatch({brain_preset: e.target.va
 document.querySelectorAll("[data-key]").forEach(el=>{
   const key = el.dataset.key;
   if(el.type === "range"){
-    el.addEventListener("input", ()=>{ $("#lengthVal").textContent = parseFloat(el.value).toFixed(2); });
+    // The live value readout is the element named by data-val (e.g. length_scale
+    // updates #lengthVal, wake_threshold updates #wakeThresholdVal).
+    const valEl = el.dataset.val ? document.getElementById(el.dataset.val) : null;
+    el.addEventListener("input", ()=>{ if(valEl) valEl.textContent = parseFloat(el.value).toFixed(2); });
     el.addEventListener("change", ()=> applyPatch({[key]: parseFloat(el.value)}));
   } else if(el.tagName==="SELECT"){
     el.addEventListener("change", ()=>{ if(el.id==="voice") updateVoiceNote(); applyPatch({[key]: el.value}); });
@@ -2145,7 +2203,7 @@ const DEMO_SETTINGS = {
   mic_permission:"notDetermined",     // demo: hint visible until a check "passes"
   host_app:"iTerm",                   // demo: name the server's host app in the server-mic note
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
-  voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko",
+  voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
   wake_words:["alexa","computer","jarvis","maziko","nexus"],
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
   system_prompt:"You are my-stt-tts, a calm, concise local voice assistant. Answer briefly and warmly.",
