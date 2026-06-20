@@ -38,7 +38,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import Config
+from .config import WAKEWORDS_DIR, Config, wake_model_for
 
 log = logging.getLogger("my_stt_tts.wake")
 
@@ -209,3 +209,47 @@ class WakeWord:
         if self._models:
             self._reset_pending()
         self.last_score = 0.0
+
+
+def score_wake_clip(
+    clip: np.ndarray,
+    sample_rate: int,
+    word: str,
+    *,
+    threshold: float = 0.4,
+    phases: int = 8,
+    wakewords_dir: str = WAKEWORDS_DIR,
+) -> tuple[float, bool]:
+    """Score a recorded clip against the wake model for ``word`` (the GUI diagnostic).
+
+    Loads the :class:`WakeWord` for ``word`` via :func:`wake_model_for` — NOT
+    necessarily the configured wake word — resamples ``clip`` to the 16 kHz the
+    model expects, reframes it to 1280-sample (80 ms) frames, and feeds them through
+    the REAL :meth:`WakeWord.detect` path frame-by-frame (so it is phase-diverse,
+    exactly what the always-listening loop sees). Returns ``(confidence, fired)``
+    where ``confidence`` is the MAX ``last_score`` over the whole clip and ``fired``
+    is ``confidence >= threshold``.
+
+    Defensive: an empty clip, a missing model file, or an unavailable openWakeWord
+    backend all return ``(0.0, False)`` rather than raising — the caller turns that
+    into a clear "model unavailable" message instead of crashing.
+    """
+    from .audio import reframe, resample_to
+
+    model_path = wake_model_for(word, wakewords_dir)
+    if not Path(model_path).is_file():
+        return 0.0, False
+    arr = np.asarray(clip, dtype=np.float32).ravel()
+    if arr.size == 0:
+        return 0.0, False
+    arr = resample_to(arr, int(sample_rate), 16000)
+    detector = WakeWord(model_path, threshold, phases=phases)
+    best = 0.0
+    try:
+        for frame in reframe(arr, FRAME_SAMPLES):
+            detector.detect(frame)
+            best = max(best, detector.last_score)
+    except WakeUnavailable as exc:
+        log.warning("wake-test scoring unavailable for %r: %s", word, exc)
+        return 0.0, False
+    return best, best >= threshold

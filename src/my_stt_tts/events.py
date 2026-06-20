@@ -359,6 +359,38 @@ class EventBus:
             }
         )
 
+    def wake_test_result(
+        self,
+        *,
+        word: str,
+        source: str,
+        confidence: float,
+        fired: bool,
+        message: str,
+        wav_path: str = "",
+    ) -> None:
+        """Publish the outcome of a wake-word test (GUI "Wake test"); DATA priority.
+
+        Fired when the user diagnoses whether a wake word would trigger on a ~2 s
+        clip recorded either by the SERVER mic (``source="server"``) or supplied by
+        the BROWSER (``source="browser"``). ``confidence`` is the max openWakeWord
+        score over the clip (0..1); ``fired`` is whether it cleared the threshold;
+        ``message`` is the human one-liner the UI shows; ``wav_path`` is where the
+        scored 16 kHz clip was saved for later debugging (empty if it could not be
+        written). Mirrors the live wake path so a never-firing word is diagnosable.
+        """
+        self.publish(
+            {
+                "type": "wake_test_result",
+                "word": word,
+                "source": source,
+                "confidence": confidence,
+                "fired": fired,
+                "message": message,
+                "wav_path": wav_path,
+            }
+        )
+
     def speaker(self, name: str | None) -> None:
         """Publish the identified speaker for the current turn (G7).
 
