@@ -89,3 +89,50 @@ clips (thin even with 214 augmentations), oversubscribed shared node, and a brit
 **Not retrying now** — `hey_jarvis`/`alexa`/`hey_mycroft` already fire 99-100% on Albert (the real
 fix). The training pod was deleted to free the GH200. A future attempt needs more of Albert's real
 clips (now auto-saved under `debug/recordings/wake/maziko/`) + a fixed-deps container.
+
+### Round 1 — Wave 2 — EVALUATION/DEBUG toolkit (2026-06-21, branch `wake-eval-toolkit`)
+
+Closes the gap a fresh independent judge flagged: the diagnostics measured POSITIVES only —
+no negative corpus, no false-accepts/hour, no ROC/DET, no separation metric. Ported
+openWakeWord's Apache-2.0 metrics approach (reusing `score_wake_clip`). Python only (a GUI
+agent consumes the shared contract in parallel). All four actions are `POST /api/action`
+worker-thread handlers emitting bus events:
+
+- **`score_histogram`** (Task 1) — `_run_score_histogram` scores every saved POSITIVE clip
+  for the word + the negative corpus via new `wake.score_clip_set`; emits
+  `score_histogram_result{pos_scores, neg_scores, threshold, separation}`. `wake.separation`
+  = d-prime (mean-gap fallback when a side is constant). The recall-vs-level proof, visual.
+- **`fa_eval`** (Task 2) — `_run_fa_eval` sweeps the threshold over positives + the TIMED
+  negative corpus. Counts **FA EVENTS not frames** (`wake.count_fa_events` collapses
+  consecutive above-thr frames and merges crossings within `grouping_window`, oWW-style),
+  converts to FA/hour via 80 ms/frame, and `np.interp`-olates miss-rate at a target FA/h
+  (default 0.5). Emits `fa_eval_result{points:[{threshold, fa_per_hour, true_accept}],
+  miss_at_target_fa, target_fa, neg_seconds}`. Empty corpus → clear "drop WAVs into <dir>".
+- **`train_verifier`** (Task 3) — `_run_train_verifier` → `wake_verifier.train_verifier`:
+  an openWakeWord-style logistic-regression head on the SHARED 96-d embedding
+  (`AudioFeatures._get_embeddings`, mean-pooled per clip) from the saved positives (≥3) +
+  negatives. Saved to git-ignored `models/wake_verifiers/<word>.joblib`. `WakeWord` gained
+  a `custom_verifier` gate (auto-loaded in `from_config`): a base-model fire only counts
+  when the verifier ALSO confirms the rolling ~1.5 s window (`verifier_prob ≥ thr`).
+  scikit-learn + joblib added to the `debug` extra (gated import; core stays clean — proven
+  in a fresh extras-free venv). Emits `verifier_result{trained, path, n_pos, n_neg, message}`.
+- **`spectrogram`** (Task 4) — `_run_spectrogram` → `wake.log_mel_spectrogram` (scipy STFT,
+  40-band mel, dB, normalized, time-axis downsampled to ≤200 cols) + the per-frame
+  `score_trace`. Emits `spectrogram_result{hash, mels, frames, grid, score_trace, freqs,
+  times}`. scipy gated → empty grid (no crash) when absent.
+- **Task 5** — `patience`/`debounce` threaded into `score_wake_clip` (replay under the ship
+  config) via new `wake.count_fires`/`fired_with_patience`; default (patience≤1, debounce≤0)
+  is byte-identical to before.
+
+Supporting: `audio.read_wav_float` (reusable 8/16/24/32-bit WAV loader → 16 kHz float mono;
+`_load_saved_wake_clip` refactored onto it) + `audio.list_wavs`. Config `negative_corpus_dir`
+(env `WAKE_NEG_CORPUS`, default `debug/negatives/`, both git-ignored). `.env.example` documents
+it. **Tests** — `tests/test_wake_eval_toolkit.py` (+29): histogram + separation; FA-EVENT
+grouping (consecutive = ONE event) + FA/hour math + miss@target via `np.interp`; empty-corpus
+message; verifier train/load/score (real-deps round-trip + gated-off graceful degradation,
+core imports clean); spectrogram grid shape + score_trace + scipy-absent degradation;
+patience/debounce. **CORE-ONLY verified** in a fresh extras-free venv (24 passed, 5 skipped,
+every module imports without sklearn/oWW/scipy/pyloudnorm). Full suite 943 passed / 1 skipped
+(was 912/3 baseline). ruff + mypy clean; pylint only the project's established
+broad-except / lazy-import / cyclic-import patterns. NEVER touched `main`/`README.md`/`clients`/
+`esp32`/`webui.html`/`wakewords/maziko.onnx`.
