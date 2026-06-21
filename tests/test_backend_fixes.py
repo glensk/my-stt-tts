@@ -729,12 +729,28 @@ def test_mpv_preflight_halts_when_missing() -> None:
         patch.object(main_mod.shutil, "which", return_value=None),
         patch.dict("os.environ", {}, clear=False),
         patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.sys.stderr, "isatty", return_value=True),  # interactive launch
     ):
         import os
 
         os.environ.pop("MSTT_SKIP_MPV_CHECK", None)
         rc = main_mod._mpv_preflight_gate(cfg)
     assert rc == 4  # non-zero -> main returns it BEFORE opening the browser
+
+
+def test_mpv_preflight_noop_when_noninteractive() -> None:
+    # In CI / tests / headless (no TTY) mpv may legitimately be absent — the gate must
+    # WARN, not hard-halt, so the suite and headless deployments aren't broken.
+    cfg = Config()
+    with (
+        patch.object(main_mod.shutil, "which", return_value=None),
+        patch.object(main_mod.bus, "log"),
+        patch.object(main_mod.sys.stderr, "isatty", return_value=False),
+    ):
+        import os
+
+        os.environ.pop("MSTT_SKIP_MPV_CHECK", None)
+        assert main_mod._mpv_preflight_gate(cfg) is None
 
 
 def test_mpv_preflight_passes_when_present() -> None:
@@ -766,6 +782,7 @@ def test_main_browser_halts_early_when_mpv_missing() -> None:
         patch.object(main_mod, "_run_browser") as run_browser,
         patch.object(main_mod, "Brain") as brain_cls,
         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}),
+        patch.object(main_mod.sys.stderr, "isatty", return_value=True),  # interactive launch
     ):
         import os
 

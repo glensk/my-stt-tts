@@ -2613,6 +2613,13 @@ def _mpv_preflight_gate(cfg: Config) -> int | None:
         return None  # no music -> mpv is irrelevant
     if shutil.which("mpv") is not None:
         return None
+    # Only HARD-HALT on an INTERACTIVE launch (a real terminal). In CI / tests /
+    # headless runs (no TTY) mpv legitimately may be absent, and exiting non-zero
+    # there would break the suite and any headless deployment — so warn, don't halt.
+    if not sys.stderr.isatty():
+        warn = "mpv not installed — music playback disabled (set MSTT_SKIP_MPV_CHECK=1 to silence)."
+        bus.log(warn, "warning")
+        return None
     msg = (
         "mpv is not installed (needed for music playback + pause/resume) — halting "
         "before opening the browser.\n"
