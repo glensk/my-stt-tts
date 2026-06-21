@@ -32,6 +32,7 @@ from .config import (
     UNITS,
     Config,
     available_wake_words,
+    model_label,
     wake_word_info,
 )
 from .events import bus
@@ -97,6 +98,11 @@ def settings_dict(
         "provider": cfg.llm_provider,
         "model": cfg.llm_model,
         "model_deep": cfg.llm_model_deep,
+        # The EXACT model + effort/size-tier label the GUI shows for the active brain
+        # (e.g. ``claude-cli / opus-4.8 xlarge``) — the SAME string carried on the
+        # bus.response(model=…) event, so the settings panel and the ASSISTANT
+        # transcript bubble agree. Built via config.model_label (shared contract).
+        "model_label": model_label(cfg.llm_provider, cfg.llm_model),
         "voice_en": cfg.tts_voices.get("en"),
         "length_scale": cfg.tts_length_scale,
         "wake_phrase": cfg.wake_phrase,

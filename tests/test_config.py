@@ -76,23 +76,24 @@ def test_default_brain_preset_is_opus_sub():
     assert BRAIN_PRESETS[DEFAULT_BRAIN_PRESET] == ("claude-cli", "opus")
 
 
-# --- exact model + reasoning-level label (GUI contract) ------------------------
+# --- exact model + effort/size-tier label (GUI contract) -----------------------
 
 
 def test_model_label_claude_cli_opus_is_exact_with_reasoning():
     from my_stt_tts.config import model_label
 
-    # The shared contract: claude-cli Opus -> "claude-cli / opus-4.8 · think".
-    assert model_label("claude-cli", "opus") == "claude-cli / opus-4.8 · think"
+    # The shared contract: claude-cli Opus -> "claude-cli / opus-4.8 xlarge" (the
+    # effort/size tier is "xlarge", space-separated — not the old "· think").
+    assert model_label("claude-cli", "opus") == "claude-cli / opus-4.8 xlarge"
 
 
 @pytest.mark.parametrize(
     ("provider", "model", "expected"),
     [
-        ("claude-cli", "opus", "claude-cli / opus-4.8 · think"),
-        ("claude-cli", "sonnet", "claude-cli / sonnet-4.6 · think"),
-        ("claude-cli", "haiku", "claude-cli / haiku-4.5 · think"),
-        # API ids resolve to the same marketing version (no CLI reasoning suffix).
+        ("claude-cli", "opus", "claude-cli / opus-4.8 xlarge"),
+        ("claude-cli", "sonnet", "claude-cli / sonnet-4.6 xlarge"),
+        ("claude-cli", "haiku", "claude-cli / haiku-4.5 xlarge"),
+        # API ids resolve to the same marketing version (no CLI tier suffix).
         ("anthropic", "claude-opus-4-8", "anthropic / opus-4.8"),
         ("anthropic", "claude-haiku-4-5", "anthropic / haiku-4.5"),
         # Non-Anthropic providers pass the model through unchanged.
