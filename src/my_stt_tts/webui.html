@@ -564,6 +564,10 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .verdict.low .vd-head{color:var(--amber)} .verdict.low .vd-dot{background:var(--amber); box-shadow:var(--glow) var(--amber)}
 .verdict.miss{border-color:var(--red); box-shadow:0 0 16px -7px var(--red)}
 .verdict.miss .vd-head{color:var(--red)} .verdict.miss .vd-dot{background:var(--red); box-shadow:var(--glow) var(--red)}
+/* couldn't-score: a NEUTRAL error (clip not found / scorer unavailable) — amber, NOT
+   red. The word was never actually scored, so it must never read as "not detected". */
+.verdict.noclip{border-color:var(--amber); box-shadow:0 0 16px -7px var(--amber); opacity:.92}
+.verdict.noclip .vd-head{color:var(--amber)} .verdict.noclip .vd-dot{background:var(--amber); box-shadow:var(--glow) var(--amber)}
 /* 🔍 score-this-clip button — same pill family as ▶ play-last, in violet */
 .score-clip{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
   border:1px solid var(--violet); background:rgba(157,123,255,.07); color:var(--violet);
@@ -575,6 +579,7 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .score-clip-out{font-size:9.5px; letter-spacing:.4px; color:var(--ink-dim)}
 .score-clip-out b{font-weight:600}
 .score-clip-out.fired b{color:var(--green)} .score-clip-out.miss b{color:var(--red)}
+.score-clip-out.warn{color:var(--amber)} .score-clip-out.warn b{color:var(--amber)}
 /* ---------- ACTIVE-LEARNING RELABEL bar (per saved-clip row) ----------
    Teach the wake word from its mistakes: "✗ Wasn't me" (false fire → negative),
    "✓ Missed me" (a miss → positive). The eval-gated rebuild only sticks if it helps,
@@ -3843,7 +3848,12 @@ function runScoreClip(word, hash8, clipKey, btn, out){
     postAction({action:"score_clip", word: word||"", hash: hash8||null, _clipKey: clipKey});
   }
 }
-function buildScoreClip(word, hash, clipKey, autoRun){
+// `opts` (optional): { register:bool — map this hash → row so a hash-keyed result
+//                       lands here (default true; pass FALSE for a client-derived
+//                       placeholder hash that the server never saw — see the browser
+//                       mic path, which re-keys to the SERVER hash once it arrives) }.
+function buildScoreClip(word, hash, clipKey, autoRun, opts){
+  opts = opts || {};
   const wrap = document.createElement("span"); wrap.style.display = "inline-flex";
   wrap.style.alignItems = "center"; wrap.style.gap = "7px";
   const btn = document.createElement("button");
@@ -3853,13 +3863,37 @@ function buildScoreClip(word, hash, clipKey, autoRun){
   const out = document.createElement("span"); out.className = "score-clip-out";
   const hash8 = String(hash||"").slice(0,8);
   scoreClipOut[clipKey] = out;
-  if(hash8) scoreClipByHash[hash8] = clipKey;          // so the result event finds this row by hash
-  btn.addEventListener("click", ()=> runScoreClip(word, hash8, clipKey, btn, out));
+  // Only register a hash the SERVER actually owns. A client-derived placeholder (browser
+  // path, pre-mic_check_result) must NOT be registered — else a score_clip_result keyed
+  // by that bogus hash would render "no_clip" as a verdict on this row (the false negative).
+  if(hash8 && opts.register !== false) scoreClipByHash[hash8] = clipKey;
+  // The manual click always re-scores against whatever hash this row currently knows
+  // (rebound to the server hash by scoreClipWithServerHash once the echo arrives).
+  scoreClipBtnState[clipKey] = {word: word, hash8: hash8, btn: btn, out: out};
+  btn.addEventListener("click", ()=>{ const s = scoreClipBtnState[clipKey] || {}; runScoreClip(s.word||word, s.hash8||hash8, clipKey, btn, out); });
   wrap.appendChild(btn); wrap.appendChild(out);
   // Task 4: auto-run when a recording completes so the firing verdict + reason always
-  // shows without a manual click. (The button stays for an explicit re-score.)
+  // shows without a manual click. (The button stays for an explicit re-score.) The browser
+  // mic path passes autoRun:false and defers to scoreClipWithServerHash() — see fix 1.
   if(autoRun){ runScoreClip(word, hash8, clipKey, btn, out); }
   return wrap;
+}
+// clipKey → {word, hash8, btn, out} so the deferred browser auto-score (and the manual
+// button) can re-score against the SERVER's content hash once the mic_check_result echo
+// patches it in — never the client-derived placeholder hash.
+const scoreClipBtnState = {};
+// Re-bind a row to the SERVER's content hash, then auto-run score_clip against it. Called
+// from enrichBrowserMicResult when the browser-sourced mic_check_result arrives carrying
+// the authoritative `hash` (the server's hash of the clip it actually saved). This is the
+// fix for the false "wake word not detected": the auto-score now targets a clip the
+// server HAS, instead of a client-computed hash it never saw.
+function scoreClipWithServerHash(clipKey, serverHash, word){
+  const hash8 = String(serverHash||"").slice(0,8);
+  if(!hash8) return;
+  const s = scoreClipBtnState[clipKey];
+  if(s){ s.hash8 = hash8; if(word) s.word = word; }     // manual re-score now uses the real hash too
+  scoreClipByHash[hash8] = clipKey;                      // route the result back to THIS row
+  runScoreClip((s && s.word) || word || "", hash8, clipKey, s && s.btn, s && s.out);
 }
 // ---------- firing-verdict banner (task 4) ----------
 // SHARED CONTRACT: results carry reason ∈ "fired"|"level_too_low"|"not_detected" + a
@@ -3870,6 +3904,9 @@ function reasonToVerdict(reason, fired){
   const r = String(reason||"").toLowerCase();
   if(r === "fired") return "fired";
   if(r === "level_too_low" || r === "low") return "low";
+  // NEVER show "not detected" for a clip that was never scored: a missing clip
+  // server-side, or an unavailable scorer, is a NEUTRAL error → amber "couldn't score".
+  if(r === "no_clip" || r === "unavailable" || r.indexOf("no saved clip") >= 0) return "noclip";
   if(r === "not_detected" || r === "miss") return "miss";
   return fired ? "fired" : "miss";          // no reason → derive from fired
 }
@@ -3878,9 +3915,10 @@ function buildVerdict(reason, detail, word, fired){
   if(reason == null && fired == null) return null;
   const v = reasonToVerdict(reason, fired);
   const w = word ? "“"+word+"”" : "the wake word";
-  const head = v === "fired" ? "✓ would fire — "+w+" detected"
-             : v === "low"   ? "⚠ level too low — move closer ("+w+")"
-             :                 "✗ wake word not detected — "+w;
+  const head = v === "fired"  ? "✓ would fire — "+w+" detected"
+             : v === "low"    ? "⚠ level too low — move closer ("+w+")"
+             : v === "noclip" ? "⚠ couldn’t score — clip not found server-side"
+             :                  "✗ wake word not detected — "+w;
   const wrap = document.createElement("div"); wrap.className = "verdict " + v;
   const h = document.createElement("div"); h.className = "vd-head";
   const dot = document.createElement("span"); dot.className = "vd-dot"; dot.setAttribute("aria-hidden","true");
@@ -3906,24 +3944,39 @@ function showScoreClipResult(d){
   // Clear any busy button next to the matched output.
   if(out){ const b = out.parentNode && out.parentNode.querySelector(".score-clip"); if(b) b.classList.remove("busy"); }
   if(!out) return;
+  // The clip was never scored (server saved nothing under this hash, or the scorer is
+  // offline) → a NEUTRAL "couldn't score" state. Must NOT read as "would not fire".
+  const rsn = String(d.reason||"").toLowerCase();
+  const noClip = rsn === "no_clip" || rsn === "unavailable" || rsn.indexOf("no saved clip") >= 0;
   const conf = typeof d.confidence === "number" ? d.confidence : 0;
   const pct = Math.round(Math.max(0, Math.min(1, conf))*100);
-  out.className = "score-clip-out " + (d.fired ? "fired" : "miss");
-  out.innerHTML = (d.fired ? "⚡ " : "· ") + "score <b>"+pct+"%</b> — "
-                + (d.fired ? "would fire" : "would not fire")
-                + (typeof d.int16_peak === "number" ? " · pk "+Math.round(d.int16_peak) : "");
+  if(noClip){
+    out.className = "score-clip-out warn";
+    out.innerHTML = "⚠ couldn’t score — "
+                  + (rsn === "unavailable" ? "scorer unavailable" : "clip not found server-side");
+  }else{
+    out.className = "score-clip-out " + (d.fired ? "fired" : "miss");
+    out.innerHTML = (d.fired ? "⚡ " : "· ") + "score <b>"+pct+"%</b> — "
+                  + (d.fired ? "would fire" : "would not fire")
+                  + (typeof d.int16_peak === "number" ? " · pk "+Math.round(d.int16_peak) : "");
+  }
   // ★ Task 4 — refine the row's firing-verdict banner from the score result's
   // reason/detail (SHARED CONTRACT: score_clip_result also carries reason + detail).
+  // Pass the REAL reason through: a no_clip/unavailable result becomes the amber
+  // "couldn't score" banner, never the red "not detected" one.
   if(clipKey && verdictRowByKey[clipKey]){
     const rec = verdictRowByKey[clipKey];
     const reason = d.reason || (d.fired ? "fired" : "not_detected");
-    const detail = d.detail || "Re-scored the saved clip: "+pct+"% "
-                 + (d.fired ? "≥ threshold — would fire." : "— under the firing threshold.");
+    const detail = d.detail || (noClip
+        ? "The server didn’t have a saved clip to score (hash "+(hash8||"?")+"). The recording captured fine — re-run the mic check, then Score this clip."
+        : "Re-scored the saved clip: "+pct+"% "
+            + (d.fired ? "≥ threshold — would fire." : "— under the firing threshold."));
     const vd = buildVerdict(reason, detail, d.word || rec.word, !!d.fired);
     if(vd){ rec.row.innerHTML = ""; rec.row.appendChild(vd); if(!rec.row.parentNode) rec.host.insertBefore(rec.row, rec.host.firstChild); }
   }
-  log((d.fired?"⚡ ":"· ")+"score clip ["+(d.word||"")+"]: "+pct+"% "
-        + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
+  log((noClip ? "⚠ " : d.fired ? "⚡ " : "· ")+"score clip ["+(d.word||"")+"]: "
+        + (noClip ? "no clip server-side (couldn’t score)" : pct+"% "+(d.fired?"(fired)":"(no fire)")),
+        noClip ? "error" : d.fired ? "evt" : "info");
 }
 
 /* ============================================================
@@ -4204,8 +4257,17 @@ function renderResultExtras(extrasId, opts){
   row2.appendChild(buildPlayLast(key));
   // --- 🔍 Score-this-clip (task 4) — re-score the saved recording (capture-vs-model).
   // Auto-runs on completion (autoRun:true) so the firing verdict + reason always shows
-  // without a manual click; the button stays for an explicit re-score. ---
-  if(o.scoreClip){ row2.appendChild(buildScoreClip(o.word || "", hash, key, true)); }
+  // without a manual click; the button stays for an explicit re-score.
+  // EXCEPT the browser mic path (deferScore:true): the hash here is a CLIENT-derived
+  // placeholder — the server hasn't saved the clip yet — so we must NOT auto-score it
+  // (that produced the false "wake word not detected"). We build the button (manual
+  // re-score stays) WITHOUT registering the placeholder hash, then auto-score against
+  // the SERVER's content hash the moment the mic_check_result echo arrives (fix 1). ---
+  if(o.scoreClip){
+    row2.appendChild(o.deferScore
+      ? buildScoreClip(o.word || "", hash, key, false, {register:false})
+      : buildScoreClip(o.word || "", hash, key, true));
+  }
   host.appendChild(row2);
 
   // --- extra stat chips (task 6): SNR · true-peak · crest · DC offset (+ LUFS). ---
@@ -4324,6 +4386,11 @@ function enrichBrowserMicResult(d){
     const host = $("#micBrowserExtras");
     const hb = host && host.querySelector(".hash-tag b");
     if(hb) hb.textContent = String(d.hash).slice(0,8);
+    // ★ fix 1 — the server's content hash for the clip it ACTUALLY saved has arrived.
+    // Now auto-score against THAT hash (not the client-derived placeholder), so the
+    // firing verdict targets a clip the server has — no more false "not detected".
+    const word = d.word || (settings && settings.wake_phrase) || "";
+    scoreClipWithServerHash("micBrowserExtras", d.hash, word);
   }
   log("· mic check [browser] scored server-side"
         + (d.hash?" · #"+String(d.hash).slice(0,8):"")
@@ -4614,7 +4681,9 @@ function finishBrowserMic(chunks, srcRate, cleanup){
     sr: srcRate,
     clipKey: "micBrowserExtras",
     result: localStats(gained, peak),  // wake-debug: level-vs-model gauge + stat chips (derived locally)
-    scoreClip: true,                   // 🔍 re-score this saved clip against the wake model (auto-runs)
+    scoreClip: true,                   // 🔍 re-score this saved clip against the wake model
+    deferScore: true,                  // ★ fix 1 — don't auto-score the CLIENT hash; wait for the
+                                       //   server's mic_check_result echo, then score its real hash.
     word: bWord,
     reason: bReason, detail: bDetail,  // ★ seed the firing verdict; score_clip refines it
   });
@@ -4626,6 +4695,12 @@ function finishBrowserMic(chunks, srcRate, cleanup){
   if(!DEMO && heard){
     postAction({action:"mic_check", source:"browser", pcm:pcm16, sample_rate:WAKE_TEST_SR,
       processing:{agc:proc.agc, ns:proc.ns, ec:proc.ec}});
+  }else if(DEMO && heard){
+    // No backend offline → emulate the server's echo: a browser-sourced mic_check_result
+    // carrying the SERVER's hash (fix 1 path). enrichBrowserMicResult then auto-scores
+    // against THAT hash → demoScoreClip fires for the demo phrase, so the browser path
+    // shows a real "would fire" verdict offline (proving the deferred-score sequencing).
+    setTimeout(()=> showMicResult(demoBrowserMicEcho(bWord, pct)), 700);
   }
 }
 
@@ -5375,7 +5450,14 @@ function enterDemo(){
   // against the currently-selected phrase (renderWakeRecall defaulted it to the
   // configured wake phrase) — results for other phrases would land in absent panels.
   const demoWord = currentWakeWord || (settings.wake_phrase || "maziko");
-  showMicResult(demoMicCheckResult("server"));
+  showMicResult(demoMicCheckResult("server"));           // SERVER mic row → auto-scores → "would fire"
+  // ★ fix 1/2 — seed the BROWSER mic row offline so its deferred-score path is exercised
+  // without a real mic. The row renders with a CLIENT placeholder hash (NOT auto-scored),
+  // then we feed it BOTH (a) the server echo → auto-scores its real hash → FIRES, and a
+  // moment later (b) a no_clip result → proving that case renders AMBER "couldn't score"
+  // (not the red "not detected" false negative). The no_clip seed lands last so the
+  // amber "couldn't score" verdict is what shows for the browser row offline.
+  seedDemoBrowserMicRow(demoWord);
   showWakeResult(demoWakeResult(demoWord, "browser"));   // selected phrase · BROWSER panel
   showWakeResult(demoWakeResult(demoWord, "server"));    // selected phrase · SERVER panel (independent)
   handleMusic(DEMO_MUSIC_EVENT);
@@ -5518,6 +5600,56 @@ function demoMicCheckResult(source){
     expected_level: "ok", crest_db: 11.2, dc_offset: 0.0008, true_peak_db: -3.6,
     snr_db: 22.5, lufs: -19.8,
     _demoPcm: demoTonePcm(280)};
+}
+// Demo browser-sourced mic_check_result — the SERVER's echo of a browser clip, carrying
+// the server's content `hash` + saved `wav_url`. Feeding it to showMicResult() routes to
+// enrichBrowserMicResult() → scoreClipWithServerHash(), exercising the fix-1 deferred-score
+// path offline (the browser row then auto-scores against THIS hash, and fires).
+function demoBrowserMicEcho(word, pct){
+  const lvl = (typeof pct === "number") ? pct : 73;
+  return {type:"mic_check_result", source:"browser", ok:true,
+    level: lvl, peak: lvl/100, word: word || "",
+    // The SERVER's hash of the clip it saved — deliberately DIFFERENT from the client
+    // placeholder, mirroring the real bug (client 012651c8 vs server f3605d58). The
+    // demo scorer treats any seeded hash as "saved", so this fires for the demo phrase.
+    hash: shortHash("mic|browser|server-side|"+(word||"")),
+    wav_url: "/recordings/mic_browser_demo.wav",
+    message:"browser clip saved + scored server-side (demo)"};
+}
+// Demo score_clip_result with reason:"no_clip" — proves the "clip not found server-side"
+// path renders as the AMBER "couldn't score" verdict, NOT the red "wake word not detected"
+// (the bug this fix targets). confidence/fired are 0/false but MUST be ignored for no_clip.
+function demoScoreClipNoClip(word, hash){
+  return {type:"score_clip_result", word: word||"", hash: hash||shortHash("noclip|"+(word||"")),
+    confidence: 0, fired: false, pk: 0, reason:"no_clip",
+    detail:"The server had no saved clip under this hash to score.",
+    message:"no saved clip (demo)"};
+}
+// Seed the BROWSER mic row offline (no real getUserMedia) to exercise the fix-1
+// deferred-score sequencing + the fix-2 no_clip rendering. Renders the row with a CLIENT
+// placeholder hash (deferScore → NOT auto-scored), then: (a) the server echo auto-scores
+// the REAL hash → fires; (b) shortly after, a no_clip result → proves the AMBER "couldn't
+// score" verdict (never the red "not detected"). The no_clip seed lands last on purpose.
+function seedDemoBrowserMicRow(word){
+  const pct = 73;                                 // matches the logged browser capture level
+  renderResultExtras("micBrowserExtras", {
+    dur: 2.0, peakPct: pct, sampleRate: 48000,
+    levels: demoLevels(pct/100),
+    processing: {agc:true, ns:true, ec:true, gain: micGain()},
+    pcm: demoTonePcm(280), sr: 48000,
+    clipKey: "micBrowserExtras",
+    result: {peak: pct/100, int16_peak: Math.round(pct/100*32767), expected_level:"ok",
+             crest_db:10.6, dc_offset:0.0007, true_peak_db:-3.2, snr_db:20.1, lufs:-20.4},
+    scoreClip: true, deferScore: true,            // ← fix 1: don't auto-score the client hash
+    word: word || "",
+    reason: null, detail: "Captured cleanly — scoring whether “"+(word||"")+"” would fire…",
+  });
+  // (a) server echo → enrichBrowserMicResult → scoreClipWithServerHash → demoScoreClip FIRES.
+  setTimeout(()=> showMicResult(demoBrowserMicEcho(word, pct)), 600);
+  // (b) then a no_clip result on the SAME row → proves amber "couldn't score", not red
+  // "not detected". Routed by _clipKey so it lands on the browser row regardless of hash.
+  setTimeout(()=> showScoreClipResult(Object.assign(demoScoreClipNoClip(word),
+                                                     {_clipKey:"micBrowserExtras"})), 1200);
 }
 // Demo wake-test result: a believable per-word/per-source score AND the full
 // contract extras (peak/levels/processing/hash/wav_url + int16/expected_level/
