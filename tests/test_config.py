@@ -220,12 +220,23 @@ def test_wake_word_info_shape_for_available_models():
     # One entry per available model, each with the contract keys.
     assert set(info) == set(available_wake_words())
     for _word, meta in info.items():
-        assert set(meta) == {"tier", "note", "reliability", "tested", "measured"}
+        # Porcupine-ideas (repo #4) added the per-word `sensitivity` + `guidance` fields.
+        assert set(meta) == {
+            "tier",
+            "note",
+            "reliability",
+            "tested",
+            "measured",
+            "sensitivity",
+            "guidance",
+        }
         assert meta["tier"] in {"green", "orange", "red"}
         assert isinstance(meta["note"], str) and meta["note"]
         assert isinstance(meta["reliability"], float) and 0.0 <= meta["reliability"] <= 1.0
         assert isinstance(meta["tested"], int) and meta["tested"] >= 0
         assert isinstance(meta["measured"], bool)
+        assert isinstance(meta["sensitivity"], float) and 0.0 <= meta["sensitivity"] <= 1.0
+        assert isinstance(meta["guidance"], str)
 
 
 def test_wake_word_info_in_settings_dict():

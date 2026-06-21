@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,23 @@ WAKE_STATS_RECENT = 10
 # >= GREEN -> green; >= ORANGE (and < GREEN) -> orange; below ORANGE -> red.
 WAKE_TIER_GREEN = 0.70
 WAKE_TIER_ORANGE = 0.40
+
+# --- Unified wake SENSITIVITY 0..1 knob (Porcupine's idea, repo #4) -------------
+# One human knob: 0 = strictest (lowest false-accepts, may miss); 1 = loosest
+# (highest recall, more false-accepts); 0.5 ≈ the target-FA knee. It maps onto the
+# openWakeWord ``wake_threshold`` ONLY (KWS / few-shot have no continuous score — they
+# stay OR'd backstops with their own knobs). When a MEASURED fa_eval curve exists for
+# the word the sensitivity walks the real operating points (calibrated); otherwise it
+# falls back to a documented LINEAR remap of [0,1] -> threshold (uncalibrated).
+#
+# The uncalibrated fallback maps sensitivity s in [0,1] linearly to a threshold in
+# [SENSITIVITY_THRESHOLD_MIN, SENSITIVITY_THRESHOLD_MAX], INVERTED so a HIGHER
+# sensitivity = a LOWER threshold (fires more easily): thr = MAX - s*(MAX-MIN).
+# So s=0 -> MAX (strict), s=1 -> MIN (loose), s=0.5 -> the midpoint ~0.5 (≈ oWW's own
+# default). The bounds bracket the useful oWW operating range without ever hitting 0/1.
+SENSITIVITY_THRESHOLD_MIN = 0.10  # loosest end (s=1): a weak match still fires
+SENSITIVITY_THRESHOLD_MAX = 0.90  # strictest end (s=0): only a strong match fires
+WAKE_SENSITIVITY_DEFAULT = 0.5
 
 
 def wake_stats_path() -> str:
@@ -193,6 +211,131 @@ def _tier_from_reliability(reliability: float) -> str:
     return "red"
 
 
+def _sensitivity_linear_threshold(sensitivity: float) -> float:
+    """The DOCUMENTED uncalibrated fallback: linear [0,1] -> oWW threshold (inverted).
+
+    Maps sensitivity ``s`` to ``MAX - s*(MAX-MIN)`` so a HIGHER sensitivity gives a
+    LOWER threshold (fires more easily). ``s=0`` -> ``SENSITIVITY_THRESHOLD_MAX``
+    (strictest), ``s=1`` -> ``SENSITIVITY_THRESHOLD_MIN`` (loosest), ``s=0.5`` -> the
+    midpoint (~0.5, ≈ openWakeWord's own default). Pure; ``s`` is clamped to [0,1].
+    """
+    s = max(0.0, min(1.0, float(sensitivity)))
+    span = SENSITIVITY_THRESHOLD_MAX - SENSITIVITY_THRESHOLD_MIN
+    return round(SENSITIVITY_THRESHOLD_MAX - s * span, 4)
+
+
+def sensitivity_to_threshold(
+    word: str,
+    sensitivity: float,
+    *,
+    curve: dict[str, Any] | list[dict[str, Any]] | None = None,
+) -> tuple[float, bool]:
+    """Map a unified 0..1 ``sensitivity`` to an openWakeWord ``wake_threshold``.
+
+    The Porcupine-idea knob (repo #4): ONE human dial — 0 = strictest (lowest
+    false-accepts), 1 = loosest (highest recall), 0.5 ≈ the target-FA knee — mapped
+    onto the oWW continuous-score threshold ONLY (``word`` is accepted so a caller can
+    log/route per word; KWS / few-shot keep their own knobs).
+
+    When a MEASURED fa_eval ``curve`` exists for the word (its ``points`` list of
+    ``{threshold, fa_per_hour, true_accept}``), the mapping INVERTS the real ROC: the
+    candidate thresholds are sorted STRICT→LOOSE by their false-accept rate (ties broken
+    by the threshold itself, high=strict), and ``sensitivity`` indexes that ordered list
+    by fractional position — ``s=0`` returns the strictest measured operating point's
+    threshold, ``s=1`` the loosest, ``s=0.5`` the middle (≈ the target-FA knee).
+    Linearly interpolated between adjacent points. Returns ``(threshold, True)``.
+
+    Otherwise it falls back to :func:`_sensitivity_linear_threshold` (a documented
+    linear remap) and returns ``(threshold, False)`` — ``calibrated=False`` tells the
+    GUI / settings the number is a prior, not measured.
+
+    Monotonic in ``sensitivity`` (higher sensitivity never raises the threshold) and the
+    result is clamped to ``[0, 1]`` in both branches. Pure given ``curve``.
+    """
+    s = max(0.0, min(1.0, float(sensitivity)))
+    points: list[dict[str, Any]] = []
+    if isinstance(curve, dict):
+        raw_points = curve.get("points") or []
+        points = [p for p in raw_points if isinstance(p, dict)]
+    elif isinstance(curve, list):
+        points = [p for p in curve if isinstance(p, dict)]
+    # A usable curve needs >= 2 distinct operating points to interpolate between.
+    usable = [p for p in points if "threshold" in p and ("fa_per_hour" in p or "true_accept" in p)]
+    if len(usable) >= 2:
+        # Order STRICT -> LOOSE: ascending false-accepts/hour, then DESCENDING threshold
+        # (a higher threshold is stricter) so equal-FA points still order deterministically.
+        ordered = sorted(
+            usable,
+            key=lambda p: (float(p.get("fa_per_hour", 0.0)), -float(p.get("threshold", 0.0))),
+        )
+        thresholds = [float(p.get("threshold", 0.0)) for p in ordered]
+        # s walks the ordered operating points by fractional index: s=0 -> first
+        # (strictest), s=1 -> last (loosest). Linear-interpolate between neighbours.
+        pos = s * (len(thresholds) - 1)
+        lo = int(pos)
+        if lo >= len(thresholds) - 1:
+            thr = thresholds[-1]
+        else:
+            frac = pos - lo
+            thr = thresholds[lo] + frac * (thresholds[lo + 1] - thresholds[lo])
+        return round(max(0.0, min(1.0, thr)), 4), True
+    return _sensitivity_linear_threshold(s), False
+
+
+def wake_word_guidance(
+    word: str,
+    *,
+    tier: str,
+    measured: bool,
+    stats: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
+    """A short actionable sensitivity HINT for ``word`` (GUI ``wake_word_info[w].guidance``).
+
+    Derived from the reliability ``tier``, whether it is ``measured``, and recent
+    false-accepts in the wake-test log:
+
+    * a recent FA in this user's recent tests (a test that FIRED but the user logged it
+      as unwanted — captured as ``fired`` with low/zero confidence-of-intent) →
+      ``"Firing on its own? Lower sensitivity."`` (FA-suppression takes priority);
+    * else a ``red``-tier / low-reliability word → ``"Missing it? Raise sensitivity."``;
+    * else ``""`` (a healthy green/orange word needs no nudge).
+
+    Pure given ``stats``; ``stats=None`` loads the on-disk log. Never raises.
+    """
+    if _has_recent_false_accept(word, stats):
+        return "Firing on its own? Lower sensitivity."
+    if tier == "red":
+        return "Missing it? Raise sensitivity."
+    return ""
+
+
+# A wake test whose confidence is at/below this counts as a "did not really intend to
+# fire" data point for the FA-guidance heuristic (a fire on near-silence / a stray noise).
+_GUIDANCE_FA_CONFIDENCE = 0.05
+
+
+def _has_recent_false_accept(
+    word: str, stats: dict[str, list[dict[str, Any]]] | None = None
+) -> bool:
+    """Whether ``word`` shows a recent self-fire in the wake-test log (the FA-guidance signal).
+
+    A recent (last :data:`WAKE_STATS_RECENT`) test that FIRED on essentially no signal
+    (confidence <= :data:`_GUIDANCE_FA_CONFIDENCE`) is treated as a spurious fire — the
+    word is too sensitive. Pure given ``stats``; ``stats=None`` loads the on-disk log.
+    """
+    log = load_wake_stats() if stats is None else stats
+    outcomes = (log.get(str(word)) or [])[-WAKE_STATS_RECENT:]
+    for o in outcomes:
+        try:
+            fired = bool(o.get("fired"))
+            conf = float(o.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if fired and conf <= _GUIDANCE_FA_CONFIDENCE:
+            return True
+    return False
+
+
 def wake_word_reliability(
     word: str, stats: dict[str, list[dict[str, Any]]] | None = None
 ) -> tuple[float, int, bool, str]:
@@ -231,27 +374,38 @@ def wake_word_tier(
 def wake_word_info(
     wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR,
     stats: dict[str, list[dict[str, Any]]] | None = None,
+    *,
+    sensitivity_for: Callable[[str], float] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Per-available-wake-word reliability metadata for ``settings_dict``.
 
     Returns, for every wake word present on disk (see :func:`available_wake_words`),
     ``{"<word>": {"tier", "note", "reliability": float 0-1, "tested": int,
-    "measured": bool}}``. ``reliability`` is the data-driven scalar (measured for this
-    user when tests exist, else a static prior); ``tier`` is derived from it. The GUI
-    renders a reliability BAR (width = reliability) + tier colour + ``note`` tooltip.
-    The on-disk wake-test log is loaded ONCE and shared across all words. Empty dict
-    when no models are present.
+    "measured": bool, "sensitivity": float 0-1, "guidance": str}}``. ``reliability`` is
+    the data-driven scalar (measured for this user when tests exist, else a static
+    prior); ``tier`` is derived from it. ``sensitivity`` is the effective 0..1 knob for
+    the word (per-word override else global) supplied by ``sensitivity_for`` (defaults
+    to :data:`WAKE_SENSITIVITY_DEFAULT` when no resolver is given). ``guidance`` is a
+    short actionable hint from :func:`wake_word_guidance` ("Missing it? Raise
+    sensitivity." / "Firing on its own? Lower sensitivity." / ""). The GUI renders a
+    reliability BAR (width = reliability) + tier colour + ``note`` tooltip + the
+    sensitivity slider + guidance. The on-disk wake-test log is loaded ONCE and shared
+    across all words. Empty dict when no models are present.
     """
     log = load_wake_stats() if stats is None else stats
     info: dict[str, dict[str, object]] = {}
     for word in available_wake_words(wakewords_dir):
         reliability, tested, measured, note = wake_word_reliability(word, log)
+        tier = _tier_from_reliability(reliability)
+        sens = sensitivity_for(word) if sensitivity_for is not None else WAKE_SENSITIVITY_DEFAULT
         info[word] = {
-            "tier": _tier_from_reliability(reliability),
+            "tier": tier,
             "note": note,
             "reliability": reliability,
             "tested": tested,
             "measured": measured,
+            "sensitivity": round(float(sens), 4),
+            "guidance": wake_word_guidance(word, tier=tier, measured=measured, stats=log),
         }
     return info
 
@@ -467,6 +621,34 @@ def _parse_kws_spellings(raw: str | None) -> dict[str, list[str]]:
     return out
 
 
+def _parse_sensitivity_map(raw: str | None) -> dict[str, float]:
+    """Parse ``WAKE_SENSITIVITY`` (``word=0.4;word2=0.8``) into ``{word: float}``.
+
+    Per-word overrides of the unified 0..1 wake sensitivity knob (Porcupine's idea,
+    repo #4). Mirrors :func:`_parse_kws_spellings`: each ``word=value`` group is split
+    on ``;`` then ``=``; the value is parsed as a float and CLAMPED to ``[0, 1]`` so a
+    typo (``2.0``) can't push the derived oWW threshold out of range. Whitespace is
+    trimmed; an empty value, a malformed group (no ``=``), or a non-numeric value is
+    skipped — never raises (so a bad env can't break boot). A blank env yields ``{}``.
+    """
+    out: dict[str, float] = {}
+    if not raw or not raw.strip():
+        return out
+    for group in raw.split(";"):
+        if "=" not in group:
+            continue
+        word, _, value = group.partition("=")
+        word = word.strip()
+        if not word:
+            continue
+        try:
+            sens = float(value.strip())
+        except (TypeError, ValueError):
+            continue
+        out[word] = max(0.0, min(1.0, sens))
+    return out
+
+
 def _repo_prompt_file() -> Path:
     """Path to the editable in-repo system prompt (resolved from this package)."""
     return Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
@@ -597,7 +779,29 @@ class Config:
     # triggers more easily (more false-positives); higher = stricter (may miss a
     # quiet "maziko"). 0.4 is a touch more sensitive than openWakeWord's 0.5
     # default so a soft wake word still fires. Env: WAKE_THRESHOLD.
+    #
+    # MASTER vs DERIVED (the wake_sensitivity contract, Porcupine's idea — repo #4):
+    # when ``wake_sensitivity`` is SET (env WAKE_SENSITIVITY present, or a per-word
+    # override applies), it is the MASTER knob and ``wake_threshold`` is DERIVED from it
+    # via ``sensitivity_to_threshold`` (curve-inverted when a measured fa_eval curve
+    # exists, else a linear remap). When WAKE_SENSITIVITY is NOT set, ``wake_threshold``
+    # stays the master (explicit/back-compat path) and ``wake_sensitivity`` is informational.
     wake_threshold: float = 0.4
+    # Unified 0..1 wake SENSITIVITY knob: 0 = strictest (fewest false-accepts, may
+    # miss), 1 = loosest (highest recall, more false-accepts), 0.5 ≈ the target-FA knee.
+    # The ONE dial a user turns; it maps onto the oWW ``wake_threshold`` ONLY (KWS /
+    # few-shot keep their own knobs — they have no continuous score). DEFAULT 0.5.
+    # ``wake_sensitivity_set`` records whether the user explicitly set it (so the
+    # default 0.5 does NOT silently override an explicit ``wake_threshold``). Env:
+    # WAKE_SENSITIVITY (a bare float ``0.4`` sets the global; a map ``hey_jarvis=0.4;
+    # maziko=0.8`` sets per-word overrides — see wake_sensitivity_map).
+    wake_sensitivity: float = WAKE_SENSITIVITY_DEFAULT
+    wake_sensitivity_set: bool = False
+    # Per-word sensitivity overrides {word: 0..1} (env WAKE_SENSITIVITY as
+    # ``word=val;word2=val``). A word present here uses its own sensitivity instead of
+    # the global ``wake_sensitivity``; absent words use the global. Parsed like
+    # kws_spellings (see _parse_sensitivity_map), values clamped to [0,1].
+    wake_sensitivity_map: dict[str, float] = field(default_factory=dict)
     # How many sub-frame PHASE-OFFSET detectors evaluate each wake-word pass.
     # openWakeWord scores once per 1280-sample (80 ms) frame, locked to ONE phase
     # relative to the spoken word — and the maziko score swings ~25x (0.03..0.85)
@@ -988,6 +1192,16 @@ class Config:
     # Env: WAKE_NEG_CORPUS.
     negative_corpus_dir: str = "debug/negatives"
 
+    # A directory of wake-word-FREE NOISE WAVs (ambient room tone, TV, café babble,
+    # mechanical hum) the user drops in. The noise×SNR benchmark (Porcupine's idea —
+    # repo #4) mixes these into the positives + negatives at each target SNR to MEASURE
+    # how miss@target-FA degrades as the room gets noisier (the ``per_snr`` axis on
+    # fa_eval). Empty => the benchmark runs clean-only and emits a "drop noise WAVs into
+    # <dir>" note (never crash). The whole debug/ tree is git-ignored, so this lands
+    # beside the saved recordings. See wakewords/WAKEWORD.md for the MUSAN/DEMAND recipe.
+    # Env: WAKE_NOISE_CORPUS.
+    noise_corpus_dir: str = "debug/noise"
+
     # Skip the startup audio preflight HARD STOP (the broken-audio gate that refuses
     # to open the GUI / start a mic loop when capture can't deliver 16 kHz or the mic
     # queue persistently overflows). Power-user escape hatch — also ``--skip-audio-
@@ -1119,6 +1333,13 @@ class Config:
             cfg.wake_debug_seconds = float(env["WAKE_DEBUG_SECONDS"])
         if env.get("WAKE_NEG_CORPUS"):
             cfg.negative_corpus_dir = env["WAKE_NEG_CORPUS"]
+        if env.get("WAKE_NOISE_CORPUS"):
+            cfg.noise_corpus_dir = env["WAKE_NOISE_CORPUS"]
+        # WAKE_SENSITIVITY: a bare float (``0.4``) sets the GLOBAL sensitivity; a map
+        # (``hey_jarvis=0.4;maziko=0.8``) sets PER-WORD overrides. Either form marks
+        # sensitivity as user-SET so it becomes the master knob deriving wake_threshold.
+        if env.get("WAKE_SENSITIVITY"):
+            cfg.set_wake_sensitivity_env(env["WAKE_SENSITIVITY"])
         if env.get("VAD_THRESHOLD"):
             cfg.vad_threshold = float(env["VAD_THRESHOLD"])
         if env.get("VAD_SILENCE_SECONDS"):
@@ -1173,6 +1394,12 @@ class Config:
             cfg.diarize_min_segment_s = float(env["DIARIZE_MIN_SEGMENT_S"])
         if env.get("MUSIC_VOLUME"):
             cfg.music_volume = int(env["MUSIC_VOLUME"])
+        # If the user set WAKE_SENSITIVITY, it is the MASTER knob: derive wake_threshold
+        # from it now (uncalibrated linear remap — no measured curve at boot). A later
+        # fa_eval can re-derive with the real curve. An explicit WAKE_THRESHOLD set
+        # ALONGSIDE WAKE_SENSITIVITY loses (sensitivity wins, documented). If sensitivity
+        # is NOT set, this is a no-op and the explicit/default wake_threshold stands.
+        cfg.derive_wake_threshold()
         return cfg
 
     def apply_brain_preset(self, name: str) -> None:
@@ -1191,6 +1418,61 @@ class Config:
         """
         self.wake_phrase = phrase
         self.wake_model_path = wake_model_for(phrase)
+
+    def set_wake_sensitivity_env(self, raw: str) -> None:
+        """Parse ``WAKE_SENSITIVITY`` (bare float OR ``word=val;…`` map) and mark it SET.
+
+        A bare float (``"0.4"``) sets the GLOBAL ``wake_sensitivity``; a map
+        (``"hey_jarvis=0.4;maziko=0.8"``) sets per-word overrides in
+        ``wake_sensitivity_map`` (the global stays the default). Either form sets
+        ``wake_sensitivity_set = True`` so sensitivity becomes the master knob that
+        derives ``wake_threshold``. A blank / fully malformed value is a no-op (never
+        raises). Values are clamped to [0, 1].
+        """
+        text = (raw or "").strip()
+        if not text:
+            return
+        if "=" in text:
+            mapping = _parse_sensitivity_map(text)
+            if mapping:
+                self.wake_sensitivity_map = mapping
+                self.wake_sensitivity_set = True
+            return
+        try:
+            self.wake_sensitivity = max(0.0, min(1.0, float(text)))
+            self.wake_sensitivity_set = True
+        except (TypeError, ValueError):
+            return
+
+    def sensitivity_for(self, word: str | None = None) -> float:
+        """The effective 0..1 sensitivity for ``word`` (per-word override else global).
+
+        ``word`` defaults to the configured ``wake_phrase``. Returns the per-word
+        override from ``wake_sensitivity_map`` when present, else the global
+        ``wake_sensitivity``.
+        """
+        key = word if word is not None else self.wake_phrase
+        return self.wake_sensitivity_map.get(key, self.wake_sensitivity)
+
+    def derive_wake_threshold(
+        self, *, curve: dict[str, Any] | list[dict[str, Any]] | None = None
+    ) -> tuple[float, bool]:
+        """When sensitivity is the master, DERIVE ``wake_threshold`` for the active word.
+
+        If ``wake_sensitivity_set`` (the user set WAKE_SENSITIVITY), map the effective
+        sensitivity for ``wake_phrase`` through :func:`sensitivity_to_threshold` (curve-
+        inverted when a measured ``curve`` is supplied, else the linear fallback),
+        WRITE the result onto ``self.wake_threshold``, and return
+        ``(threshold, calibrated)``. If sensitivity is NOT set, ``wake_threshold`` is the
+        master — this is a no-op that returns ``(self.wake_threshold, False)``.
+        """
+        if not self.wake_sensitivity_set:
+            return self.wake_threshold, False
+        thr, calibrated = sensitivity_to_threshold(
+            self.wake_phrase, self.sensitivity_for(self.wake_phrase), curve=curve
+        )
+        self.wake_threshold = thr
+        return thr, calibrated
 
     def validate(self) -> None:
         """Raise :class:`ConfigError` listing every problem (fail-fast)."""
@@ -1266,6 +1548,11 @@ class Config:
             )
         if not 0.0 <= self.wake_threshold <= 1.0:
             errors.append(f"wake_threshold must be in [0, 1]; got {self.wake_threshold}")
+        if not 0.0 <= self.wake_sensitivity <= 1.0:
+            errors.append(f"wake_sensitivity must be in [0, 1]; got {self.wake_sensitivity}")
+        for word, sens in self.wake_sensitivity_map.items():
+            if not 0.0 <= sens <= 1.0:
+                errors.append(f"wake_sensitivity for {word!r} must be in [0, 1]; got {sens}")
         if not 1 <= self.wake_phases <= 16:
             errors.append(f"wake_phases must be in [1, 16]; got {self.wake_phases}")
         if not 1 <= self.wake_window <= 50:

@@ -69,7 +69,7 @@ def settings_dict(
     ``voice_hint`` (a short reason) instead of letting them POST and silently error.
     """
     from .audio import mic_permission_status
-    from .config import is_official_wake_word
+    from .config import is_official_wake_word, sensitivity_to_threshold
 
     # Is the sherpa KeywordSpotter usable at all (enabled + importable + model fetchable)?
     # Per-word detector annotation: official words are openWakeWord-ONLY ("oww"); a custom
@@ -82,7 +82,15 @@ def settings_dict(
 
     kws_ok = kws_available(cfg)
     fewshot_on = getattr(cfg, "fewshot_wake_enabled", True)
-    word_info = wake_word_info()
+    # Per-word sensitivity + guidance: pass the config's resolver so each word shows its
+    # effective 0..1 knob (per-word override else global) and a short actionable hint.
+    word_info = wake_word_info(sensitivity_for=cfg.sensitivity_for)
+    # The oWW threshold the active word's sensitivity maps to + whether a MEASURED curve
+    # drove it. No live fa_eval curve at settings time -> the linear prior (calibrated
+    # False); a fa_eval run re-derives with the real curve and flips this true.
+    _derived_thr, _derived_calibrated = sensitivity_to_threshold(
+        cfg.wake_phrase, cfg.sensitivity_for(cfg.wake_phrase), curve=None
+    )
     for word, info in word_info.items():
         if is_official_wake_word(word):
             info["detector"] = "oww"
@@ -116,9 +124,27 @@ def settings_dict(
         "voice_en": cfg.tts_voices.get("en"),
         "length_scale": cfg.tts_length_scale,
         "wake_phrase": cfg.wake_phrase,
-        # Wake sensitivity (openWakeWord score, 0..1) a frame must clear to fire.
-        # Lower = triggers more easily / more false-positives; higher = stricter.
+        # The oWW score (0..1) a frame must clear to fire. Lower = triggers more easily /
+        # more false-positives; higher = stricter. When wake_sensitivity is the master
+        # (the user set it) this is DERIVED from the sensitivity (see below); otherwise
+        # it is the explicit master knob.
         "wake_threshold": cfg.wake_threshold,
+        # Unified 0..1 wake SENSITIVITY knob (Porcupine's idea, repo #4): 0 = strictest
+        # (fewest false-accepts), 1 = loosest (highest recall), 0.5 ≈ the target-FA knee.
+        # The ONE dial; it maps onto wake_threshold ONLY (KWS / few-shot keep their own
+        # knobs). The GUI renders it as a single slider per word.
+        "wake_sensitivity": cfg.sensitivity_for(cfg.wake_phrase),
+        # The oWW threshold the ACTIVE word's sensitivity maps to (curve-inverted when a
+        # measured fa_eval curve exists, else a documented linear remap). Equals
+        # wake_threshold when sensitivity is the master.
+        "wake_sensitivity_threshold": _derived_thr,
+        # True iff a MEASURED fa_eval curve drove the sensitivity->threshold mapping. At
+        # settings time there is no live curve, so this is False (the value is the linear
+        # prior); a fa_eval run flips it true for that word.
+        "sensitivity_calibrated": _derived_calibrated,
+        # Per-word sensitivity overrides {word: 0..1} the GUI can edit (env
+        # WAKE_SENSITIVITY as `word=val;…`). Absent words use the global wake_sensitivity.
+        "wake_sensitivity_map": dict(cfg.wake_sensitivity_map),
         # Live moving-average fire window (frames) + post-fire refractory lockout
         # (frames) — microWakeWord's runtime smoothing ported into the live path. The
         # detector fires when the MEAN of the last wake_window per-frame scores clears
@@ -230,6 +256,22 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Clamp to [0, 1]: the slider can't produce out-of-range values, but a
         # hand-crafted POST shouldn't push the wake detector past validate()'s bound.
         cfg.wake_threshold = max(0.0, min(1.0, float(data["wake_threshold"])))
+    if "wake_sensitivity" in data:
+        # The unified 0..1 sensitivity slider (Porcupine's idea). Setting it makes
+        # sensitivity the MASTER knob and re-derives wake_threshold for the active word
+        # (linear remap — no live fa_eval curve here). Clamp to [0, 1].
+        cfg.wake_sensitivity = max(0.0, min(1.0, float(data["wake_sensitivity"])))
+        cfg.wake_sensitivity_set = True
+        cfg.derive_wake_threshold()
+    if "wake_sensitivity_map" in data and isinstance(data["wake_sensitivity_map"], dict):
+        # Per-word sensitivity overrides {word: 0..1}; clamp each value. A non-empty map
+        # makes sensitivity the master + re-derives the active word's threshold.
+        cfg.wake_sensitivity_map = {
+            str(w): max(0.0, min(1.0, float(v))) for w, v in data["wake_sensitivity_map"].items()
+        }
+        if cfg.wake_sensitivity_map:
+            cfg.wake_sensitivity_set = True
+            cfg.derive_wake_threshold()
     if "wake_window" in data:
         # Clamp to [1, 50] (validate()'s bound). 1 = single-frame (byte-identical);
         # larger = more temporal smoothing (a higher firing bar).

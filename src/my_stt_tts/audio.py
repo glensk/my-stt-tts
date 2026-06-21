@@ -613,6 +613,47 @@ def apply_gain(clip: np.ndarray, gain: float) -> np.ndarray:
     return np.clip(arr * float(gain), -1.0, 1.0).astype(np.float32)
 
 
+def mix_at_snr(speech: np.ndarray, noise: np.ndarray, snr_db: float) -> np.ndarray:
+    """Mix ``noise`` into ``speech`` at a target signal-to-noise ratio ``snr_db`` (dB).
+
+    The noise×SNR benchmark mixer (Porcupine's idea, repo #4 — ports Picovoice
+    ``mixer.py``'s ``_speech_scale``). RMS-energy-matches the noise to the speech so the
+    resulting clip has the requested SNR: with speech energy ``E_s`` and noise energy
+    ``E_n``, a scale ``k`` applied to the SPEECH satisfies
+    ``(E_s · k²) / E_n = 10^(snr/10)`` → ``k = sqrt(E_n · 10^(snr/10) / E_s)``. The
+    SCALED speech is then summed with the (length-matched) noise, so a LOWER ``snr_db``
+    makes the noise relatively louder (a harder clip). The noise is TILED (repeated) or
+    TRIMMED to the speech length. The sum is hard-clipped to ±1.0 so a hot mix never
+    wraps. Pure numpy; returns a new float32 array the same length as ``speech``.
+
+    Degenerate inputs are handled without raising: empty speech -> empty; empty / silent
+    noise (zero energy) -> the speech unchanged; silent speech (zero energy, nothing to
+    scale to) -> the length-matched noise alone.
+    """
+    sp = np.asarray(speech, dtype=np.float32).ravel()
+    nz = np.asarray(noise, dtype=np.float32).ravel()
+    if sp.size == 0:
+        return sp
+    if nz.size == 0:
+        return sp.copy()
+    # Tile/trim the noise to the speech length.
+    if nz.size < sp.size:
+        reps = int(np.ceil(sp.size / nz.size))
+        nz = np.tile(nz, reps)
+    nz = nz[: sp.size]
+    speech_energy = float(np.sum(sp.astype(np.float64) ** 2))
+    noise_energy = float(np.sum(nz.astype(np.float64) ** 2))
+    if noise_energy <= 0.0:
+        return sp.copy()  # silent noise -> speech unchanged
+    if speech_energy <= 0.0:
+        return np.clip(nz, -1.0, 1.0).astype(np.float32)  # silent speech -> noise alone
+    # Scale the SPEECH so (speech_energy * scale^2) / noise_energy == 10^(snr/10).
+    ratio = 10.0 ** (float(snr_db) / 10.0)
+    scale = float(np.sqrt(noise_energy * ratio / speech_energy))
+    mixed = sp * scale + nz
+    return np.clip(mixed, -1.0, 1.0).astype(np.float32)
+
+
 def compute_levels(clip: np.ndarray, windows: int = _LEVELS_WINDOWS) -> list[float]:
     """``windows`` evenly-spaced per-window PEAK magnitudes (0..1) across ``clip``.
 

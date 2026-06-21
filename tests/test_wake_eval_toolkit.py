@@ -204,9 +204,16 @@ def test_fa_eval_miss_at_target_fa_interpolates() -> None:
 
 
 def test_fa_eval_default_threshold_grid_is_swept() -> None:
-    res = fa_eval([[0.5]], [[0.5]], target_fa=0.5)
-    assert len(res["points"]) == 19  # np.linspace(0.05, 0.95, 19)
+    # adaptive=False keeps the classic fixed np.linspace(0.05, 0.95, 19) grid.
+    res = fa_eval([[0.5]], [[0.5]], target_fa=0.5, adaptive=False)
+    assert len(res["points"]) == 19
     assert all(0.0 <= p["true_accept"] <= 1.0 for p in res["points"])
+    # adaptive=True (the default) AUGMENTS the grid with bracketing points (>= 19) and
+    # always includes the 0.0 / 1.0 endpoints so the FA budget is bounded on both sides.
+    res_adapt = fa_eval([[0.5]], [[0.5]], target_fa=0.5)
+    assert len(res_adapt["points"]) >= 19
+    grid = {p["threshold"] for p in res_adapt["points"]}
+    assert 0.0 in grid and 1.0 in grid
 
 
 # =========================================================================== #

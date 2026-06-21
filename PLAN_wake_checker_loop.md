@@ -34,7 +34,15 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       (`score_wake_clip`/`fa_eval` use the SAME criterion → live == eval). Empirically gated the
       default: `wake_window=1` (byte-identical) ships as the default, refractory `wake_refractory=8`
       ships ON (the FA win, zero recall cost). See round log below.
-- [ ] 4. **Picovoice Porcupine** — sensitivity calibration; accent+noise benchmark as a test harness.
+- [x] 4. **Picovoice Porcupine** — ✅ **BUILT (engine closed; two PORTABLE ideas ported onto our open
+      machinery)**. (1) A unified `wake_sensitivity` 0–1 knob that maps onto the oWW `wake_threshold`
+      by INVERTING the MEASURED fa_eval curve (calibrated) or a documented linear remap (uncalibrated);
+      per-word overrides; a `guidance` hint. (2) A noise×SNR benchmark harness: `audio.mix_at_snr`
+      (RMS-energy-matched, ports `mixer.py:_speech_scale`), a `per_snr` axis on `fa_eval` + the event,
+      ADAPTIVE threshold bracketing (bisection that brackets `target_fa` where a fixed linspace clamps,
+      ports `benchmark.py`), and a `--benchmark` CLI. Event-grouped FA counting kept (NOT regressed to
+      per-frame). Corpus recipe (LibriSpeech test-clean negatives, MUSAN/DEMAND noise) documented; no
+      audio bundled. See round log below.
 - [ ] 5. **Mycroft Precise** — retrain-on-failures active learning; per-frame probability smoothing.
 
 ## Our detection baseline
@@ -347,3 +355,72 @@ sides, config knobs (default/env/validate/settings round-trip/settings_text/from
 pattern; core pytest 973 passed / 13 skipped, was 951 baseline). Full suite with `--extra all`:
 985 passed / 1 skipped. NEVER touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/
 `wakewords/maziko.onnx`.
+
+### Repo 4 — Picovoice Porcupine · Round 1 — BUILT (2026-06-21, branch `porcupine-ideas`)
+
+Porcupine's engine is closed/unadoptable (proprietary `.ppn` models, paid SDK). Two PORTABLE
+IDEAS ported onto our OPEN machinery (openWakeWord + the fa_eval toolkit). Python only; a GUI
+agent consumed the shared contract in parallel.
+
+**Feature 1 — unified `wake_sensitivity` 0–1 knob (`config.py`):**
+
+- `sensitivity_to_threshold(word, sensitivity, *, curve=None) -> (threshold, calibrated)`.
+  CALIBRATED branch: when a measured `fa_eval` curve exists (>= 2 operating points), order the
+  points STRICT→LOOSE (ascending FA/hour, then descending threshold to break ties) and have the
+  sensitivity index that ordered list by fractional position (linear-interpolated): `s=0` → the
+  strictest measured threshold, `s=1` → the loosest, `s=0.5` ≈ the target-FA knee. UNCALIBRATED
+  fallback: a documented linear remap `thr = MAX - s·(MAX-MIN)` over `[0.10, 0.90]` (inverted, so
+  higher sensitivity = lower threshold = fires more easily). Monotone non-increasing in `s`,
+  clamped to `[0,1]` in both branches.
+- Maps onto the oWW `wake_threshold` ONLY (KWS / few-shot have no continuous score → left as OR'd
+  backstops with their own knobs — documented). MASTER/DERIVED: setting `WAKE_SENSITIVITY` makes it
+  the master and DERIVES `wake_threshold` (an explicit `WAKE_THRESHOLD` set alongside is overridden);
+  not setting it leaves `wake_threshold` the master (back-compat). `Config.set_wake_sensitivity_env`
+  parses a bare float (global) OR a `word=val;…` map (per-word, parsed like `_parse_kws_spellings`,
+  clamped); `sensitivity_for(word)` / `derive_wake_threshold(curve=…)` resolve + apply.
+- `guidance` per word (`wake_word_guidance`): a recent self-fire on near-silence in `wake_stats`
+  (fired with confidence ≤ 0.05) → "Firing on its own? Lower sensitivity." (priority); else
+  red/low-reliability tier → "Missing it? Raise sensitivity."; else "".
+
+**Feature 2 — noise×SNR benchmark harness:**
+
+- `audio.mix_at_snr(speech, noise, snr_db)` — RMS-energy-match: scale the SPEECH by
+  `k = sqrt(noise_energy · 10^(snr/10) / speech_energy)` so `(E_s·k²)/E_n == 10^(snr/10)` (ports
+  Picovoice `mixer.py:_speech_scale`); tile/trim noise to length; clip-protect. Pure numpy; SNR
+  math verified exact to 1e-6 for targets 20/10/5/0/−5 dB; degenerate inputs handled (empty
+  speech → empty, silent noise → speech, silent speech → noise).
+- `wake.fa_eval_snr(pos, neg, noise, word, snr_list=…)` — for each SNR in `[None(clean),10,5]`
+  mix positives+negatives, re-score through the REAL phase-diverse detector, run `fa_eval` →
+  `{clean, snr_list, per_snr:[{snr_db, miss_at_target_fa, points}]}`. Empty noise → clean-only.
+- **Adaptive threshold bracketing** (`_adaptive_threshold_grid`, ports `benchmark.py`): bisects the
+  threshold on `[0,1]` (FA/hour is monotone non-increasing in threshold) to BRACKET `target_fa`,
+  AUGMENTING (not replacing) the linspace grid + the 0/1 endpoints. PROVEN: on a sharp ROC whose
+  crossings all sit > 0.95, the fixed linspace minimum FA is 23250/hr → `np.interp` CLAMPS
+  miss@0.5-FA to a misleading 50%; the adaptive grid reaches thr ≈ 1.0 where FA truly hits 0 and
+  reports the HONEST 100% miss. Event-grouped FA counting (`count_fa_events`) kept — NOT regressed
+  to per-frame.
+- `--benchmark` / `--benchmark-snr` CLI: runs the SNR-matrix fa_eval for the selected word, prints
+  a per-SNR miss@target-FA table, writes `debug/benchmark/<word>-<ts>.json` (gitignored,
+  reproducible). Verified end-to-end on `hey_jarvis` (clean-only with the empty-corpus notes).
+
+**Contract (GUI consumes):** `settings_dict` adds `wake_sensitivity`, the derived
+`wake_sensitivity_threshold`, `sensitivity_calibrated` (false at settings time — no live curve),
+`wake_sensitivity_map`, and per-word `wake_word_info[w]["sensitivity"]` + `["guidance"]`.
+`apply_settings` accepts `wake_sensitivity` + `wake_sensitivity_map` (re-derives threshold).
+`fa_eval_result` gains optional `per_snr` + `snr_list` (null when no noise corpus). New config
+`noise_corpus_dir` (env `WAKE_NOISE_CORPUS`, default `debug/noise/`, gitignored).
+
+**Corpus recipe** (`wakewords/WAKEWORD.md`): LibriSpeech test-clean for negatives (keyword-EXCLUDED
+via the per-chapter transcripts to avoid wake-word leak), MUSAN + DEMAND for noise — both
+user-downloaded + gitignored; NO audio bundled.
+
+**Tests/lint** — `tests/test_porcupine_ideas.py` (+37): curve-inversion (endpoints/midpoint/
+monotonicity/clamping) + linear fallback + thin-curve fallback, per-word map parse/validate +
+master/derived, guidance strings, `mix_at_snr` RMS math + tiling/trimming + degenerate, adaptive
+bracketing brackets target_fa where linspace clamps + keeps event grouping, `fa_eval_snr` per_snr
+shape + empty-noise graceful, the `fa_eval_result` event per_snr/snr_list (+ back-compat null).
+Updated 3 existing tests for the new contract (wake_word_info shape, fa_eval default grid,
+kws_detector wake_word_info stubs). CORE-ONLY verified (`uv sync`; ruff + mypy clean; pylint only
+the established lazy-import / too-many-locals patterns, score +0.03; core pytest **1010 passed /
+13 skipped**, was 973 baseline). Full suite with `--extra all`: **1020 passed / 3 skipped**. NEVER
+touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/`wakewords/maziko.onnx`.

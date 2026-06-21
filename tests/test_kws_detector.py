@@ -514,7 +514,7 @@ def test_settings_dict_exposes_kws_contract(monkeypatch):
     monkeypatch.setattr(
         webui,
         "wake_word_info",
-        lambda: {
+        lambda *_a, **_k: {
             "hey_jarvis": {"tier": "green", "note": "", "reliability": 0.9},
             "maziko": {"tier": "red", "note": "", "reliability": 0.3},
         },
@@ -535,7 +535,7 @@ def test_settings_dict_kws_unavailable_custom_is_oww_only(monkeypatch):
     monkeypatch.setattr(
         webui,
         "wake_word_info",
-        lambda: {"maziko": {"tier": "red", "note": "", "reliability": 0.3}},
+        lambda *_a, **_k: {"maziko": {"tier": "red", "note": "", "reliability": 0.3}},
     )
     s = webui.settings_dict(Config.from_env())
     assert s["kws_available"] is False

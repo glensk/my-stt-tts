@@ -163,10 +163,97 @@ an hour on a free Colab GPU.
 
 ## Tuning
 
+### One knob — `WAKE_SENSITIVITY` (0–1)
+
+The simplest way to tune is the **unified sensitivity dial** (Porcupine's idea, ported
+onto our openWakeWord machinery). One number from **0 to 1**:
+
+- **0** = strictest — fewest false-activations, but it may miss a quiet/soft word.
+- **1** = loosest — highest recall, but more false-activations.
+- **0.5** ≈ the target-FA *knee* (the default; ≈ openWakeWord's own behaviour).
+
+```commands
+WAKE_SENSITIVITY=0.8 ./mstt --wake                          # global: fire more readily
+WAKE_SENSITIVITY='hey_jarvis=0.4;maziko=0.8' ./mstt --wake  # per-word overrides
+```
+
+How the number becomes a detector threshold:
+
+- **Calibrated** — once you've run the **fa_eval** action (or `--benchmark`) for a word,
+  the repo has a *measured* operating-point curve for it. The sensitivity then walks
+  those REAL points: `0` lands on the strictest measured point, `1` on the loosest,
+  `0.5` near the target-FA knee. `--settings` reports `sensitivity_calibrated: true`.
+- **Uncalibrated fallback** — with no measured curve yet, the sensitivity maps through a
+  documented **linear remap** to a threshold in `[0.10, 0.90]` (inverted, so higher
+  sensitivity = lower threshold). `sensitivity_calibrated: false`.
+
+Sensitivity maps onto the **openWakeWord threshold only**. The KWS and few-shot enrolled
+detectors have no continuous score, so they stay **OR'd backstops with their own knobs**
+(`KWS_BOOST` / `KWS_THRESHOLD`, `FEWSHOT_THRESHOLD` / `FEWSHOT_PATIENCE`).
+
+> [!note] Which knob is master?
+> When you set `WAKE_SENSITIVITY` it becomes the **master** and DERIVES `wake_threshold`
+> (an explicit `WAKE_THRESHOLD` set alongside it is overridden). When you do NOT set
+> `WAKE_SENSITIVITY`, the explicit **`wake_threshold` stays master** (back-compat /
+> advanced use). The GUI also surfaces a per-word `guidance` hint: *"Missing it? Raise
+> sensitivity."* (a low-reliability word) or *"Firing on its own? Lower sensitivity."*
+> (a recent spurious fire).
+
+### Direct threshold (advanced)
+
 - **False activations** (fires too easily): raise the threshold —
   `WAKE_THRESHOLD=0.6 ./mstt --wake` (or edit `wake_threshold`).
 - **Missed activations**: lower it (e.g. `0.4`), or retrain with more samples.
 - Use a different file with `WAKE_MODEL_PATH=/path/to/model.onnx`.
+
+## Noise × SNR benchmark (`--benchmark`)
+
+Knowing a word fires in a quiet room is not enough — measure how it holds up as the room
+gets noisy. The **noise×SNR benchmark** (Porcupine's idea) mixes your saved positives +
+the negative corpus with **wake-word-free noise** at a ladder of signal-to-noise ratios
+and reports the miss-rate at the target false-accept budget for each condition.
+
+```commands
+WAKE_PHRASE=hey_jarvis ./mstt --benchmark                       # default SNRs: clean,10,5 dB
+WAKE_PHRASE=hey_jarvis ./mstt --benchmark --benchmark-snr clean,15,10,5,0
+```
+
+It prints a per-SNR `miss@target-FA` table and writes a JSON artifact under
+`debug/benchmark/<word>-<timestamp>.json` (reproducible). An **empty noise corpus** runs
+the clean condition only and prints a "drop noise WAVs into `<dir>`" note — it never
+crashes. The same SNR axis also rides the GUI `fa_eval` action's `fa_eval_result` event
+(`per_snr` + `snr_list`).
+
+Two internals worth knowing:
+
+- **RMS-energy-matched mixing** (`audio.mix_at_snr`) scales the speech so the achieved
+  SNR is exactly the target (`speech_energy·scale² / noise_energy = 10^(SNR/10)`), then
+  tiles/trims the noise to length — ported from Picovoice's `mixer.py`.
+- **Adaptive threshold bracketing** — instead of a fixed threshold grid, the FA sweep
+  bisects the threshold to actually **bracket** the target FA budget. On a sharp ROC a
+  fixed `linspace` grid can sit entirely above (or below) the budget, clamping the
+  interpolated miss-rate to a misleading endpoint; the bracketing puts a point on each
+  side so the reported number is honest. (The event-grouped FA counting is kept — a
+  sustained false trigger is still ONE annoyance, not one per frame.)
+
+### Corpus recipe (you download; both git-ignored — no audio is bundled)
+
+The benchmark needs two user-supplied corpora. The whole `debug/` tree is **git-ignored**,
+so drop files in and they stay out of the repo:
+
+- **Negatives** → `debug/negatives/` (or `WAKE_NEG_CORPUS`): wake-word-FREE *speech* that
+  must NOT trigger the word. **[LibriSpeech `test-clean`](https://www.openslr.org/12/)**
+  is the standard source — but FILTER OUT any utterance whose transcript contains your
+  wake word (use the per-chapter `.trans.txt` files) so no wake-word leaks into the
+  "negatives" and deflates the false-accept count.
+- **Noise** → `debug/noise/` (or `WAKE_NOISE_CORPUS`): ambient room tone, TV, café
+  babble, mechanical hum. **[MUSAN](https://www.openslr.org/17/)** (`noise/` + `music/`)
+  and **[DEMAND](https://zenodo.org/records/1227121)** (real recorded environments:
+  kitchen, café, car, office) are the usual sources.
+
+Both are large, third-party, and licensed for research — so they are **downloaded by you**,
+never shipped in this repo. Point the env vars at wherever you unpack them if you don't
+want them under `debug/`.
 
 ## Notes
 

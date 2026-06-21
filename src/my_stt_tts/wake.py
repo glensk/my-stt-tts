@@ -897,6 +897,98 @@ def separation(pos_scores: list[float], neg_scores: list[float]) -> float:
     return round(mean_gap / pooled, 4)
 
 
+def _fa_per_hour_at(
+    neg_traces: list[list[float]],
+    thr: float,
+    neg_seconds: float,
+    *,
+    grouping_window: int,
+    window: int,
+    refractory: int,
+    smoothing: bool,
+) -> float:
+    """False-accepts/hour over ``neg_traces`` at one threshold (the shared FA counter).
+
+    Uses the LIVE moving-average state machine (:func:`count_fires_moving_average`) when
+    temporal smoothing is active, else the event-grouped per-frame counter
+    (:func:`count_fa_events`) — exactly what :func:`fa_eval` uses per point. Pure.
+    """
+    if smoothing:
+        fa_events = sum(
+            count_fires_moving_average(t, thr, window=window, refractory=refractory)
+            for t in neg_traces
+        )
+    else:
+        fa_events = sum(
+            count_fa_events(t, thr, grouping_window=grouping_window) for t in neg_traces
+        )
+    return (fa_events / neg_seconds * 3600.0) if neg_seconds > 0 else 0.0
+
+
+def _adaptive_threshold_grid(
+    neg_traces: list[list[float]],
+    neg_seconds: float,
+    target_fa: float,
+    *,
+    grouping_window: int,
+    window: int,
+    refractory: int,
+    smoothing: bool,
+    base_grid: list[float],
+    max_iter: int = 24,
+    tol: float = 1e-3,
+) -> list[float]:
+    """Augment ``base_grid`` with bisection thresholds that BRACKET ``target_fa`` FA/hour.
+
+    The adaptive-bracketing fix (Porcupine's idea, repo #4 — ports ``benchmark.py``'s
+    bisection on the operating threshold). A fixed ``np.linspace`` grid can miss the
+    region around ``target_fa`` entirely on a SHARP ROC: every swept point sits far
+    above or far below the budget, so :func:`_miss_at_target_fa`'s ``np.interp`` CLAMPS
+    to an endpoint and reports a misleading miss-rate. This walks the threshold to
+    actually straddle the budget: it bisects on ``[0, 1]`` (FA/hour is monotone
+    non-increasing in the threshold — a stricter threshold never raises false-accepts),
+    converging on the threshold whose FA/hour ≈ ``target_fa`` and keeping the bracketing
+    pair so the interpolation has a point on EACH side of the budget.
+
+    Returns the union of ``base_grid`` and the bracketing thresholds, sorted ascending
+    and de-duplicated. Pure given the traces. Empty negatives -> ``base_grid`` unchanged
+    (FA is 0 everywhere; nothing to bracket).
+    """
+    if not neg_traces or neg_seconds <= 0:
+        return sorted(set(base_grid))
+
+    def fa_at(thr: float) -> float:
+        return _fa_per_hour_at(
+            neg_traces,
+            thr,
+            neg_seconds,
+            grouping_window=grouping_window,
+            window=window,
+            refractory=refractory,
+            smoothing=smoothing,
+        )
+
+    lo, hi = 0.0, 1.0  # FA(lo) is the max (loosest), FA(hi) the min (strictest)
+    fa_lo, fa_hi = fa_at(lo), fa_at(hi)
+    extra: list[float] = [lo, hi]
+    # If target is outside the achievable FA range, no interior bracket exists — the
+    # endpoints already bound it; the base grid + endpoints suffice.
+    if target_fa >= fa_lo or target_fa <= fa_hi:
+        return sorted(set(base_grid) | set(extra))
+    # Bisect: FA is non-increasing in thr, so on [lo, hi] FA goes fa_lo -> fa_hi.
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        fa_mid = fa_at(mid)
+        extra.append(round(mid, 4))
+        if abs(fa_mid - target_fa) <= tol or (hi - lo) < tol:
+            break
+        if fa_mid > target_fa:
+            lo = mid  # too many FA -> need a STRICTER (higher) threshold
+        else:
+            hi = mid
+    return sorted(set(base_grid) | set(round(t, 4) for t in extra))
+
+
 def fa_eval(
     pos_traces: list[list[float]],
     neg_traces: list[list[float]],
@@ -906,6 +998,7 @@ def fa_eval(
     window: int = 1,
     refractory: int = 0,
     target_fa: float = 0.5,
+    adaptive: bool = True,
 ) -> dict[str, Any]:
     """Sweep ``thresholds`` → false-accepts/hour + true-accept rate (ROC/DET points).
 
@@ -932,30 +1025,59 @@ def fa_eval(
     curve (monotonized by sort), so a user can read "to stay under 0.5 FA/h you miss X%".
     Pure; an empty negative corpus yields ``fa_per_hour = 0`` everywhere and a clear
     caller-level message (the worker checks the corpus before calling).
+
+    **Adaptive bracketing** (Porcupine's idea, repo #4): when ``adaptive`` (the default)
+    and no explicit ``thresholds`` are given, the fixed ``np.linspace(0.05, 0.95, 19)``
+    grid is AUGMENTED (not replaced) with bisection thresholds that actually BRACKET
+    ``target_fa`` (see :func:`_adaptive_threshold_grid`). On a SHARP ROC the linspace
+    grid can sit entirely above or below the FA budget, clamping
+    :func:`_miss_at_target_fa`'s interpolation to an endpoint; the bracketing adds points
+    on EACH side of the budget so the miss-rate is interpolated, not clamped. The
+    event-grouped FA counting (:func:`count_fa_events`) is kept exactly — only the
+    threshold grid grows. Pass explicit ``thresholds`` (or ``adaptive=False``) to use a
+    fixed grid.
     """
-    grid = thresholds if thresholds else [round(t, 3) for t in np.linspace(0.05, 0.95, 19)]
     neg_frames = sum(len(t) for t in neg_traces)
     neg_seconds = neg_frames * SECONDS_PER_FRAME
     n_pos = len(pos_traces)
     smoothing = window > 1 or refractory > 0
+    if thresholds:
+        grid = [round(float(t), 4) for t in thresholds]
+    else:
+        base_grid = [round(t, 3) for t in np.linspace(0.05, 0.95, 19)]
+        grid = (
+            _adaptive_threshold_grid(
+                neg_traces,
+                neg_seconds,
+                target_fa,
+                grouping_window=grouping_window,
+                window=window,
+                refractory=refractory,
+                smoothing=smoothing,
+                base_grid=base_grid,
+            )
+            if adaptive
+            else sorted(set(base_grid))
+        )
     points: list[dict[str, Any]] = []
     for thr in grid:
+        fa_per_hour = _fa_per_hour_at(
+            neg_traces,
+            thr,
+            neg_seconds,
+            grouping_window=grouping_window,
+            window=window,
+            refractory=refractory,
+            smoothing=smoothing,
+        )
         if smoothing:
-            fa_events = sum(
-                count_fires_moving_average(t, thr, window=window, refractory=refractory)
-                for t in neg_traces
-            )
             accepts = sum(
                 1
                 for t in pos_traces
                 if moving_average_fires(t, thr, window=window, refractory=refractory)
             )
         else:
-            fa_events = sum(
-                count_fa_events(t, thr, grouping_window=grouping_window) for t in neg_traces
-            )
             accepts = sum(1 for t in pos_traces if (np.asarray(t).max() if t else 0.0) >= thr)
-        fa_per_hour = (fa_events / neg_seconds * 3600.0) if neg_seconds > 0 else 0.0
         true_accept = (accepts / n_pos) if n_pos else 0.0
         points.append(
             {
@@ -987,6 +1109,126 @@ def _miss_at_target_fa(points: list[dict[str, Any]], target_fa: float) -> float:
     miss = np.asarray([1.0 - p["true_accept"] for p in points], dtype=np.float64)
     order = np.argsort(fa)
     return round(float(np.interp(float(target_fa), fa[order], miss[order])), 4)
+
+
+# Default SNR ladder (dB) the noise×SNR benchmark sweeps: clean (None) first, then a
+# moderate and a hard noisy condition. Lower SNR == relatively louder noise == harder.
+DEFAULT_SNR_LIST: tuple[float | None, ...] = (None, 10.0, 5.0)
+
+
+def _mix_clips_at_snr(
+    clips: list[np.ndarray], noise_clips: list[np.ndarray], snr_db: float | None
+) -> list[np.ndarray]:
+    """Mix each clip with a (round-robin) noise clip at ``snr_db`` — or pass through clean.
+
+    ``snr_db is None`` (or no noise clips) returns the clips UNCHANGED (the clean
+    condition). Otherwise clip ``i`` is mixed with ``noise_clips[i % len(noise_clips)]``
+    at the target SNR via :func:`my_stt_tts.audio.mix_at_snr` (RMS-matched, tiled/trimmed
+    to length). Pure; clips are assumed 16 kHz float32.
+    """
+    from .audio import mix_at_snr
+
+    if snr_db is None or not noise_clips:
+        return clips
+    out: list[np.ndarray] = []
+    for i, clip in enumerate(clips):
+        noise = noise_clips[i % len(noise_clips)]
+        out.append(mix_at_snr(clip, noise, float(snr_db)))
+    return out
+
+
+def fa_eval_snr(
+    pos_clips: list[np.ndarray],
+    neg_clips: list[np.ndarray],
+    noise_clips: list[np.ndarray],
+    word: str,
+    *,
+    snr_list: list[float | None] | None = None,
+    sample_rate: int = 16000,
+    threshold: float = 0.4,
+    phases: int = 8,
+    wakewords_dir: str = WAKEWORDS_DIR,
+    grouping_window: int = 10,
+    window: int = 1,
+    refractory: int = 0,
+    target_fa: float = 0.5,
+) -> dict[str, Any]:
+    """fa_eval across a NOISE×SNR matrix (Porcupine's idea, repo #4) → ``per_snr`` axis.
+
+    For each ``snr_db`` in ``snr_list`` (default :data:`DEFAULT_SNR_LIST` —
+    ``[None(clean), 10, 5]``) the positives + negatives are mixed with the user's noise
+    corpus at that SNR (:func:`_mix_clips_at_snr` → :func:`my_stt_tts.audio.mix_at_snr`,
+    RMS-energy-matched), re-scored to per-frame traces through the REAL phase-diverse
+    detector (:func:`score_clip_set`), and run through :func:`fa_eval`. The result is:
+
+        ``{"clean": <fa_eval at the clean/None condition>,
+           "snr_list": [<echoed SNRs, None for clean>],
+           "per_snr": [{snr_db, miss_at_target_fa, points:[…]}, …]}``
+
+    where the ``per_snr`` entry for the clean condition carries ``snr_db: None``. An
+    EMPTY ``noise_clips`` collapses to the clean-only condition (every requested SNR maps
+    to the clean clips) and the caller emits a "drop noise WAVs into <dir>" note — never
+    crashes. Pure given the clips.
+    """
+    snrs: list[float | None] = list(snr_list) if snr_list is not None else list(DEFAULT_SNR_LIST)
+    # With no noise, only the clean condition is meaningful — dedupe to a single clean run.
+    if not noise_clips:
+        snrs = [None]
+
+    def _eval_at(snr_db: float | None) -> dict[str, Any]:
+        pos_mixed = _mix_clips_at_snr(pos_clips, noise_clips, snr_db)
+        neg_mixed = _mix_clips_at_snr(neg_clips, noise_clips, snr_db)
+        _, pos_traces = (
+            score_clip_set(
+                pos_mixed,
+                word,
+                sample_rate=sample_rate,
+                threshold=threshold,
+                phases=phases,
+                wakewords_dir=wakewords_dir,
+            )
+            if pos_mixed
+            else ([], [])
+        )
+        _, neg_traces = (
+            score_clip_set(
+                neg_mixed,
+                word,
+                sample_rate=sample_rate,
+                threshold=threshold,
+                phases=phases,
+                wakewords_dir=wakewords_dir,
+            )
+            if neg_mixed
+            else ([], [])
+        )
+        return fa_eval(
+            pos_traces,
+            neg_traces,
+            grouping_window=grouping_window,
+            window=window,
+            refractory=refractory,
+            target_fa=target_fa,
+        )
+
+    per_snr: list[dict[str, Any]] = []
+    clean_result: dict[str, Any] = {}
+    for snr_db in snrs:
+        result = _eval_at(snr_db)
+        if snr_db is None and not clean_result:
+            clean_result = result
+        per_snr.append(
+            {
+                "snr_db": snr_db,
+                "miss_at_target_fa": result["miss_at_target_fa"],
+                "points": result["points"],
+            }
+        )
+    return {
+        "clean": clean_result or (per_snr[0] if per_snr else {}),
+        "snr_list": snrs,
+        "per_snr": per_snr,
+    }
 
 
 # --------------------------------------------------------------------------- #

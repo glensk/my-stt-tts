@@ -174,10 +174,38 @@ def _fmt_score_histogram_result(e: dict[str, Any]) -> str:
 
 def _fmt_fa_eval_result(e: dict[str, Any]) -> str:
     pts = e.get("points", []) or []
+    snr = e.get("per_snr") or []
+    snr_tag = f" ×{len(snr)} SNR" if snr else ""
     return (
         f"{e.get('word', '')} {len(pts)} points miss@{e.get('target_fa', 0)}fa/h="
-        f"{e.get('miss_at_target_fa', 0)}"
+        f"{e.get('miss_at_target_fa', 0)}{snr_tag}"
     )
+
+
+def _round_per_snr(per_snr: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Round a ``per_snr`` list for the wire: ``[{snr_db, miss_at_target_fa, points}]``.
+
+    Mirrors the rounding the base ``points`` get. ``snr_db`` stays ``None`` for the clean
+    condition; each per-threshold point is rounded the same way as the top-level points.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in per_snr:
+        snr_db = entry.get("snr_db")
+        out.append(
+            {
+                "snr_db": None if snr_db is None else round(float(snr_db), 4),
+                "miss_at_target_fa": round(float(entry.get("miss_at_target_fa", 0.0)), 4),
+                "points": [
+                    {
+                        "threshold": round(float(p.get("threshold", 0.0)), 4),
+                        "fa_per_hour": round(float(p.get("fa_per_hour", 0.0)), 4),
+                        "true_accept": round(float(p.get("true_accept", 0.0)), 4),
+                    }
+                    for p in (entry.get("points") or [])
+                ],
+            }
+        )
+    return out
 
 
 def _fmt_verifier_result(e: dict[str, Any]) -> str:
@@ -847,6 +875,8 @@ class EventBus:
         miss_at_target_fa: float,
         target_fa: float,
         neg_seconds: float = 0.0,
+        per_snr: list[dict[str, Any]] | None = None,
+        snr_list: list[float | None] | None = None,
         message: str = "",
     ) -> None:
         """Publish the false-accepts/hour + ROC/DET operating curve (GUI ``fa_eval``).
@@ -860,6 +890,12 @@ class EventBus:
         olated along the FA/hour ↦ miss curve. ``neg_seconds`` is the corpus duration the
         FA/hour normalizes against; ``message`` is the human one-liner (or the "drop WAVs
         into <dir>" hint when the corpus is empty).
+
+        NOISE×SNR axis (Porcupine's idea, repo #4): when a noise corpus is configured,
+        ``per_snr`` is a list of ``{snr_db, miss_at_target_fa, points:[…]}`` — the same
+        operating curve measured at each SNR (``snr_db: null`` is the clean condition) —
+        and ``snr_list`` echoes the SNRs tested. Both are ``None``/absent when no noise
+        corpus is configured (clean-only), so the base contract is unchanged.
         """
         self.publish(
             {
@@ -876,6 +912,8 @@ class EventBus:
                 "miss_at_target_fa": round(float(miss_at_target_fa), 4),
                 "target_fa": round(float(target_fa), 4),
                 "neg_seconds": round(float(neg_seconds), 2),
+                "per_snr": _round_per_snr(per_snr) if per_snr is not None else None,
+                "snr_list": list(snr_list) if snr_list is not None else None,
                 "message": message,
             }
         )

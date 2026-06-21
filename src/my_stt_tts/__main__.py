@@ -246,10 +246,13 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
+        f"  sensitivity {blue}{cfg.sensitivity_for(cfg.wake_phrase)}{reset}"
+        f"{' (master)' if cfg.wake_sensitivity_set else ' (threshold is master)'}"
         f"  phases {blue}{cfg.wake_phases}{reset}"
         f"  window {blue}{cfg.wake_window}{reset}  refractory {blue}{cfg.wake_refractory}{reset}"
         f"  mic-gain {blue}{cfg.mic_gain}{reset}"
         f"  wake-gain {blue}{cfg.wake_gain}{reset}"
+        f"  noise-corpus {cfg.noise_corpus_dir}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  kws        enabled {blue}{cfg.kws_enabled}{reset}  (OR'd detector for CUSTOM words;"
@@ -473,6 +476,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--settings", action="store_true", help="Print the resolved settings and exit."
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Run the noise×SNR wake benchmark for the selected word (saved positives + "
+        "the negative corpus mixed with the noise corpus at each SNR), print a per-SNR "
+        "miss@target-FA table, write JSON artifacts under debug/benchmark/, then exit.",
+    )
+    parser.add_argument(
+        "--benchmark-snr",
+        help="Comma-separated SNRs (dB) for --benchmark, e.g. 'clean,10,5' "
+        "(default clean,10,5). 'clean' (or 'none') = the noise-free condition.",
     )
     return parser.parse_args(argv)
 
@@ -2068,6 +2083,26 @@ def _load_negative_clips(cfg: Config) -> tuple[list[np.ndarray], str]:
     return clips, neg_dir
 
 
+def _load_noise_clips(cfg: Config) -> tuple[list[np.ndarray], str]:
+    """Every WAV in the NOISE corpus as 16 kHz float32 + the resolved dir.
+
+    Reads :data:`Config.noise_corpus_dir` (env ``WAKE_NOISE_CORPUS``) flat via
+    :func:`audio.list_wavs` / :func:`audio.read_wav_float` — the wake-word-FREE noise the
+    noise×SNR benchmark mixes into the positives + negatives. Returns ``(clips, dir)``;
+    an empty list signals the caller to run clean-only + emit the "drop noise WAVs into
+    <dir>" note.
+    """
+    noise_dir = cfg.noise_corpus_dir
+    clips: list[np.ndarray] = []
+    for path in audio.list_wavs(noise_dir):
+        try:
+            clip, _rate = audio.read_wav_float(path, target_rate=16000)
+            clips.append(clip)
+        except Exception as exc:  # noqa: BLE001 — one bad clip must not sink the set
+            log.warning("skipping unreadable noise clip %s: %s", path, exc)
+    return clips, noise_dir
+
+
 def _run_wake_gain_sweep(cfg: Config, word: str, hash8: str | None, gains: list[float]) -> None:
     """Re-score a SAVED wake clip at each gain (the smoking-gun diagnostic).
 
@@ -2317,9 +2352,31 @@ def _run_fa_eval(cfg: Config, word: str) -> None:
         refractory=cfg.wake_refractory,
         target_fa=0.5,
     )
+    # NOISE×SNR axis (Porcupine's idea, repo #4): when a noise corpus is present, mix the
+    # positives + negatives at each SNR and re-measure miss@target-FA per condition.
+    # Empty noise dir -> clean-only + a clear "drop noise WAVs into <dir>" note.
+    from .wake import fa_eval_snr
+
+    noise_clips, noise_dir = _load_noise_clips(cfg)
+    snr_result = fa_eval_snr(
+        pos_clips,
+        neg_clips,
+        noise_clips,
+        word,
+        threshold=cfg.wake_threshold,
+        phases=cfg.wake_phases,
+        window=cfg.wake_window,
+        refractory=cfg.wake_refractory,
+        target_fa=0.5,
+    )
+    noise_note = (
+        f" · {len(noise_clips)} noise clips ×{len(snr_result['snr_list'])} SNR"
+        if noise_clips
+        else f" · clean only (drop noise WAVs into {noise_dir})"
+    )
     message = (
         f"{word}: {len(pos_traces)} positives vs {result['neg_seconds']}s of negatives — "
-        f"miss {result['miss_at_target_fa'] * 100:.0f}% at {result['target_fa']} FA/h"
+        f"miss {result['miss_at_target_fa'] * 100:.0f}% at {result['target_fa']} FA/h{noise_note}"
     )
     bus.log("✓ " + message)
     bus.fa_eval_result(
@@ -2328,9 +2385,119 @@ def _run_fa_eval(cfg: Config, word: str) -> None:
         miss_at_target_fa=result["miss_at_target_fa"],
         target_fa=result["target_fa"],
         neg_seconds=result["neg_seconds"],
+        per_snr=snr_result["per_snr"] if noise_clips else None,
+        snr_list=snr_result["snr_list"] if noise_clips else None,
         message=message,
     )
     bus.state("idle")
+
+
+def _parse_benchmark_snrs(raw: str | None) -> list[float | None]:
+    """Parse ``--benchmark-snr`` (``clean,10,5``) -> ``[None, 10.0, 5.0]``.
+
+    ``clean`` / ``none`` (any case) -> ``None`` (the noise-free condition); everything
+    else is a float SNR in dB. A blank value -> the default ladder
+    (:data:`my_stt_tts.wake.DEFAULT_SNR_LIST`). Malformed tokens are skipped. Never raises.
+    """
+    from .wake import DEFAULT_SNR_LIST
+
+    if not raw or not raw.strip():
+        return list(DEFAULT_SNR_LIST)
+    out: list[float | None] = []
+    for token in raw.split(","):
+        tok = token.strip().lower()
+        if not tok:
+            continue
+        if tok in ("clean", "none"):
+            out.append(None)
+            continue
+        try:
+            out.append(float(tok))
+        except ValueError:
+            log.warning("ignoring unparseable --benchmark-snr token %r", token)
+    return out or list(DEFAULT_SNR_LIST)
+
+
+def _run_benchmark(cfg: Config, snr_raw: str | None) -> int:
+    """Run the noise×SNR wake benchmark for the selected word, print a table, write artifacts.
+
+    The reproducible CLI harness (Porcupine's idea, repo #4): score the saved positives
+    + the negative corpus, mixed with the noise corpus at each SNR, through the REAL
+    phase-diverse detector → miss@target-FA per condition (:func:`my_stt_tts.wake.fa_eval_snr`).
+    Prints a per-SNR table to stdout and writes ``debug/benchmark/<word>-<ts>.json`` (the
+    full per-SNR points). Returns a process exit code (0 always when it ran; 1 only if the
+    wake model is missing). An empty noise corpus runs clean-only with a clear note.
+    """
+    import datetime as _dt
+    import json as _json
+
+    from .wake import fa_eval_snr, wake_model_for
+
+    word = cfg.wake_phrase
+    if not os.path.isfile(wake_model_for(word)):
+        print(
+            f"benchmark: wake model for {word!r} unavailable — train it "
+            "(see wakewords/WAKEWORD.md) or pick another --wake-word",
+            file=sys.stderr,
+        )
+        return 1
+    pos_clips = _load_positive_clips(word)
+    neg_clips, neg_dir = _load_negative_clips(cfg)
+    noise_clips, noise_dir = _load_noise_clips(cfg)
+    snr_list = _parse_benchmark_snrs(snr_raw)
+    print(
+        f"wake benchmark · word={word} · {len(pos_clips)} positives · {len(neg_clips)} "
+        f"negatives ({neg_dir}) · {len(noise_clips)} noise clips ({noise_dir})"
+    )
+    if not pos_clips:
+        print(
+            "  (no saved positive clips — run WAKE TEST a few times; recall column will be empty)"
+        )
+    if not noise_clips:
+        print(
+            f"  (noise corpus empty — clean-only; drop noise WAVs into {noise_dir} "
+            "for the SNR axis)"
+        )
+    result = fa_eval_snr(
+        pos_clips,
+        neg_clips,
+        noise_clips,
+        word,
+        snr_list=snr_list,
+        threshold=cfg.wake_threshold,
+        phases=cfg.wake_phases,
+        window=cfg.wake_window,
+        refractory=cfg.wake_refractory,
+        target_fa=0.5,
+    )
+    print(f"  target {0.5} FA/h · threshold {cfg.wake_threshold} · phases {cfg.wake_phases}")
+    print("  SNR (dB)   miss@target-FA   operating points")
+    for entry in result["per_snr"]:
+        snr_db = entry["snr_db"]
+        label = "clean" if snr_db is None else f"{snr_db:g}"
+        miss = entry["miss_at_target_fa"]
+        print(f"  {label:>8}   {miss * 100:>13.0f}%   {len(entry['points'])}")
+    # Write the full artifact (gitignored debug/ tree).
+    out_dir = os.path.join(audio.recordings_dir(), "..", "benchmark")
+    out_dir = os.path.normpath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%dT%H%M%S")
+    out_path = os.path.join(out_dir, f"{word}-{stamp}.json")
+    artifact = {
+        "word": word,
+        "threshold": cfg.wake_threshold,
+        "phases": cfg.wake_phases,
+        "target_fa": 0.5,
+        "n_positives": len(pos_clips),
+        "n_negatives": len(neg_clips),
+        "n_noise": len(noise_clips),
+        "snr_list": result["snr_list"],
+        "per_snr": result["per_snr"],
+    }
+    with open(out_path, "w", encoding="utf-8") as fh:
+        _json.dump(artifact, fh, indent=2)
+    print(f"  artifact: {out_path}")
+    return 0
 
 
 def _run_train_verifier(cfg: Config, word: str) -> None:
@@ -2934,6 +3101,11 @@ def main(argv: list[str] | None = None) -> int:
             from .preflight import preflight_main
 
             return preflight_main(cfg)
+        if args.benchmark:
+            # The noise×SNR benchmark reads SAVED clips only — no mic, no heavy STT.
+            # Validate config (so a bad wake word fails clearly) then run + exit.
+            cfg.validate()
+            return _run_benchmark(cfg, args.benchmark_snr)
         cfg.validate()
     except ConfigError as exc:
         print(exc, file=sys.stderr)
