@@ -154,6 +154,10 @@ header.bar{
 .wake-cue .dot{width:9px;height:9px;border-radius:50%;background:#fff;
   box-shadow:0 0 10px #fff}
 @keyframes wakecue{50%{box-shadow:0 0 8px -2px var(--mag); opacity:.82}}
+/* LIVE relabel slot in the scope-top — holds "✗ False fire — capture"; shown after a
+   wake fires, persists until the next fire so it stays clickable. */
+.wake-relabel[hidden]{display:none}
+.wake-relabel{display:inline-flex; align-items:center}
 .hot-flag{
   font-size:10px; letter-spacing:2px; text-transform:uppercase; padding:5px 10px; border-radius:6px;
   border:1px solid var(--line2); color:var(--ink-dim); background:rgba(3,8,13,.6); white-space:nowrap;
@@ -571,6 +575,62 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .score-clip-out{font-size:9.5px; letter-spacing:.4px; color:var(--ink-dim)}
 .score-clip-out b{font-weight:600}
 .score-clip-out.fired b{color:var(--green)} .score-clip-out.miss b{color:var(--red)}
+/* ---------- ACTIVE-LEARNING RELABEL bar (per saved-clip row) ----------
+   Teach the wake word from its mistakes: "✗ Wasn't me" (false fire → negative),
+   "✓ Missed me" (a miss → positive). The eval-gated rebuild only sticks if it helps,
+   so the buttons are quiet pills (red / green) with a shared ⓘ that says as much.
+   "✗ False fire — capture" lives on the LIVE now-fired cue (same family). */
+.relabel-bar{display:flex; align-items:center; gap:7px; flex-wrap:wrap}
+.relabel-bar .rl-lead{font-size:9px; letter-spacing:.6px; text-transform:uppercase; color:var(--ink-faint)}
+.relabel-btn{display:inline-flex; align-items:center; gap:5px; padding:4px 11px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; color:var(--ink-dim);
+  font-size:10px; letter-spacing:.5px; cursor:pointer; transition:.15s; text-transform:none}
+.relabel-btn:disabled{opacity:.5; cursor:default; box-shadow:none}
+.relabel-btn.busy{animation:blink .9s steps(2) infinite}
+.relabel-btn.rl-false{border-color:var(--red); color:var(--red); background:rgba(255,77,109,.06)}
+.relabel-btn.rl-false:hover{box-shadow:0 0 12px -4px var(--red)}
+.relabel-btn.rl-miss{border-color:var(--green); color:var(--green); background:rgba(61,255,166,.06)}
+.relabel-btn.rl-miss:hover{box-shadow:0 0 12px -4px var(--green)}
+.relabel-btn.rl-capture{border-color:var(--amber); color:var(--amber); background:rgba(255,182,72,.07)}
+.relabel-btn.rl-capture:hover{box-shadow:0 0 12px -4px var(--amber)}
+/* ---------- RELABEL RESULT card (eval-gated outcome) ----------
+   On a relabel_result: did the rebuild's eval keep the change (green) or roll it back
+   (amber)? Before→after d-prime + FA/hour make the "only sticks if it helped" visible.
+   Same visual family as .verdict so the row reads consistently. */
+.relabel-card{display:flex; flex-direction:column; gap:5px; padding:8px 11px; border-radius:8px;
+  border:1px solid var(--line2); background:#060c12; font-size:11px; letter-spacing:.3px; width:100%}
+.relabel-card .rc-head{display:flex; align-items:center; gap:7px; font-weight:700; letter-spacing:.5px}
+.relabel-card .rc-head .rc-dot{width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--ink-faint)}
+.relabel-card .rc-sub{font-size:9.5px; color:var(--ink-faint); letter-spacing:.3px}
+.relabel-card .rc-msg{font-size:10px; color:var(--ink-dim); letter-spacing:.2px; line-height:1.5}
+.relabel-card .rc-metrics{display:flex; flex-wrap:wrap; gap:5px 7px; font-size:9.5px; letter-spacing:.4px}
+.relabel-card .rc-metrics .kv{display:inline-flex; align-items:center; gap:5px; padding:2px 8px;
+  border-radius:999px; border:1px solid var(--line2); background:#04090e; color:var(--ink-dim)}
+.relabel-card .rc-metrics .kv b{font-weight:600}
+.relabel-card .rc-metrics .kv .rc-arrow{color:var(--ink-faint)}
+.relabel-card .rc-metrics .kv .rc-from{color:var(--ink-dim)}
+.relabel-card.kept{border-color:var(--green); box-shadow:0 0 16px -7px var(--green)}
+.relabel-card.kept .rc-head{color:var(--green)} .relabel-card.kept .rc-head .rc-dot{background:var(--green); box-shadow:var(--glow) var(--green)}
+.relabel-card.kept .rc-metrics .kv b{color:var(--green)}
+.relabel-card.rolledback{border-color:var(--amber); box-shadow:0 0 16px -7px var(--amber)}
+.relabel-card.rolledback .rc-head{color:var(--amber)} .relabel-card.rolledback .rc-head .rc-dot{background:var(--amber); box-shadow:var(--glow) var(--amber)}
+.relabel-card.rolledback .rc-metrics .kv b{color:var(--amber)}
+/* ---------- calibration toggle (Advanced disclosure) ----------
+   A switch-style checkbox; per-word calibration state shows next to it as a chip. */
+.cal-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.cal-switch{position:relative; display:inline-flex; align-items:center; gap:8px; cursor:pointer}
+.cal-switch input{position:absolute; opacity:0; width:0; height:0}
+.cal-track{position:relative; width:34px; height:18px; border-radius:999px; flex:0 0 auto;
+  border:1px solid var(--line2); background:#060c12; transition:.15s}
+.cal-track::after{content:""; position:absolute; top:2px; left:2px; width:12px; height:12px;
+  border-radius:50%; background:var(--ink-faint); transition:.15s}
+.cal-switch input:checked + .cal-track{border-color:var(--cyan); background:rgba(34,231,255,.12)}
+.cal-switch input:checked + .cal-track::after{transform:translateX(16px); background:var(--cyan); box-shadow:0 0 8px -1px var(--cyan)}
+.cal-switch input:focus-visible + .cal-track{outline:2px solid var(--cyan-dim); outline-offset:2px}
+.cal-state{display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--line2); background:#060c12; font-size:9px; letter-spacing:.4px; color:var(--ink-dim)}
+.cal-state.on{border-color:var(--green); color:var(--green)}
+.cal-state.off{border-color:var(--amber); color:var(--amber)}
 /* 🔎 find-gain button — kicks the gain sweep; amber (it's the "your level is probably the bug" path) */
 .find-gain{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
   border:1px solid var(--amber); background:rgba(255,182,72,.07); color:var(--amber);
@@ -929,6 +989,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                 <span class="wake-cue" id="wakeCue" role="status" aria-live="assertive">
                   <span class="dot" aria-hidden="true"></span><span id="wakeCueText">WAKE</span>
                 </span>
+                <!-- ★ LIVE relabel — "✗ False fire — capture" on the now-fired path
+                     (task 1). Hidden until a wake fires; revealed by fireWakeCue, then
+                     hidden with the cue. POSTs {action:"capture_last_fire", word}. -->
+                <span class="wake-relabel" id="wakeRelabel" hidden></span>
                 <span class="hot-flag" id="hotFlag">MIC ● COLD</span>
               </div>
               <div class="scope-bottom">
@@ -1332,6 +1396,25 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                   <input type="range" id="wakeGain" data-key="wake_gain" data-val="wakeGainVal" data-suffix="×"
                          min="1" max="10" step="0.5" aria-label="Wake-loop capture gain">
                 </div>
+                <!-- ★ SCORE CALIBRATION (task 3) — when ON, raw wake scores are mapped
+                     onto a common scale so the Sensitivity dial means the same thing for
+                     every word. Wired via [data-key]="wake_calibration" (a bool), so it
+                     POSTs the same way every config control does. The per-word calibration
+                     state (from wake_word_info[word].calibration) is shown as a chip,
+                     filled by updateCalibrationUi() for the selected phrase. -->
+                <div class="field" style="margin-bottom:0">
+                  <label for="wakeCalibration">Score calibration
+                    <span class="info" id="wakeCalInfoHost"></span>
+                  </label>
+                  <div class="cal-row">
+                    <label class="cal-switch" for="wakeCalibration">
+                      <input type="checkbox" id="wakeCalibration" data-key="wake_calibration"
+                             aria-label="Calibrate raw wake scores">
+                      <span class="cal-track" aria-hidden="true"></span>
+                    </label>
+                    <span class="cal-state" id="wakeCalState" hidden></span>
+                  </div>
+                </div>
                 <!-- ★ Open-vocab KWS recall knobs — apply ONLY to a custom / KWS wake
                      word (the open-vocabulary sherpa-onnx path). Boost amplifies the
                      keyword's acoustic score; threshold is the score it must clear.
@@ -1556,6 +1639,9 @@ function setState(state, detail){
    pulsing "WAKE ●" badge for ~1.6s. Survives reduced-motion (the badge still
    shows; only the animation is muted by the global reduced-motion rule). */
 let wakeCueTimer = null;
+// Word of the most-recently-fired LIVE wake — the "✗ False fire — capture" control on
+// the wake cue relabels the server's last fire against it. Set by fireWakeCue().
+let lastFiredWord = "";
 function fireWakeCue(phrase){
   const chip = $("#stateChip");
   if(chip){
@@ -1566,6 +1652,18 @@ function fireWakeCue(phrase){
   const cue = $("#wakeCue"), cueText = $("#wakeCueText");
   if(cueText) cueText.textContent = phrase ? "WAKE · " + phrase : "WAKE";
   if(cue) cue.classList.add("show");
+  // Remember the fired word so the LIVE "✗ False fire — capture" control can relabel
+  // the server's last fire against it; mount/reveal that control next to the cue. It
+  // PERSISTS after the cue flash fades (a false fire is corrected after the fact), so
+  // it is NOT hidden on the cue timeout — it stays clickable until the next fire.
+  lastFiredWord = phrase || lastFiredWord;
+  const rl = $("#wakeRelabel");
+  if(rl){
+    if(!rl.firstChild && typeof buildCaptureLastFire === "function"){ rl.appendChild(buildCaptureLastFire()); }
+    rl.hidden = false; rl.classList.add("show");
+    const cap = rl.querySelector(".rl-capture");
+    if(cap){ cap.classList.remove("busy"); cap.disabled = false; }   // re-arm for the new fire
+  }
   clearTimeout(wakeCueTimer);
   wakeCueTimer = setTimeout(()=>{
     if(cue) cue.classList.remove("show");
@@ -2177,6 +2275,43 @@ function updateSensitivityUi(word){
   syncSensitivitySlider(word);
   updateSensitivityCaption(word);
   updateSensitivityGuide(word);
+  updateCalibrationUi(word);     // calibration toggle + per-word state track the phrase too
+}
+/* ★ CALIBRATION (task 3) — reflect the global wake_calibration toggle, and show the
+   SELECTED word's per-word calibration state from wake_word_info[word].calibration.
+   The contract leaves the per-word shape flexible: it may be a bool, or an object
+   {state, points} / {calibrated, n} — coerce any of those into a short legible chip
+   ("calibrated · 24 clips" green / "needs more clips" amber / "uncalibrated"). */
+function calibrationStateFor(word){
+  const info = wakeInfoFor(word);
+  if(!info || info.calibration == null) return null;
+  const c = info.calibration;
+  if(typeof c === "boolean") return {ok:c, label: c ? "calibrated" : "uncalibrated"};
+  if(typeof c === "string"){ const ok = /calibrat|ready|ok/i.test(c) && !/un|need|none/i.test(c); return {ok, label:c}; }
+  if(typeof c === "object"){
+    const n = (typeof c.points === "number") ? c.points : (typeof c.n === "number") ? c.n : null;
+    const ok = (c.calibrated === true) || (typeof c.state === "string" && /calibrat|ready|ok/i.test(c.state) && !/un|need|none/i.test(c.state));
+    const base = (typeof c.state === "string" && c.state) || (ok ? "calibrated" : (n != null ? "needs more clips" : "uncalibrated"));
+    return {ok, label: base + (n != null ? " · " + n + " clip" + (n===1?"":"s") : "")};
+  }
+  return null;
+}
+function updateCalibrationUi(word){
+  const box = $("#wakeCalibration");
+  if(box){ box.checked = !!(settings && settings.wake_calibration); }
+  const chip = $("#wakeCalState");
+  if(!chip) return;
+  const st = calibrationStateFor(word);
+  if(!st || !(settings && settings.wake_calibration)){
+    // Hide the per-word chip when calibration is off, or no per-word state is known.
+    chip.hidden = true; chip.className = "cal-state"; chip.textContent = ""; chip.removeAttribute("title");
+    return;
+  }
+  chip.hidden = false;
+  chip.className = "cal-state " + (st.ok ? "on" : "off");
+  chip.textContent = (word ? "“"+word+"”: " : "") + st.label;
+  chip.title = st.ok ? "This word's scores are calibrated — Sensitivity behaves the same as for every other word."
+                     : "This word isn't fully calibrated yet — relabel a few more clips so its scores map onto the common scale.";
 }
 
 function setWakeControls(s){
@@ -2246,10 +2381,17 @@ $("#wake").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefaul
   // to a microtask — it runs after the synchronous top-level script finishes. Replaces
   // the empty placeholder span with the bound info element.
   Promise.resolve().then(()=>{
+    if(typeof fieldInfo !== "function") return;
     const host = $("#sensInfoHost");
-    if(host && typeof fieldInfo === "function"){
+    if(host){
       const info = fieldInfo("sensitivity");
       if(info && host.parentNode) host.parentNode.replaceChild(info, host);
+    }
+    // Calibration toggle ⓘ — same deferred mount so it reuses the shared popover.
+    const calHost = $("#wakeCalInfoHost");
+    if(calHost){
+      const calInfo = fieldInfo("wake calibration");
+      if(calInfo && calHost.parentNode) calHost.parentNode.replaceChild(calInfo, calHost);
     }
   });
   const el = $("#wakeSensitivity"); if(!el) return;
@@ -2428,7 +2570,16 @@ $("#brain").addEventListener("change", e=>{
 // Each [data-key] control maps 1:1 to a contract field name.
 document.querySelectorAll("[data-key]").forEach(el=>{
   const key = el.dataset.key;
-  if(el.type === "range"){
+  if(el.type === "checkbox"){
+    // Boolean toggles (e.g. wake_calibration) POST {key: true|false}. The selected
+    // phrase's per-word calibration chip is refreshed alongside.
+    el.addEventListener("change", ()=>{
+      applyPatch({[key]: el.checked});
+      if(key === "wake_calibration" && typeof updateCalibrationUi === "function"){
+        settings[key] = el.checked; updateCalibrationUi(currentWakeWord);
+      }
+    });
+  } else if(el.type === "range"){
     // The live value readout is the element named by data-val (e.g. length_scale
     // updates #lengthVal, wake_threshold updates #wakeThresholdVal). An optional
     // data-suffix (e.g. "×" for mic_gain) is appended to the formatted number.
@@ -2793,6 +2944,12 @@ const FIELD_INFO = {
                 ranges:"Higher when the word is being MISSED (a quiet/accented phrase that never fires); lower when it triggers on TV/chatter. Run the 🔬 FA/hour eval to turn the dial into a measured operating point instead of a guess."},
   "per-SNR miss":{what:"Miss rate at a FIXED false-alarm budget, broken down per NOISE LEVEL — clean room vs +10 dB vs +5 dB signal-to-noise (your room has TV / kitchen noise). It shows how robust the wake word stays as the room gets louder, which a single clean-room number hides.",
                 ranges:"Low miss across all rows = robust. A clean-room low that balloons at 5 dB = the word collapses in noise — raise Sensitivity, move the mic closer, or pick a better-separated phrase. Empty/clean-only ⇒ drop noisy WAVs into the eval corpus to measure it."},
+  // active-learning relabel loop
+  relabel:     {what:"Teach the wake word from its mistakes — adds this clip as a negative (✗ Wasn't me — a false fire) or positive (✓ Missed me — a real say it ignored) and rebuilds, keeping the change only if detection measurably improves.",
+                ranges:"Eval-gated: the rebuild is scored against your saved positives/negatives and KEPT only if d-prime separation rises and false-alarms/hour don't worsen — otherwise it's rolled back automatically. Safe to click on any mislabelled clip."},
+  // calibration toggle
+  "wake calibration":{what:"Calibrate raw scores so Sensitivity means the same across every wake word. Without it, a raw 0.4 means one thing for hey_jarvis and another for maziko; calibration maps each word's raw score onto a common scale so one Sensitivity dial behaves identically everywhere.",
+                ranges:"ON recommended once each word has a few scored clips — the per-word state (calibrated / needs more clips) shows how well each word is pinned. OFF = raw scores, Sensitivity drifts per word."},
 };
 // Build a bound <span class="info">ⓘ + popover</span> for a named field.
 function fieldInfo(name){
@@ -3769,6 +3926,174 @@ function showScoreClipResult(d){
         + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
 }
 
+/* ============================================================
+   ACTIVE-LEARNING RELABEL LOOP — teach the wake word from its mistakes.
+   Each saved-clip row with a `hash` gets two relabel buttons:
+     ✗ Wasn't me  → POST {action:"mark_false_fire", word, hash}  (adds a NEGATIVE)
+     ✓ Missed me  → POST {action:"mark_miss",       word, hash}  (adds a POSITIVE)
+   The live now-fired cue gets a third (no saved row yet, so capture it server-side):
+     ✗ False fire — capture → POST {action:"capture_last_fire", word}
+   SHARED CONTRACT result event (relabel_result) carries rebuilt + accepted/rolled-back
+   + before→after d-prime + FA/hour, so the EVAL-GATED nature is visible: the change
+   only sticks if detection measurably improved, else it is rolled back automatically.
+   ============================================================ */
+// clipKey → relabel-card host element, so a relabel_result refines the right row's card.
+// (lastFiredWord — the word for "capture last fire" — is declared near fireWakeCue.)
+const relabelCardHost = {};
+// clipKey → that row's relabel buttons, so a relabel_result un-busies them (the buttons
+// live in a SIBLING row to the card host, so a host-local query can't reach them).
+const relabelBtnsByKey = {};
+// hash(8) → clipKey, so a backend result that echoes only the hash routes to the row.
+const relabelKeyByHash = {};
+// Clear the busy/disabled state of a row's relabel buttons (by clipKey).
+function unbusyRelabelBtns(clipKey){
+  (relabelBtnsByKey[clipKey] || []).forEach(b=>{ b.classList.remove("busy"); b.disabled = false; });
+}
+
+// Issue a relabel action for (word, hash) — used by the per-row buttons. `kind` ∈
+// "false_fire" | "miss"; flips the button into a busy state until relabel_result lands.
+function runRelabel(kind, word, hash, clipKey, btn){
+  const action = kind === "miss" ? "mark_miss" : "mark_false_fire";
+  if(btn){ btn.classList.add("busy"); btn.disabled = true; }
+  if(DEMO){
+    setTimeout(()=>{ const r = demoRelabelResult(word, action, kind !== "miss"); r._clipKey = clipKey; showRelabelResult(r); }, 600);
+  }else{
+    postAction({action: action, word: word||"", hash: hash||null, _clipKey: clipKey});
+  }
+}
+// Build the per-row relabel bar (✗ Wasn't me / ✓ Missed me) + the shared ⓘ. Only
+// rendered when the row carries a `hash` (so there is a concrete clip to relabel).
+function buildRelabelBar(word, hash, clipKey){
+  const bar = document.createElement("div"); bar.className = "relabel-bar";
+  const lead = document.createElement("span"); lead.className = "rl-lead"; lead.textContent = "relabel";
+  bar.appendChild(lead);
+  const hash8 = String(hash||"").slice(0,8);
+  if(hash8) relabelKeyByHash[hash8] = clipKey;
+  const btns = relabelBtnsByKey[clipKey] = [];
+  const mk = (cls, label, kind)=>{
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "relabel-btn " + cls;
+    b.textContent = label;
+    b.addEventListener("click", ()=> runRelabel(kind, word, hash, clipKey, b));
+    btns.push(b);
+    return b;
+  };
+  bar.appendChild(mk("rl-false", "✗ Wasn't me", "false_fire"));   // false fire → negative
+  bar.appendChild(mk("rl-miss",  "✓ Missed me", "miss"));         // a miss → positive
+  const info = fieldInfo("relabel"); if(info) bar.appendChild(info);
+  return bar;
+}
+// Eval-gated relabel result card. Green "✓ improved — kept" vs amber "rolled back —
+// no improvement", with before→after d-prime + FA/hour so the gate is legible.
+function fmtDprime(v){ return (typeof v === "number") ? v.toFixed(1) : "—"; }
+function fmtFa(v){ return (typeof v === "number") ? v.toFixed(1) : "—"; }
+function actionVerb(action){
+  return action === "mark_miss"        ? "added a positive (missed me)"
+       : action === "capture_last_fire"? "captured the false fire"
+       :                                 "added a negative (wasn't me)";
+}
+function buildRelabelCard(d){
+  const accepted = !!d.accepted, rebuilt = !!d.rebuilt;
+  const cls = accepted ? "kept" : "rolledback";
+  const card = document.createElement("div"); card.className = "relabel-card " + cls;
+  // head — the eval verdict, naming the d-prime move so "only sticks if it helped" is clear.
+  const head = document.createElement("div"); head.className = "rc-head";
+  const dot = document.createElement("span"); dot.className = "rc-dot"; dot.setAttribute("aria-hidden","true");
+  head.appendChild(dot);
+  const haveDp = (typeof d.sep_before === "number" && typeof d.sep_after === "number");
+  const dpMove = haveDp ? " (d-prime "+fmtDprime(d.sep_before)+"→"+fmtDprime(d.sep_after)+")" : "";
+  head.appendChild(document.createTextNode(
+    accepted ? "✓ improved — kept" + dpMove
+             : "rolled back — no improvement" + dpMove));
+  card.appendChild(head);
+  // sub — what was relabelled + whether a rebuild actually ran (eval-gated).
+  const sub = document.createElement("div"); sub.className = "rc-sub";
+  sub.textContent = (d.word ? "“"+d.word+"” — " : "") + actionVerb(d.action)
+                  + " · " + (rebuilt ? "rebuilt + evaluated" : "no rebuild")
+                  + " · " + (accepted ? "change kept" : "change discarded");
+  card.appendChild(sub);
+  // metrics — before→after d-prime + FA/hour pills (only when the contract carries them).
+  const metrics = document.createElement("div"); metrics.className = "rc-metrics";
+  const kv = (label, before, after, fmt)=>{
+    if(before == null && after == null) return;
+    const el = document.createElement("span"); el.className = "kv";
+    el.appendChild(document.createTextNode(label+" "));
+    const fromB = document.createElement("b"); fromB.className = "rc-from"; fromB.textContent = fmt(before);
+    const arr = document.createElement("span"); arr.className = "rc-arrow"; arr.textContent = " → ";
+    const toB = document.createElement("b"); toB.textContent = fmt(after);
+    el.appendChild(fromB); el.appendChild(arr); el.appendChild(toB);
+    metrics.appendChild(el);
+  };
+  kv("d-prime", d.sep_before, d.sep_after, fmtDprime);
+  kv("FA/hour", d.fa_before, d.fa_after, fmtFa);
+  if(metrics.children.length) card.appendChild(metrics);
+  // message — the backend's human line, if any.
+  if(d.message){ const m = document.createElement("div"); m.className = "rc-msg"; m.textContent = String(d.message); card.appendChild(m); }
+  return card;
+}
+// Consume a relabel_result → render the eval-gated outcome card into the matching
+// row's host (by _clipKey → hash → word substring), or log it if no host resolved.
+function showRelabelResult(d){
+  const hash8 = String(d.hash||"").slice(0,8);
+  // Resolve the row this result belongs to: explicit _clipKey (echoed/seeded) → hash →
+  // first row whose key carries the word. The buttons live in a sibling row, so use the
+  // per-key button registry to un-busy them rather than a host-local query.
+  let clipKey = d._clipKey
+    || (hash8 && relabelKeyByHash[hash8])
+    || Object.keys(relabelCardHost).find(key=> key.indexOf((d.word||"")) >= 0);
+  let host = clipKey ? relabelCardHost[clipKey] : null;
+  if(host){
+    unbusyRelabelBtns(clipKey);
+    host.innerHTML = "";
+    host.appendChild(buildRelabelCard(d));
+  }
+  // also un-busy the LIVE capture button if this resolves a capture_last_fire.
+  document.querySelectorAll(".relabel-btn.rl-capture.busy").forEach(b=>{ b.classList.remove("busy"); b.disabled = false; });
+  const verdict = d.accepted ? "kept" : "rolled back";
+  log((d.accepted ? "✓ " : "↺ ") + "relabel ["+(d.word||"")+" · "+(d.action||"")+"]: "
+        + (d.rebuilt ? "rebuilt — " : "") + verdict
+        + ((typeof d.sep_before === "number" && typeof d.sep_after === "number")
+            ? " (d-prime "+fmtDprime(d.sep_before)+"→"+fmtDprime(d.sep_after)+")" : ""),
+        d.accepted ? "evt" : "info");
+}
+// ---------- LIVE now-fired path — "✗ False fire — capture" ----------
+// The live wake cue has no saved-clip row yet, so this captures the server's LAST
+// fire as a negative + rebuilds (eval-gated). Mounted into the wake-cue area.
+function buildCaptureLastFire(){
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "relabel-btn rl-capture";
+  b.textContent = "✗ False fire — capture";
+  b.title = "That wasn't me — capture the server's last fire as a negative and rebuild (kept only if it helps)";
+  const info = fieldInfo("relabel");
+  b.addEventListener("click", ()=>{
+    const word = lastFiredWord || currentWakeWord || (settings && settings.wake_phrase) || "";
+    b.classList.add("busy"); b.disabled = true;
+    if(DEMO){
+      setTimeout(()=>{ showRelabelResult(demoRelabelResult(word, "capture_last_fire", true)); }, 600);
+    }else{
+      postAction({action:"capture_last_fire", word: word||""});
+    }
+  });
+  const wrap = document.createElement("span"); wrap.style.display = "inline-flex";
+  wrap.style.alignItems = "center"; wrap.style.gap = "6px";
+  wrap.appendChild(b); if(info) wrap.appendChild(info);
+  return wrap;
+}
+// Demo relabel_result — one accepted (d-prime 1.2→1.8) and one rolled-back, so both
+// branches of the eval gate render offline. `improved` decides which.
+function demoRelabelResult(word, action, improved){
+  if(improved){
+    return {type:"relabel_result", word: word||"maziko", action: action||"mark_false_fire",
+      rebuilt:true, accepted:true,
+      sep_before:1.2, sep_after:1.8, fa_before:2.4, fa_after:1.1,
+      message:"Rebuilt with the new label — d-prime separation rose and false-alarms/hour dropped, so the change was kept."};
+  }
+  return {type:"relabel_result", word: word||"maziko", action: action||"mark_miss",
+    rebuilt:true, accepted:false,
+    sep_before:1.6, sep_after:1.55, fa_before:1.3, fa_after:1.4,
+    message:"Rebuilt with the new label — separation didn't improve and false-alarms edged up, so the change was rolled back."};
+}
+
 // Build/refresh the UNIFORM extras row for a check into its `.check-extras` div.
 // `d` is a contract-shaped result (mic_check_result / wake_test_result). `opts`:
 //   { dur, peakPct, sampleRate, levels, processing:{agc,ns,ec,gain}, hash,
@@ -3895,6 +4220,20 @@ function renderResultExtras(extrasId, opts){
     grow.appendChild(buildFindGain(o.word || "", o.source || "", hash, chartHost));
     grow.appendChild(chartHost);
     host.appendChild(grow);
+  }
+  // --- ★ ACTIVE-LEARNING RELABEL (task 1) — on every wake saved-clip row that has a
+  // concrete `hash`: ✗ Wasn't me (mark_false_fire) / ✓ Missed me (mark_miss), plus a
+  // host for the eval-gated relabel_result card it produces. Teaches the wake word from
+  // its mistakes; the change only sticks if detection measurably improves. ---
+  if(o.wake && o.word && hash){
+    const rlRow = document.createElement("div"); rlRow.className = "row";
+    rlRow.appendChild(buildRelabelBar(o.word, hash, key));
+    host.appendChild(rlRow);
+    const cardRow = document.createElement("div"); cardRow.className = "row";
+    const cardHost = document.createElement("div"); cardHost.style.flex = "1 1 100%";
+    relabelCardHost[key] = cardHost;
+    cardRow.appendChild(cardHost);
+    host.appendChild(cardRow);
   }
   lastResult[key] = res;
 }
@@ -4751,6 +5090,10 @@ function handleEvent(raw){
     case "score_clip_result":
       // 🔍 Score-this-clip — re-scored saved recording → confidence / fired on the row.
       showScoreClipResult(d); break;
+    case "relabel_result":
+      // ★ Active-learning relabel — eval-gated outcome of mark_false_fire / mark_miss /
+      // capture_last_fire → the row's relabel card (kept vs rolled-back + d-prime move).
+      showRelabelResult(d); break;
     case "score_histogram_result":
     case "fa_eval_result":
     case "verifier_result":
@@ -4923,6 +5266,9 @@ const DEMO_SETTINGS = {
   // from it; sensitivity_calibrated flips true once an FA eval pinned a real operating
   // point, so the slider caption shows the measured "miss ~X% @ ≤target FA/h".
   wake_sensitivity:0.5, sensitivity_calibrated:true,
+  // SHARED CONTRACT: score calibration on, so the Advanced toggle renders ON offline
+  // and the per-word calibration chips show. Per-word state lives in wake_word_info.
+  wake_calibration:true,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
   // SHARED CONTRACT: open-vocab KWS (sherpa-onnx) is available + enabled. Per-keyword
@@ -4942,12 +5288,15 @@ const DEMO_SETTINGS = {
   // a red word ("maziko") gets a "Raise sensitivity" steer so the easy-mode read
   // ("hey_jarvis green vs maziko red") shows its own sensitivity + hint offline.
   wake_word_info:{
-    "hey buddy":{tier:"green",  note:"custom phrase — open-vocab KWS, no training",   reliability:0.82, tested:3, measured:true,  detector:"oww+kws", sensitivity:0.50, guidance:"comfortable — fires reliably at the default dial; nudge down if the TV trips it."},
-    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true,  detector:"oww", sensitivity:0.85, guidance:"Raise sensitivity — it still misses on your accent; or pick a better-separated phrase / retrain."},
-    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false, detector:"oww", sensitivity:0.45, guidance:"official model — leave near default; very low miss, low false-alarm."},
+    // SHARED CONTRACT: per-word `calibration` state (shape is flexible — bool, or an
+    // object {calibrated, points} / {state, n}); calibrationStateFor() coerces any of
+    // these into the chip. Seeded across shapes so calibrated/needs-more both render.
+    "hey buddy":{tier:"green",  note:"custom phrase — open-vocab KWS, no training",   reliability:0.82, tested:3, measured:true,  detector:"oww+kws", sensitivity:0.50, guidance:"comfortable — fires reliably at the default dial; nudge down if the TV trips it.", calibration:{calibrated:true, points:24}},
+    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true,  detector:"oww", sensitivity:0.85, guidance:"Raise sensitivity — it still misses on your accent; or pick a better-separated phrase / retrain.", calibration:{state:"needs more clips", n:5}},
+    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false, detector:"oww", sensitivity:0.45, guidance:"official model — leave near default; very low miss, low false-alarm.", calibration:true},
     alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false, detector:"oww", sensitivity:0.45, guidance:"official model — default is fine; lower it slightly in a noisy room."},
-    computer:  {tier:"orange", note:"open-vocab KWS — measured 0.55 over 4 tests", reliability:0.55, tested:4, measured:true,  detector:"kws", sensitivity:0.65, guidance:"middling — raise a little if it misses, but watch for false-alarms on speech."},
-    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false, detector:"oww", sensitivity:0.80, guidance:"Raise sensitivity — weak/untested; consider a shipped word instead."},
+    computer:  {tier:"orange", note:"open-vocab KWS — measured 0.55 over 4 tests", reliability:0.55, tested:4, measured:true,  detector:"kws", sensitivity:0.65, guidance:"middling — raise a little if it misses, but watch for false-alarms on speech.", calibration:{calibrated:true, points:12}},
+    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false, detector:"oww", sensitivity:0.80, guidance:"Raise sensitivity — weak/untested; consider a shipped word instead.", calibration:false},
     athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
     nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
     luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
@@ -5035,6 +5384,14 @@ function enterDemo(){
   showGainSweepResult(Object.assign(demoGainSweep(demoWord, shortHash("wake|"+demoWord+"|server|demo")), {source:"server"}));
   showScoreClipResult(Object.assign(demoScoreClip(demoWord, shortHash("wake|"+demoWord+"|browser|demo")),
                                      {_clipKey: "wakeExtras-"+wakePanelKey(demoWord, "browser")}));
+  // ★ Seed an eval-gated RELABEL result card on BOTH panels so both branches render
+  // offline: the BROWSER panel shows an ACCEPTED relabel (d-prime 1.2→1.8, kept); the
+  // SERVER panel shows a ROLLED-BACK one (no improvement). These land in the relabel
+  // card hosts that renderResultExtras created for each wake row above.
+  showRelabelResult(Object.assign(demoRelabelResult(demoWord, "mark_false_fire", true),
+                                  {_clipKey: "wakeExtras-"+wakePanelKey(demoWord, "browser")}));
+  showRelabelResult(Object.assign(demoRelabelResult(demoWord, "mark_miss", false),
+                                  {_clipKey: "wakeExtras-"+wakePanelKey(demoWord, "server")}));
   // 🔬 Seed the four DETECTION-EVAL charts for the selected phrase so EVERY chart
   // (positives-vs-negatives histogram · FA/hour ROC-DET · verifier card · spectrogram +
   // score-trace overlay) renders offline without a click. The seeders key off the word's
