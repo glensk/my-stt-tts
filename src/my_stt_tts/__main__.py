@@ -22,6 +22,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1410,14 +1411,31 @@ class _WakeController:
     def _with_paused_wake(self, fn: Any) -> None:
         """Run ``fn`` with exclusive use of the mic: pause the wake loop if it holds
         the device, run ``fn``, then restore the loop — so a mic diagnostic always
-        owns the input device and the user lands back where they were."""
+        owns the input device and the user lands back where they were.
+
+        The hand-off is the subtle part. The wake loop's ``sounddevice`` InputStream
+        is a context manager inside :func:`audio.listen_for_wake`; setting the stop
+        event makes it return, which exits the ``with`` block and STOPS+CLOSES the
+        stream. We must wait for the wake THREAD to actually join before opening the
+        diagnostic's own stream — otherwise both hold the input device at once. Even
+        after the close, macOS (CoreAudio/AUHAL) frees the device asynchronously, so
+        opening immediately races and the diagnostic records near-silence
+        (PaMacCore err=-50 / paramErr). A short ``mic_check_settle_s`` gap after the
+        join lets the OS release the device before ``fn`` opens its capture stream;
+        ``fn`` (via ``record_fixed``) also retries on a contention error as a backstop.
+        """
         with self._lock:
             was_listening = self._thread is not None and self._thread.is_alive()
-        thread = self._thread
+            thread = self._thread  # snapshot under the lock (stop_wake clears self._thread)
         if was_listening:
-            self.stop_wake()
+            self.stop_wake()  # signal the loop; its InputStream context-exit stops+closes it
             if thread is not None:
-                thread.join(timeout=3.0)
+                thread.join(timeout=3.0)  # wait for the stream to be fully released
+            # CoreAudio frees the input device asynchronously after close() returns;
+            # settle before the diagnostic opens its own stream so they don't collide.
+            settle = max(0.0, float(getattr(self._cfg, "mic_check_settle_s", 0.0)))
+            if settle > 0:
+                time.sleep(settle)
         fn()
         if was_listening:
             self.start_wake()  # restore the always-listen loop we paused for the diagnostic
@@ -1521,14 +1539,31 @@ def _run_mic_record_replay(cfg: Config, *, seconds: float = 3.0) -> None:
     bus.log(f"recording {seconds:.0f}s from the mic for replay…")
     bus.state("recording")
     try:
-        clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=seconds)
+        clip, device_rate = audio.record_fixed(
+            cfg.sample_rate,
+            seconds=seconds,
+            retries=cfg.mic_check_retries,
+            settle_s=cfg.mic_check_settle_s,
+        )
     except Exception as exc:  # noqa: BLE001 — no device / PortAudio / capture error
-        log.error("mic record-replay error: %s", exc)
-        bus.log(f"✗ record & replay failed: {exc}", "error")  # SYSTEM log first…
+        contention = audio.is_device_contention_error(exc)
+        log.error(
+            "mic record-replay error%s: %s", " (device contention)" if contention else "", exc
+        )
+        # A device-contention failure (the wake loop still held the input device) is
+        # NOT a permission problem — say so rather than sending the user to System
+        # Settings. A genuine device/PortAudio error keeps the plain message.
+        msg = (
+            "Microphone was busy (device contention) — the wake loop hadn't released "
+            "the input device yet. Try record & replay again."
+            if contention
+            else f"microphone error: {exc}"
+        )
+        bus.log(f"✗ record & replay failed: {msg}", "error")  # SYSTEM log first…
         bus.mic_result(  # …then the verdict, so it isn't flushed by the error log
             ok=False,
-            verdict="error",
-            message=f"microphone error: {exc}",
+            verdict="busy" if contention else "error",
+            message=msg,
             permission=permission,
         )
         bus.state("idle")
@@ -1597,10 +1632,27 @@ def _run_mic_check_server(cfg: Config, *, seconds: float = 2.0) -> None:
     bus.log(f"mic check: recording {seconds:.1f}s from the server mic…")
     bus.state("recording")
     try:
-        clip, device_rate = audio.record_fixed(cfg.sample_rate, seconds=seconds)
+        clip, device_rate = audio.record_fixed(
+            cfg.sample_rate,
+            seconds=seconds,
+            retries=cfg.mic_check_retries,
+            settle_s=cfg.mic_check_settle_s,
+        )
     except Exception as exc:  # noqa: BLE001 — no device / PortAudio / capture error
-        log.error("mic check capture error: %s", exc)
-        bus.log(f"✗ mic check failed: {exc}", "error")
+        contention = audio.is_device_contention_error(exc)
+        log.error(
+            "mic check capture error%s: %s", " (device contention)" if contention else "", exc
+        )
+        # Distinguish a device-contention failure (wake loop still held the input
+        # device — permission is fine) from a genuine permission/no-device problem, so
+        # we don't send the user chasing a non-issue.
+        msg = (
+            "Microphone was busy (device contention) — the wake loop hadn't released "
+            "the input device yet. Try the mic check again."
+            if contention
+            else f"microphone error: {exc}"
+        )
+        bus.log(f"✗ mic check failed: {msg}", "error")
         bus.mic_check_result(
             source="server",
             peak=0.0,
@@ -1612,7 +1664,7 @@ def _run_mic_check_server(cfg: Config, *, seconds: float = 2.0) -> None:
             processing={"agc": False, "ns": False, "ec": False, "gain": cfg.mic_gain},
             hash="",
             wav_url="",
-            message=f"microphone error: {exc}",
+            message=msg,
         )
         bus.state("idle")
         return
