@@ -16,9 +16,11 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
 
 ## Repos (research-ranked)
 
-- [ ] 1. **sherpa-onnx KWS** — token-sequence decoding, multi-spelling keywords, per-keyword
-      boost/threshold (no retrain); we already pin `sherpa-onnx==1.10.46` for diarization. JUDGING.
-- [ ] 2. **EfficientWord-Net** — few-shot siamese on user's own samples → verifier on weak oWW hits.
+- [x] 1. **sherpa-onnx KWS** — ✅ **CLOSED (OURS_BETTER)**. Ported KWS OR'd detector (zero-train
+      custom words, multi-spelling/boost/threshold) + the eval toolkit (FA/hour ROC-DET, separation
+      histogram, custom verifier, spectrogram). Re-judge: we hold a strict superset + better eval
+      rigor. Optional S follow-up noted: add the 2025 bilingual zh-en KWS model for non-English words.
+- [ ] 2. **EfficientWord-Net** — few-shot siamese on user's own samples → verifier on weak oWW hits. JUDGING (3-panel: recall / few-shot-accent / deps).
 - [ ] 3. **microWakeWord** — PCEN/PCAN front-end + multi-window gate (PCEN NOT a drop-in for our
       oWW models — they're trained without it; only safe with a PCEN-trained model).
 - [ ] 4. **Picovoice Porcupine** — sensitivity calibration; accent+noise benchmark as a test harness.
