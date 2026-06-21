@@ -246,7 +246,9 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  (realtime: {cfg.realtime_model} keyed={bool(cfg.realtime_api_key)})"
         f"  telephony {cfg.telephony}  telemetry {cfg.telemetry}",
         f"  wake       phrase {blue}{cfg.wake_phrase}{reset}  threshold {blue}{cfg.wake_threshold}{reset}"
-        f"  phases {blue}{cfg.wake_phases}{reset}  mic-gain {blue}{cfg.mic_gain}{reset}"
+        f"  phases {blue}{cfg.wake_phases}{reset}"
+        f"  window {blue}{cfg.wake_window}{reset}  refractory {blue}{cfg.wake_refractory}{reset}"
+        f"  mic-gain {blue}{cfg.mic_gain}{reset}"
         f"  wake-gain {blue}{cfg.wake_gain}{reset}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
@@ -2167,7 +2169,13 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
         bus.state("idle")
         return
     confidence, fired = score_wake_clip(
-        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+        clip16k,
+        16000,
+        word,
+        threshold=cfg.wake_threshold,
+        phases=cfg.wake_phases,
+        window=cfg.wake_window,
+        refractory=cfg.wake_refractory,
     )
     int16_peak = int(audio.capture_stats(clip16k, 16000)["int16_peak"])
     reason, detail = _classify_wake_outcome(
@@ -2302,7 +2310,13 @@ def _run_fa_eval(cfg: Config, word: str) -> None:
     _, neg_traces = score_clip_set(
         neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
     )
-    result = fa_eval(pos_traces, neg_traces, target_fa=0.5)
+    result = fa_eval(
+        pos_traces,
+        neg_traces,
+        window=cfg.wake_window,
+        refractory=cfg.wake_refractory,
+        target_fa=0.5,
+    )
     message = (
         f"{word}: {len(pos_traces)} positives vs {result['neg_seconds']}s of negatives — "
         f"miss {result['miss_at_target_fa'] * 100:.0f}% at {result['target_fa']} FA/h"

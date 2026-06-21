@@ -27,8 +27,13 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       false for this embedding), mean-pool SEPARATES (d' 5.41 whole-clip / 2.52 streaming). Recall
       1/6 → 6/6 on Albert's maziko, 0/23 hard-neg fires at thr 0.96/pat 2. Did NOT pull EWN's 88 MB
       ResNet (zero new dep). See round log below.
-- [ ] 3. **microWakeWord** — PCEN/PCAN front-end + multi-window gate (PCEN NOT a drop-in for our
-      oWW models — they're trained without it; only safe with a PCEN-trained model).
+- [x] 3. **microWakeWord** — ✅ **BUILT (runtime idea ported; window OFF by default, refractory ON)**.
+      PCEN/PCAN front-end NOT portable (our oWW models are trained without it). Ported the RUNTIME
+      idea instead: a sliding-window moving-average fire criterion (`process_streaming_prob`) +
+      refractory lockout, wired into the LIVE `WakeWord.detect` AND reconciled into the offline eval
+      (`score_wake_clip`/`fa_eval` use the SAME criterion → live == eval). Empirically gated the
+      default: `wake_window=1` (byte-identical) ships as the default, refractory `wake_refractory=8`
+      ships ON (the FA win, zero recall cost). See round log below.
 - [ ] 4. **Picovoice Porcupine** — sensitivity calibration; accent+noise benchmark as a test harness.
 - [ ] 5. **Mycroft Precise** — retrain-on-failures active learning; per-frame probability smoothing.
 
@@ -262,3 +267,83 @@ every module imports without sklearn/oWW/scipy/pyloudnorm). Full suite 943 passe
 (was 912/3 baseline). ruff + mypy clean; pylint only the project's established
 broad-except / lazy-import / cyclic-import patterns. NEVER touched `main`/`README.md`/`clients`/
 `esp32`/`webui.html`/`wakewords/maziko.onnx`.
+
+### Repo 3 — microWakeWord · Round 1 — BUILT temporal smoothing (2026-06-21, branch `wake-temporal`)
+
+**Gap closed.** The LIVE oWW detector fired on a SINGLE frame (`last_score >= threshold` after
+max-over-phases); the patience/debounce/refractory machinery existed ONLY in the offline eval.
+Ported microWakeWord's runtime idea — a **sliding-window moving-average fire criterion +
+refractory lockout** — into the LIVE path so the live detector matches what `fa_eval` evaluates.
+
+**Shipped** (`wake.py`, `config.py`, `webui.py`, `__main__.py`):
+
+- **Live moving-average** in `WakeWord.detect` — a `collections.deque(maxlen=wake_window)` of the
+  per-frame MAX-over-phases score; fire when `mean(window) >= threshold` (microWakeWord's
+  `process_streaming_prob`, smoother than consecutive-count — chose ONE filter, the moving average,
+  no double-debounce). Pushed only on a fresh frame so a warmup call can't inflate the mean.
+- **Refractory lockout** (`wake_refractory` frames) after a fire — suppresses re-fires; reuses the
+  `count_fires` refractory logic. `reset()` clears BOTH the deque and the refractory.
+- **Config knobs** `wake_window` / `wake_refractory` — field + `from_env` (`WAKE_WINDOW` /
+  `WAKE_REFRACTORY`) + `validate` (`window ∈ [1,50]`, `refractory ≥ 0`) + `settings_dict` /
+  `apply_settings` (clamped) + `settings_text` + `.env.example`. `from_config` threads them in.
+- **Eval-path reconciled** — new pure `wake.count_fires_moving_average` / `moving_average_fires`
+  replay the EXACT live state machine. `score_wake_clip` (window/refractory params) and `fa_eval`
+  (window/refractory params, BOTH the FA side via `count_fires_moving_average` AND the recall side
+  via `moving_average_fires`) use it → **live == eval**. The GUI `score_clip` + `fa_eval` actions
+  pass `cfg.wake_window`/`cfg.wake_refractory`. Defaults (`window=1`, `refractory=0` in the pure
+  helpers) collapse to the prior single-frame / `count_fa_events` behaviour — byte-identical.
+
+**Empirical validation** (saved clips: 6 maziko + 2 hey_jarvis + 3 alexa + 2 hey_mycroft positives;
+4 nexus + 10 mic clips = 14 negatives; threshold 0.4, phases 8). Replayed each clip's per-frame
+trace under `window ∈ {1,2,3}` × `refractory ∈ {0,8}`:
+
+**Recall (fired / total):**
+
+| word        |  N | w1r0 | w1r8 | w2r0 | w2r8 | w3r0 | w3r8 |
+| :---------- | -: | :--: | :--: | :--: | :--: | :--: | :--: |
+| maziko      |  6 | 1/6  | 1/6  | 1/6  | 1/6  | 0/6  | 0/6  |
+| hey_jarvis  |  2 | 2/2  | 2/2  | 2/2  | 2/2  | 2/2  | 2/2  |
+| alexa       |  3 | 3/3  | 3/3  | 3/3  | 3/3  | 3/3  | 3/3  |
+| hey_mycroft |  2 | 2/2  | 2/2  | 2/2  | 2/2  | 2/2  | 2/2  |
+
+**Negative fires (total live fires across the 14-clip negative corpus, per model):**
+
+| word        |  N | w1r0 | w1r8 | w2r0 | w2r8 | w3r0 | w3r8 |
+| :---------- | -: | :--: | :--: | :--: | :--: | :--: | :--: |
+| maziko      | 14 |   0  |   0  |   0  |   0  |   0  |   0  |
+| hey_jarvis  | 14 |   0  |   0  |   0  |   0  |   0  |   0  |
+| alexa       | 14 |  19  |   5  |  18  |   5  |  20  |   5  |
+| hey_mycroft | 14 |   0  |   0  |   0  |   0  |   0  |   0  |
+
+**Findings:**
+
+- **Official models fire 100% at every setting** — window/refractory never regress official recall.
+- **maziko held at 1/6 through w2, REGRESSED to 0/6 at w3** — its lone good-phase clip peaks at a
+  single-frame 0.67 (others ≈0.001-0.002 — a recall problem the few-shot `EnrolledWake` handles
+  separately); a 3-frame mean dilutes that 0.67 below 0.4. **window ≤ 2 is recall-safe; window 3 is not.**
+- **Window alone did NOT cut FA on this corpus** (alexa→nexus 19→18→20): those false fires are
+  SUSTAINED passages (4/12/3 frames above threshold), which a 2-frame mean still clears. The moving
+  average suppresses single-FRAME flukes, of which this corpus has none.
+- **Refractory is the dominant FA lever**: `r8` collapsed alexa FA **19→5** at every window — a
+  12-frame sustained false passage becomes ~2 fires, not 12 ("one annoyance, not 37") — with ZERO
+  recall cost (with `window=1` the refractory only suppresses RE-fires AFTER a first detection; the
+  live loop returns on the first fire anyway, so a single activation is byte-identical).
+
+**Chosen defaults — `wake_window=1`, `wake_refractory=8`:**
+
+- `window=1` (byte-identical) is the default by the gate rule: window=2 preserved official + maziko
+  recall but did NOT reduce FA (rule requires all three), and window=3 regressed maziko. The moving
+  average ships as a documented **opt-in** knob (`WAKE_WINDOW`) for users whose corpus has
+  single-frame flukes.
+- `wake_refractory=8` (~0.64 s) ships ON: a measured pure FA win (19→5) with provably zero recall
+  cost, and live single-activation behaviour is unchanged (the loop exits on first fire).
+
+**Tests** — `tests/test_wake_temporal.py` (+22): moving-average fire (mean ≥ threshold), `window=1`
+byte-identical to single-frame, dip-tolerated / lone-spike-rejected, refractory lockout,
+`reset()` clears both, pure `count_fires_moving_average`/`moving_average_fires`, `score_wake_clip`
+eval-path consistency (same trace → same decision), `fa_eval` window/refractory on both FA + recall
+sides, config knobs (default/env/validate/settings round-trip/settings_text/from_config).
+**CORE-ONLY verified** (`uv sync`; ruff + mypy clean, pylint only the established lazy-import test
+pattern; core pytest 973 passed / 13 skipped, was 951 baseline). Full suite with `--extra all`:
+985 passed / 1 skipped. NEVER touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/
+`wakewords/maziko.onnx`.

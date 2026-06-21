@@ -119,6 +119,14 @@ def settings_dict(
         # Wake sensitivity (openWakeWord score, 0..1) a frame must clear to fire.
         # Lower = triggers more easily / more false-positives; higher = stricter.
         "wake_threshold": cfg.wake_threshold,
+        # Live moving-average fire window (frames) + post-fire refractory lockout
+        # (frames) — microWakeWord's runtime smoothing ported into the live path. The
+        # detector fires when the MEAN of the last wake_window per-frame scores clears
+        # the threshold, then locks out re-fires for wake_refractory frames. window == 1
+        # + refractory == 0 is byte-identical to single-frame firing. The offline eval
+        # uses the SAME criterion (live == eval).
+        "wake_window": getattr(cfg, "wake_window", 1),
+        "wake_refractory": getattr(cfg, "wake_refractory", 0),
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
@@ -222,6 +230,13 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Clamp to [0, 1]: the slider can't produce out-of-range values, but a
         # hand-crafted POST shouldn't push the wake detector past validate()'s bound.
         cfg.wake_threshold = max(0.0, min(1.0, float(data["wake_threshold"])))
+    if "wake_window" in data:
+        # Clamp to [1, 50] (validate()'s bound). 1 = single-frame (byte-identical);
+        # larger = more temporal smoothing (a higher firing bar).
+        cfg.wake_window = max(1, min(50, int(data["wake_window"])))
+    if "wake_refractory" in data:
+        # Floor at 0 (validate() requires >= 0). 0 = no post-fire lockout (old behaviour).
+        cfg.wake_refractory = max(0, int(data["wake_refractory"]))
     if "kws_enabled" in data:
         # Toggle the OR'd sherpa-KWS path for custom words (official words ignore it).
         cfg.kws_enabled = bool(data["kws_enabled"])

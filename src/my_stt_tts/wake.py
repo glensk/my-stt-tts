@@ -28,10 +28,30 @@ fed the same audio but each offset by ``1280 / phases`` samples, and fires on th
 MAX score over all of them — covering the phase space. Measured to lift recall
 from 2/8 to 5/8 synthesized voices with no extra false-positives and a 0.22
 real-time factor at 8 phases.
+
+Temporal smoothing (microWakeWord's runtime idea, ported into the LIVE path)
+----------------------------------------------------------------------------
+The MAX-over-phases gives ONE score per 80 ms frame; the live detector used to
+fire the instant a SINGLE frame's score cleared the threshold. microWakeWord
+instead keeps a sliding window of the recent per-frame probabilities and fires on
+their MOVING AVERAGE (its ``process_streaming_prob``), which tolerates a one-frame
+dip and suppresses a one-frame spike. :class:`WakeWord` ports that: it keeps a
+``collections.deque(maxlen=wake_window)`` of the per-frame MAX-over-phases score and
+fires when ``mean(window) >= threshold``. After a fire it observes a
+``wake_refractory``-frame lockout (the same refractory :func:`count_fires` applies
+offline) so one utterance can't re-fire mid-word. ``wake_window == 1`` (and
+``wake_refractory == 0``) is **byte-identical** to the old single-frame behaviour —
+``mean([s]) == s``, so the default keeps every working model firing exactly as
+before — and the OFFLINE eval (:func:`score_wake_clip` / :func:`fa_eval`) uses the
+SAME moving-average criterion via :func:`moving_average_fires`, so the FA/hour ROC-DET
+numbers are TRUE OF the live detector (live == eval). Averaging RAISES the firing
+bar, so a window > 1 ships as the default ONLY where it is empirically shown not to
+regress recall — see ``PLAN_wake_checker_loop.md``.
 """
 
 from __future__ import annotations
 
+import collections
 import logging
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -80,6 +100,12 @@ class WakeWord:
     offsets so the wake word is scored at every frame phase (the recall fix — see
     the module docstring). With ``phases == 1`` this is exactly the classic
     single-detector behaviour.
+
+    Fires on the MOVING AVERAGE of the last ``window`` per-frame MAX-over-phases
+    scores (microWakeWord's runtime smoothing) and observes a ``refractory``-frame
+    lockout after each fire. ``window == 1`` + ``refractory == 0`` (the defaults) is
+    byte-identical to firing on the single most recent frame, so the default path is
+    unchanged. See the module docstring.
     """
 
     def __init__(
@@ -88,12 +114,27 @@ class WakeWord:
         threshold: float = 0.5,
         *,
         phases: int = 1,
+        window: int = 1,
+        refractory: int = 0,
         custom_verifier: Any = None,  # noqa: ANN401 — my_stt_tts.wake_verifier.CustomVerifier
         verifier_threshold: float = 0.5,
     ) -> None:
         self.model_path = model_path
         self.threshold = threshold
         self.phases = max(1, int(phases))
+        # Sliding-window moving-average fire criterion (microWakeWord's
+        # process_streaming_prob): fire when mean(last `window` per-frame scores) >=
+        # threshold. window == 1 collapses to "fire on the single most recent frame"
+        # (mean([s]) == s) — byte-identical to the old behaviour.
+        self.window = max(1, int(window))
+        # Refractory lockout: suppress re-fires for `refractory` frames after a fire
+        # (reuses count_fires' refractory idea so one utterance can't re-fire mid-word).
+        # 0 == no lockout (the old behaviour).
+        self.refractory = max(0, int(refractory))
+        # The moving-average ring buffer of per-frame MAX-over-phases scores, and the
+        # remaining lockout frames. Both cleared by reset().
+        self._score_window: collections.deque[float] = collections.deque(maxlen=self.window)
+        self._refractory_left = 0
         self._models: list[Any] = []
         self._broken = False  # set once construction/predict fails unrecoverably
         # Per-phase rolling buffers of int16 samples not yet formed into a 1280 frame.
@@ -137,6 +178,8 @@ class WakeWord:
             cfg.wake_model_path,
             cfg.wake_threshold,
             phases=cfg.wake_phases,
+            window=getattr(cfg, "wake_window", 1),
+            refractory=getattr(cfg, "wake_refractory", 0),
             custom_verifier=verifier,
         )
 
@@ -208,7 +251,15 @@ class WakeWord:
         frame this call, so a phase-unlucky utterance still fires (the live-recall
         fix — see the module docstring).
 
-        When a :attr:`custom_verifier` is attached (Task 3), a base-model fire is GATED:
+        The fire decision is the MOVING AVERAGE of the last :attr:`window` per-frame
+        MAX-over-phases scores: it fires when ``mean(window) >= threshold`` and the
+        detector is not in its post-fire :attr:`refractory` lockout (microWakeWord's
+        runtime smoothing — see the module docstring). ``window == 1`` makes
+        ``mean([last_score]) == last_score``, so the criterion is identical to the old
+        single-frame ``last_score >= threshold`` and ``refractory == 0`` adds no
+        lockout — the default is byte-identical.
+
+        When a :attr:`custom_verifier` is attached (Task 3), a (windowed) fire is GATED:
         the most recent ~1.5 s of audio (buffered here) is scored by the verifier and
         the wake only fires when ``verifier_prob >= verifier_threshold`` too, so a
         false base trigger that doesn't match the enrolled voice is rejected. With no
@@ -238,12 +289,34 @@ class WakeWord:
                     scored = True
         if scored:
             self.last_score = best
+            # Feed the moving-average ring buffer ONLY on a fresh frame, so an
+            # unscored warmup call (no full 1280-frame yet) does not re-push a stale
+            # value and inflate the mean.
+            self._score_window.append(best)
         if self.custom_verifier is not None:
             self._buffer_for_verifier(frame)
-        base_fired = self.last_score >= self.threshold
-        if base_fired and self.custom_verifier is not None:
-            return self._verifier_confirms()
-        return base_fired
+        # During the post-fire refractory lockout, never fire (consume one frame). The
+        # window keeps filling above so the moving average stays current.
+        if self._refractory_left > 0:
+            self._refractory_left -= 1
+            return False
+        windowed_fired = self._window_mean() >= self.threshold
+        if not windowed_fired:
+            return False
+        if self.custom_verifier is not None and not self._verifier_confirms():
+            return False
+        self._refractory_left = self.refractory
+        return True
+
+    def _window_mean(self) -> float:
+        """Mean of the moving-average window (== ``last_score`` while window holds 1).
+
+        Empty (no frame scored yet) reads as ``0.0`` so the detector cannot fire before
+        it has seen any audio. With ``window == 1`` this is exactly ``last_score``.
+        """
+        if not self._score_window:
+            return 0.0
+        return float(sum(self._score_window) / len(self._score_window))
 
     # The verifier scores a rolling window of the most recent audio; ~1.5 s is enough
     # to contain a wake word while staying cheap to embed.
@@ -267,6 +340,8 @@ class WakeWord:
         Resets openWakeWord's prediction buffer on every phase model AND re-primes
         the per-phase staggered input buffers, so a fresh listen session starts
         clean (no stale frame straddling the phase boundaries from the last one).
+        Also clears the moving-average window and the refractory lockout so the next
+        session's first frames are scored from scratch.
         """
         for model in self._models:
             if hasattr(model, "reset"):
@@ -276,6 +351,8 @@ class WakeWord:
         self.last_score = 0.0
         self.last_verifier_score = 0.0
         self._verify_window = np.zeros(0, dtype=np.float32)
+        self._score_window.clear()
+        self._refractory_left = 0
 
 
 class OrCombinedWake:
@@ -404,6 +481,8 @@ def score_wake_clip(
     phases: int = ...,
     gain: float = ...,
     wakewords_dir: str = ...,
+    window: int = ...,
+    refractory: int = ...,
     patience: int = ...,
     debounce: int = ...,
     with_trace: Literal[False] = ...,
@@ -420,6 +499,8 @@ def score_wake_clip(
     phases: int = ...,
     gain: float = ...,
     wakewords_dir: str = ...,
+    window: int = ...,
+    refractory: int = ...,
     patience: int = ...,
     debounce: int = ...,
     with_trace: Literal[True],
@@ -435,6 +516,8 @@ def score_wake_clip(
     phases: int = 8,
     gain: float = 1.0,
     wakewords_dir: str = WAKEWORDS_DIR,
+    window: int = 1,
+    refractory: int = 0,
     patience: int = 1,
     debounce: int = 0,
     with_trace: bool = False,
@@ -450,19 +533,23 @@ def score_wake_clip(
     sees). Returns ``(confidence, fired)`` where ``confidence`` is the MAX
     ``last_score`` over the whole clip.
 
-    ``fired`` is the firing decision. By default (``patience <= 1``, ``debounce <= 0``)
-    it is simply ``confidence >= threshold`` — byte-identical to before. When
-    ``patience > 1`` or ``debounce > 0`` the clip is REPLAYED under the live ship
-    config: a fire then requires ``patience`` CONSECUTIVE frames at-or-above the
-    threshold and honours a ``debounce`` refractory window (see
-    :func:`fired_with_patience`), so the offline score matches what the running loop
-    would actually do.
+    ``fired`` is the firing decision, computed under the SAME moving-average criterion
+    the LIVE detector uses (so the offline number is TRUE of the running loop —
+    ``live == eval``). With the defaults (``window <= 1``, ``refractory <= 0``,
+    ``patience <= 1``, ``debounce <= 0``) it is ``confidence >= threshold`` —
+    byte-identical to before. When ``window > 1`` or ``refractory > 0`` the trace is
+    replayed under the live moving-average + refractory criterion
+    (:func:`moving_average_fires`). The legacy ``patience`` / ``debounce`` knobs
+    (consecutive-frame de-bounce, :func:`fired_with_patience`) are still honoured when
+    set, for callers that drive that path; ``window`` / ``refractory`` take precedence
+    as they mirror the live detector.
 
     ``with_trace=True`` returns ``(confidence, fired, score_trace)`` instead, where
     ``score_trace`` is the per-frame MAX-over-phases score across the clip — the
     trace the GUI draws under the waveform so a localized spike (the word IS scoring,
     just sub-threshold) is distinguishable from a flat-zero dead capture. It is also
-    the input to :func:`count_fa_events` and :func:`fired_with_patience`.
+    the input to :func:`count_fa_events`, :func:`moving_average_fires`, and
+    :func:`fired_with_patience`.
 
     Defensive: an empty clip, a missing model file, or an unavailable openWakeWord
     backend all return zero confidence (and an empty trace) rather than raising — the
@@ -493,7 +580,10 @@ def score_wake_clip(
     except WakeUnavailable as exc:
         log.warning("wake-test scoring unavailable for %r: %s", word, exc)
         return _result(0.0, False, [])
-    if patience > 1 or debounce > 0:
+    if window > 1 or refractory > 0:
+        # The live detector's exact criterion (moving average + refractory): live == eval.
+        fired = moving_average_fires(trace, threshold, window=window, refractory=refractory)
+    elif patience > 1 or debounce > 0:
         fired = fired_with_patience(trace, threshold, patience=patience, debounce=debounce)
     else:
         fired = best >= threshold
@@ -555,6 +645,60 @@ def fired_with_patience(
     "any frame >= threshold" decision, so the default behaviour is unchanged. Pure.
     """
     return count_fires(trace, threshold, patience=patience, debounce=debounce) > 0
+
+
+def count_fires_moving_average(
+    trace: list[float] | np.ndarray,
+    threshold: float,
+    *,
+    window: int = 1,
+    refractory: int = 0,
+) -> int:
+    """Count distinct FIRES in a score ``trace`` under the LIVE moving-average criterion.
+
+    Replays EXACTLY what :meth:`WakeWord.detect` does frame-by-frame: a fire when the
+    MEAN of the trailing ``window`` per-frame scores is at-or-above ``threshold``, then a
+    ``refractory``-frame lockout (during which scores still flow into the moving average,
+    but no fire is emitted). This is the offline twin of the live detector — so an eval
+    that calls it (or :func:`moving_average_fires`) measures the TRUE live behaviour
+    (``live == eval``). ``window <= 1`` + ``refractory <= 0`` collapses to "one fire per
+    contiguous above-threshold run" — byte-identical to the old single-frame decision and
+    to :func:`count_fires` with ``patience == 1`` / ``debounce == 0``. Pure.
+    """
+    arr = np.asarray(trace, dtype=np.float32).ravel()
+    if arr.size == 0:
+        return 0
+    win = max(1, int(window))
+    refr = max(0, int(refractory))
+    ring: collections.deque[float] = collections.deque(maxlen=win)
+    fires = 0
+    refractory_left = 0
+    for score in arr:
+        ring.append(float(score))
+        if refractory_left > 0:
+            refractory_left -= 1
+            continue
+        if (sum(ring) / len(ring)) >= threshold:
+            fires += 1
+            refractory_left = refr  # lock out the refractory window before the next fire
+    return fires
+
+
+def moving_average_fires(
+    trace: list[float] | np.ndarray,
+    threshold: float,
+    *,
+    window: int = 1,
+    refractory: int = 0,
+) -> bool:
+    """Whether a per-frame score ``trace`` fires AT LEAST ONCE under the live criterion.
+
+    The eval-path twin of the live fire decision: ``count_fires_moving_average(...) > 0``
+    (moving average of the trailing ``window`` scores ≥ ``threshold``, with a post-fire
+    ``refractory`` lockout). ``window <= 1`` + ``refractory <= 0`` reproduces the classic
+    "any frame ≥ threshold" decision, so the default is byte-identical. Pure.
+    """
+    return count_fires_moving_average(trace, threshold, window=window, refractory=refractory) > 0
 
 
 def count_fa_events(
@@ -759,19 +903,28 @@ def fa_eval(
     *,
     thresholds: list[float] | None = None,
     grouping_window: int = 10,
+    window: int = 1,
+    refractory: int = 0,
     target_fa: float = 0.5,
 ) -> dict[str, Any]:
     """Sweep ``thresholds`` → false-accepts/hour + true-accept rate (ROC/DET points).
 
-    The operating-point curve (Task 2). For each candidate threshold:
+    The operating-point curve (Task 2), computed under the SAME moving-average criterion
+    the live detector uses (so the FA/hour ROC-DET numbers are TRUE OF the running loop —
+    ``live == eval``). For each candidate threshold:
 
-    * **FA EVENTS** are counted over the negative corpus with :func:`count_fa_events`
+    * **FA / hour** — the count of LIVE fires the detector would emit on the negative
+      corpus, converted to per-hour via the negatives' total wall-clock duration
+      (``frames × 80 ms``). With temporal smoothing active (``window > 1`` or
+      ``refractory > 0``) this is :func:`count_fires_moving_average` (the live state
+      machine: moving-average crossings, refractory-spaced); with the defaults
+      (``window <= 1`` + ``refractory <= 0``) it is :func:`count_fa_events`
       (consecutive above-threshold frames = ONE event, merged within ``grouping_window``)
-      and converted to **false-accepts/hour** via the negatives' total wall-clock
-      duration (``frames × 80 ms``). Counting events — NOT frames — is the whole point:
-      a 3-second sustained false trigger is one annoyance, not 37.
-    * **true_accept** is the fraction of POSITIVE clips that fire at the threshold
-      (any frame at-or-above it) — the recall side of the ROC/DET point.
+      — byte-identical to before. Counting events / fires — NOT frames — is the whole
+      point: a 3-second sustained false trigger is one annoyance, not 37.
+    * **true_accept** is the fraction of POSITIVE clips that fire at the threshold under
+      the same criterion (the live moving-average gate when smoothing is on, else "any
+      frame at-or-above the threshold") — the recall side of the ROC/DET point.
 
     Returns ``{"points": [{threshold, fa_per_hour, true_accept}], "miss_at_target_fa",
     "target_fa", "neg_seconds"}``. ``miss_at_target_fa`` is the miss-rate (1 − recall)
@@ -784,13 +937,25 @@ def fa_eval(
     neg_frames = sum(len(t) for t in neg_traces)
     neg_seconds = neg_frames * SECONDS_PER_FRAME
     n_pos = len(pos_traces)
+    smoothing = window > 1 or refractory > 0
     points: list[dict[str, Any]] = []
     for thr in grid:
-        fa_events = sum(
-            count_fa_events(t, thr, grouping_window=grouping_window) for t in neg_traces
-        )
+        if smoothing:
+            fa_events = sum(
+                count_fires_moving_average(t, thr, window=window, refractory=refractory)
+                for t in neg_traces
+            )
+            accepts = sum(
+                1
+                for t in pos_traces
+                if moving_average_fires(t, thr, window=window, refractory=refractory)
+            )
+        else:
+            fa_events = sum(
+                count_fa_events(t, thr, grouping_window=grouping_window) for t in neg_traces
+            )
+            accepts = sum(1 for t in pos_traces if (np.asarray(t).max() if t else 0.0) >= thr)
         fa_per_hour = (fa_events / neg_seconds * 3600.0) if neg_seconds > 0 else 0.0
-        accepts = sum(1 for t in pos_traces if (np.asarray(t).max() if t else 0.0) >= thr)
         true_accept = (accepts / n_pos) if n_pos else 0.0
         points.append(
             {

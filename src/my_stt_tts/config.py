@@ -610,6 +610,37 @@ class Config:
     # extra false-positives and a 0.22 real-time factor at K=8. 1 disables it.
     # Env: WAKE_PHASES.
     wake_phases: int = 8
+    # Live moving-average fire window (microWakeWord's process_streaming_prob, ported
+    # into the LIVE path — repo #3 of the wake checker loop). The live detector keeps a
+    # ring buffer of the last `wake_window` per-frame MAX-over-phases scores and fires
+    # when their MEAN >= wake_threshold (smoother than a single frame: it tolerates a
+    # one-frame dip and suppresses a one-frame spike). wake_window == 1 is BYTE-IDENTICAL
+    # to the old single-frame decision (mean([s]) == s).
+    #
+    # DEFAULT = 1 (byte-identical), chosen empirically: a window > 1 RAISES the firing
+    # bar, so it ships as the default ONLY when measured to (a) preserve official recall,
+    # (b) not lower the marginal maziko oWW recall, AND (c) reduce false-accepts. On
+    # Albert's saved clips window=2 met (a)+(b) (official 100%, maziko held at 1/6) but
+    # NOT (c): the alexa→nexus false fires are SUSTAINED passages (4/12/3 frames above
+    # threshold), so a 2-frame mean still clears them (FA 19→18, essentially flat) — the
+    # moving average suppresses single-FRAME flukes, not sustained ones, and this corpus
+    # has none. window=3 REGRESSED maziko (1/6→0/6: the lone 0.67 spike dilutes below 0.4).
+    # So the window ships OFF by default (=1) and is an opt-in knob; the FA win comes from
+    # wake_refractory below. The OFFLINE eval (score_wake_clip / fa_eval) uses the SAME
+    # criterion so live == eval. See PLAN_wake_checker_loop.md. Env: WAKE_WINDOW.
+    wake_window: int = 1
+    # Refractory lockout (frames) after a live fire: re-fires are suppressed for this many
+    # 80 ms frames so one utterance can't re-trigger mid-word (the same refractory the
+    # offline count_fires applies). 0 == no lockout (the old behaviour).
+    #
+    # DEFAULT = 8 (~0.64 s) — empirically the dominant FA-control lever with ZERO recall
+    # cost: on Albert's saved negatives it collapsed the alexa false fires 19→5 (a 12-frame
+    # sustained false passage becomes ~2 fires, not 12 — "one annoyance, not 37"), while
+    # leaving recall untouched at every window (with window=1 the refractory only suppresses
+    # RE-fires AFTER a first detection, never the first fire — and the live loop returns on
+    # the first fire anyway, so a single activation is byte-identical; it only de-duplicates
+    # the FA count / re-trigger). Env: WAKE_REFRACTORY.
+    wake_refractory: int = 8
     follow_up_seconds: float = 8.0
     sample_rate: int = 16000
     # Software input gain applied to SERVER-captured mic audio (mic_check / wake_test
@@ -1080,6 +1111,10 @@ class Config:
             cfg.wake_threshold = float(env["WAKE_THRESHOLD"])
         if env.get("WAKE_PHASES"):
             cfg.wake_phases = int(env["WAKE_PHASES"])
+        if env.get("WAKE_WINDOW"):
+            cfg.wake_window = int(env["WAKE_WINDOW"])
+        if env.get("WAKE_REFRACTORY"):
+            cfg.wake_refractory = int(env["WAKE_REFRACTORY"])
         if env.get("WAKE_DEBUG_SECONDS"):
             cfg.wake_debug_seconds = float(env["WAKE_DEBUG_SECONDS"])
         if env.get("WAKE_NEG_CORPUS"):
@@ -1233,6 +1268,10 @@ class Config:
             errors.append(f"wake_threshold must be in [0, 1]; got {self.wake_threshold}")
         if not 1 <= self.wake_phases <= 16:
             errors.append(f"wake_phases must be in [1, 16]; got {self.wake_phases}")
+        if not 1 <= self.wake_window <= 50:
+            errors.append(f"wake_window must be in [1, 50]; got {self.wake_window}")
+        if self.wake_refractory < 0:
+            errors.append(f"wake_refractory must be >= 0; got {self.wake_refractory}")
         if self.kws_boost < 0.0:
             errors.append(f"kws_boost must be >= 0; got {self.kws_boost}")
         if not 0.0 <= self.kws_threshold <= 1.0:
