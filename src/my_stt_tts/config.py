@@ -877,6 +877,20 @@ class Config:
     # models ever seeing wrapped samples. Reported to the GUI as processing.gain.
     # Must be > 0 and ≤ 10. Env: MIC_GAIN.
     mic_gain: float = 2.0
+    # Seconds to wait AFTER the always-listen wake loop's CoreAudio input stream is
+    # stopped+closed before a server mic diagnostic (mic_check / record-replay) opens
+    # its OWN input stream. macOS releases an AUHAL input device asynchronously: the
+    # wake stream's close() returns before CoreAudio frees the device, so a diagnostic
+    # opening immediately after collides (PaMacCore err=-50 / paramErr) and records
+    # near-silence. This settle gap lets the OS hand the device over. 0 disables it.
+    # Must be in [0, 2]. Env: MIC_CHECK_SETTLE_S.
+    mic_check_settle_s: float = 0.15
+    # How many times to (re)try opening the SERVER mic-capture input stream when it
+    # fails with a CoreAudio device-contention error (PortAudioError, typically
+    # err=-50 / paramErr — the device is momentarily still held). Each retry waits
+    # ``mic_check_settle_s`` then re-opens; the device is almost always free a moment
+    # later. 1 = single attempt (no retry). Must be in [1, 5]. Env: MIC_CHECK_RETRIES.
+    mic_check_retries: int = 3
     # Software input gain applied to each frame in the LIVE wake loop BEFORE it is
     # scored by openWakeWord (clip-protected to ±1.0). THE fix knob for the dead-wake
     # bug: openWakeWord has no input normalization, so a quiet mic produces low mel
@@ -1371,6 +1385,10 @@ class Config:
             cfg.vad_silence_seconds = float(env["VAD_SILENCE_SECONDS"])
         if env.get("MIC_GAIN"):
             cfg.mic_gain = float(env["MIC_GAIN"])
+        if env.get("MIC_CHECK_SETTLE_S"):
+            cfg.mic_check_settle_s = float(env["MIC_CHECK_SETTLE_S"])
+        if env.get("MIC_CHECK_RETRIES"):
+            cfg.mic_check_retries = int(env["MIC_CHECK_RETRIES"])
         if env.get("WAKE_GAIN"):
             cfg.wake_gain = float(env["WAKE_GAIN"])
         if env.get("AEC_NLMS_TAPS"):
@@ -1528,6 +1546,10 @@ class Config:
             errors.append(f"sample_rate must be > 0; got {self.sample_rate}")
         if not 0.0 < self.mic_gain <= 10.0:
             errors.append(f"mic_gain must be in (0, 10]; got {self.mic_gain}")
+        if not 0.0 <= self.mic_check_settle_s <= 2.0:
+            errors.append(f"mic_check_settle_s must be in [0, 2]; got {self.mic_check_settle_s}")
+        if not 1 <= self.mic_check_retries <= 5:
+            errors.append(f"mic_check_retries must be in [1, 5]; got {self.mic_check_retries}")
         if not 0.0 < self.wake_gain <= 10.0:
             errors.append(f"wake_gain must be in (0, 10]; got {self.wake_gain}")
         if not 0.0 < self.speaker_threshold < 1.0:
