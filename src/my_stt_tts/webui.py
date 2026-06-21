@@ -68,7 +68,20 @@ def settings_dict(
     ``voice_hint`` (a short reason) instead of letting them POST and silently error.
     """
     from .audio import mic_permission_status
+    from .config import is_official_wake_word
+    from .kws import kws_available
     from .platform import host_app_name
+
+    # Is the sherpa KeywordSpotter usable at all (enabled + importable + model fetchable)?
+    # Per-word detector annotation: official words are openWakeWord-ONLY ("oww"); a custom
+    # word is also served by KWS ("oww+kws") when KWS is available, else "oww".
+    kws_ok = kws_available(cfg)
+    word_info = wake_word_info()
+    for word, info in word_info.items():
+        if is_official_wake_word(word):
+            info["detector"] = "oww"
+        else:
+            info["detector"] = "oww+kws" if kws_ok else "oww"
 
     return {
         "audio_enabled": audio_enabled,
@@ -99,8 +112,16 @@ def settings_dict(
         # "note": str, "reliability": float 0-1, "tested": int, "measured": bool}}.
         # ``reliability`` is data-driven from THIS user's wake tests when they exist
         # (debug/wake_stats.json, server-biased), else a static prior (official 0.9,
-        # self-trained 0.3); ``tier`` is derived from it.
-        "wake_word_info": wake_word_info(),
+        # self-trained 0.3); ``tier`` is derived from it. Each entry ALSO carries
+        # ``detector`` ("oww" | "kws" | "oww+kws") naming which detector(s) serve the
+        # word: official = "oww" only; a custom word = "oww+kws" when the sherpa
+        # KeywordSpotter is available (the OR'd open-vocabulary path), else "oww".
+        "wake_word_info": word_info,
+        # Whether the sherpa KeywordSpotter (KWS) — the SECOND, OR'd wake detector for
+        # CUSTOM / self-trained words — is usable at all (enabled + sherpa importable +
+        # the GigaSpeech model present or auto-downloadable). Official words never use it.
+        "kws_available": kws_ok,
+        "kws_enabled": cfg.kws_enabled,
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),
         # clip-protected to ±1.0. Reported back to the page as processing.gain.
         "mic_gain": cfg.mic_gain,
@@ -178,6 +199,9 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
         # Clamp to [0, 1]: the slider can't produce out-of-range values, but a
         # hand-crafted POST shouldn't push the wake detector past validate()'s bound.
         cfg.wake_threshold = max(0.0, min(1.0, float(data["wake_threshold"])))
+    if "kws_enabled" in data:
+        # Toggle the OR'd sherpa-KWS path for custom words (official words ignore it).
+        cfg.kws_enabled = bool(data["kws_enabled"])
     if "mic_gain" in data:
         # Clamp to (0, 10]: a hand-crafted POST shouldn't push it past validate()'s
         # bound (0 would zero out the capture; >10 risks pure clipping).

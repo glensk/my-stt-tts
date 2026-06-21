@@ -211,6 +211,92 @@ class WakeWord:
         self.last_score = 0.0
 
 
+class OrCombinedWake:
+    """openWakeWord OR sherpa-KWS — fire if EITHER detector fires (custom words only).
+
+    Presents the EXACT :class:`WakeWord` surface the wake loop drives —
+    ``detect(frame) -> bool``, ``reset()``, ``last_score``, ``threshold``,
+    ``model_name``, ``available()`` — so :func:`my_stt_tts.audio.listen_for_wake` calls
+    it identically. It wraps the openWakeWord :class:`WakeWord` (always) plus an optional
+    :class:`my_stt_tts.kws.SherpaKws` (only for a CUSTOM / self-trained word, when KWS is
+    enabled + available). Each frame is fed to BOTH; the word fires the instant EITHER
+    fires. ``last_detector`` ("oww" | "kws") names which produced the latest fire so the
+    caller can report it. For an OFFICIAL word this class is NEVER constructed (the loop
+    uses the bare :class:`WakeWord`), so official behaviour is byte-identical.
+    """
+
+    def __init__(self, oww: WakeWord, kws: Any = None) -> None:  # noqa: ANN401 — SherpaKws | None
+        self.oww = oww
+        self.kws = kws
+        # last_detector: which detector produced the most recent fire ("oww" | "kws"),
+        # or "" when nothing has fired this session. Surfaced on the detection event.
+        self.last_detector: str = ""
+
+    @property
+    def threshold(self) -> float:
+        return self.oww.threshold
+
+    @property
+    def model_name(self) -> str:
+        return self.oww.model_name
+
+    @property
+    def last_score(self) -> float:
+        """The oWW score (the continuous one the debug instrument plots).
+
+        KWS has no continuous score (the transducer reports a matched-keyword label, not a
+        probability), so the plotted score stays the openWakeWord one; a KWS-only fire is
+        reflected via :attr:`last_detector` and :meth:`detect` returning ``True``.
+        """
+        return self.oww.last_score
+
+    def available(self) -> bool:
+        return self.oww.available()
+
+    def detect(self, frame: np.ndarray) -> bool:
+        """Fire if EITHER detector fires on this frame. oWW is scored first (cheap, keeps
+        ``last_score`` live for the debug plot); KWS only when present. ``last_detector``
+        records the winner — oWW wins ties (it ran first)."""
+        oww_fired = self.oww.detect(frame)
+        if oww_fired:
+            self.last_detector = "oww"
+            return True
+        if self.kws is not None and self.kws.detect(frame):
+            self.last_detector = "kws"
+            return True
+        return False
+
+    def reset(self) -> None:
+        self.oww.reset()
+        if self.kws is not None:
+            self.kws.reset()
+        self.last_detector = ""
+
+
+def make_wake_detector(cfg: Config) -> WakeWord | OrCombinedWake:
+    """Build the wake detector for ``cfg.wake_phrase``: bare oWW, or oWW-OR-KWS.
+
+    The single entry point the wake loop uses. For an OFFICIAL word it returns the bare
+    :class:`WakeWord` (openWakeWord only — byte-identical to before). For a CUSTOM /
+    self-trained word, when ``kws_enabled`` and the sherpa KeywordSpotter is available, it
+    returns an :class:`OrCombinedWake` that fires if EITHER detector fires; otherwise it
+    also returns the bare :class:`WakeWord`. KWS construction is fully defensive (returns
+    ``None`` on any failure), so this NEVER raises and never changes oWW behaviour.
+    """
+    oww = WakeWord.from_config(cfg)
+    from .config import is_official_wake_word
+
+    if is_official_wake_word(cfg.wake_phrase) or not getattr(cfg, "kws_enabled", True):
+        return oww
+    from .kws import SherpaKws
+
+    kws = SherpaKws.from_config(cfg, cfg.wake_phrase)
+    if kws is None:
+        return oww
+    log.info("wake detector: openWakeWord OR sherpa-KWS for custom word %r", cfg.wake_phrase)
+    return OrCombinedWake(oww, kws)
+
+
 @overload
 def score_wake_clip(
     clip: np.ndarray,
@@ -296,3 +382,70 @@ def score_wake_clip(
         log.warning("wake-test scoring unavailable for %r: %s", word, exc)
         return _result(0.0, False, [])
     return _result(best, best >= threshold, trace)
+
+
+def _kws_fires_on_clip(clip: np.ndarray, sample_rate: int, word: str, cfg: Config) -> bool:
+    """Stream ``clip`` through the sherpa KWS for ``word`` and return whether it fired.
+
+    Builds the (defensive) :class:`my_stt_tts.kws.SherpaKws` for ``word`` from ``cfg``,
+    resamples to 16 kHz, feeds it in :data:`FRAME_SAMPLES` chunks, then a trailing-silence
+    flush so the last word decodes. Returns ``False`` when KWS is unavailable / the clip is
+    empty — never raises. The caller has already established ``word`` is custom + enabled.
+    """
+    from .audio import resample_to
+    from .kws import SherpaKws
+
+    kws = SherpaKws.from_config(cfg, word)
+    arr = np.asarray(clip, dtype=np.float32).ravel()
+    if kws is None or arr.size == 0:
+        return False
+    arr = resample_to(arr, int(sample_rate), 16000)
+    kws.reset()
+    fired = any(
+        kws.detect(arr[start : start + FRAME_SAMPLES])
+        for start in range(0, arr.size, FRAME_SAMPLES)
+    )
+    return fired or kws.flush()
+
+
+def score_wake_clip_combined(
+    clip: np.ndarray,
+    sample_rate: int,
+    word: str,
+    cfg: Config,
+    *,
+    wakewords_dir: str = WAKEWORDS_DIR,
+) -> tuple[float, bool, str, list[float]]:
+    """OR-combined clip scoring: ``(confidence, fired, detector, score_trace)``.
+
+    Runs the openWakeWord :func:`score_wake_clip` (phase-diverse, the same as the live
+    loop) AND — for a CUSTOM / self-trained word, when ``cfg.kws_enabled`` and the sherpa
+    KeywordSpotter is available — ALSO scores the clip through KWS, firing if EITHER fires.
+    ``detector`` names which produced the fire: ``"oww"`` (oWW fired — it wins even if KWS
+    also would, as it is the primary continuous-score path), ``"kws"`` (KWS-only fire), or
+    ``""`` when neither fired. ``confidence`` / ``score_trace`` stay the openWakeWord values
+    (KWS has no continuous score), so the GUI's level meter + trace are unchanged.
+
+    For an OFFICIAL word this is byte-identical to :func:`score_wake_clip` with the detector
+    forced to ``"oww"`` — KWS is NEVER consulted (the guardrail). Fully defensive: a KWS
+    failure simply leaves the oWW result intact.
+    """
+    from .config import is_official_wake_word
+
+    conf, oww_fired, trace = score_wake_clip(
+        clip,
+        sample_rate,
+        word,
+        threshold=cfg.wake_threshold,
+        phases=cfg.wake_phases,
+        wakewords_dir=wakewords_dir,
+        with_trace=True,
+    )
+    if oww_fired:
+        return (conf, True, "oww", trace)
+    if is_official_wake_word(word) or not getattr(cfg, "kws_enabled", True):
+        return (conf, False, "", trace)
+    # Custom word, oWW did NOT fire: give the open-vocabulary KWS a shot.
+    if _kws_fires_on_clip(clip, sample_rate, word, cfg):
+        return (conf, True, "kws", trace)
+    return (conf, False, "", trace)

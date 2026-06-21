@@ -148,7 +148,8 @@ def _fmt_mic_result(e: dict[str, Any]) -> str:
 
 def _fmt_wake_test_result(e: dict[str, Any]) -> str:
     fired = "FIRED" if e.get("fired") else "no-fire"
-    return f"{e.get('word', '')} {fired} conf={e.get('confidence', 0)} ({e.get('source', '')})"
+    det = f" via {e['detector']}" if e.get("fired") and e.get("detector") else ""
+    return f"{e.get('word', '')} {fired}{det} conf={e.get('confidence', 0)} ({e.get('source', '')})"
 
 
 def _fmt_wake_gain_sweep_result(e: dict[str, Any]) -> str:
@@ -169,8 +170,9 @@ def _fmt_metrics(e: dict[str, Any]) -> str:
     return f"speech_id={e.get('speech_id', '')} stages_ms={e.get('stages_ms', {})}"
 
 
-def _fmt_wake(_e: dict[str, Any]) -> str:
-    return "fired"
+def _fmt_wake(e: dict[str, Any]) -> str:
+    det = e.get("detector", "")
+    return f"fired ({det})" if det else "fired"
 
 
 # Per-type one-line renderers for the stderr console sink (everything else falls
@@ -517,8 +519,12 @@ class EventBus:
             event["model"] = model
         self.publish(event)
 
-    def wake(self) -> None:
-        self.publish({"type": "wake", "fired": True})
+    def wake(self, *, detector: str = "oww") -> None:
+        """Publish a wake-fired event. ``detector`` ("oww" | "kws") names which detector
+        produced the fire — openWakeWord for an official word, or for a custom word the
+        winner of the openWakeWord-OR-sherpa-KWS combine — so the GUI/log can show the
+        OR'd path's source. Defaults to "oww" (the only detector for official words)."""
+        self.publish({"type": "wake", "fired": True, "detector": detector})
 
     def mic_result(
         self, *, ok: bool, verdict: str, message: str, level: int = 0, permission: str = "unknown"
@@ -638,6 +644,7 @@ class EventBus:
         wav_url: str = "",
         stats: dict[str, Any] | None = None,
         score_trace: list[float] | None = None,
+        detector: str = "oww",
     ) -> None:
         """Publish the outcome of a wake-word test (GUI "Wake test"); DATA priority.
 
@@ -658,6 +665,10 @@ class EventBus:
         metrics (see :meth:`mic_check_result`). ``score_trace`` is the per-frame wake
         score across the clip — drawn under the waveform so a localized sub-threshold
         spike (the word IS scoring) is distinguishable from a flat-zero dead capture.
+
+        ``detector`` ("oww" | "kws") names which detector produced the fire/score: an
+        official word is always "oww"; a custom word may fire via the OR'd sherpa-KWS path
+        ("kws") when openWakeWord misses it. Defaults to "oww".
         """
         self.publish(
             {
@@ -667,6 +678,7 @@ class EventBus:
                 "confidence": confidence,
                 "fired": fired,
                 "message": message,
+                "detector": detector,
                 "wav_path": wav_path,
                 "peak": round(float(peak), 4),
                 "level": int(level),

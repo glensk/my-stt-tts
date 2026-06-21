@@ -58,6 +58,18 @@ def available_wake_words(wakewords_dir: str | os.PathLike[str] = WAKEWORDS_DIR) 
 # non-native accent — validated upstream on far more data).
 OFFICIAL_WAKE_WORDS: frozenset[str] = frozenset({"alexa", "hey_jarvis", "hey_mycroft"})
 
+
+def is_official_wake_word(word: str) -> bool:
+    """True if ``word`` is one of openWakeWord's official, extensively-trained models.
+
+    The single source of truth for the OR'd-detector routing: an official word is served
+    by openWakeWord ONLY (it fires 99-100% on Albert's voice — the sherpa KeywordSpotter
+    must NEVER touch it), while every other (custom / self-trained) word may ALSO be served
+    by KWS. Matching is case-insensitive on the model stem.
+    """
+    return word.strip().lower() in OFFICIAL_WAKE_WORDS
+
+
 # Static reliability PRIORS used until measured tests exist for a word.
 OFFICIAL_PRIOR = 0.9
 # Self-trained / synthetic-English models: low prior (0.3 -> red). They are trained
@@ -430,6 +442,30 @@ def _env_bool(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_kws_spellings(raw: str | None) -> dict[str, list[str]]:
+    """Parse ``KWS_SPELLINGS`` (``word=alt1|alt2;word2=alt3``) into ``{word: [alt, …]}``.
+
+    Per-word accent variants for the sherpa KeywordSpotter: each ``word=`` group lists
+    extra spellings (pipe-separated) that all map to the one logical word. Whitespace is
+    trimmed; empty/blank entries are dropped. A missing/blank env value yields ``{}`` and
+    malformed groups (no ``=``) are skipped — never raises (so a typo can't break boot).
+    """
+    out: dict[str, list[str]] = {}
+    if not raw or not raw.strip():
+        return out
+    for group in raw.split(";"):
+        if "=" not in group:
+            continue
+        word, _, alts = group.partition("=")
+        word = word.strip()
+        if not word:
+            continue
+        spellings = [a.strip() for a in alts.split("|") if a.strip()]
+        if spellings:
+            out[word] = spellings
+    return out
+
+
 def _repo_prompt_file() -> Path:
     """Path to the editable in-repo system prompt (resolved from this package)."""
     return Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.md"
@@ -585,6 +621,38 @@ class Config:
     # until the user (or the gain-sweep diagnostic) picks a value. Must be > 0 and
     # ≤ 10. Env: WAKE_GAIN.
     wake_gain: float = 1.0
+    # --- sherpa-onnx KeywordSpotter: a SECOND, OR'd wake detector for CUSTOM /
+    # self-trained words ONLY (round-1 of the wake-detection checker loop). openWake-
+    # Word needs a GPU retrain per new word and fails on a non-native accent (maziko
+    # scores ~0 on Albert); sherpa KWS is OPEN-VOCABULARY — add any phrase by typing
+    # its tokens, with multi-spelling + per-keyword boost/threshold, zero training.
+    # For an OFFICIAL word (alexa/hey_jarvis/hey_mycroft — they fire 99-100% on Albert)
+    # KWS is NEVER used: official stays openWakeWord-only, byte-identical. For a custom
+    # word AND kws_enabled AND KWS available, BOTH detectors run and the word fires if
+    # EITHER fires. Reuses the SAME GigaSpeech English zipformer transducer (int8 ONNX)
+    # auto-downloaded + checksum-verified into the gitignored models/, mirroring the
+    # diarize models. Zero new dependency: rides the diarize `sherpa-onnx==1.10.46`
+    # pin. Env: KWS_ENABLED (default true). ---
+    kws_enabled: bool = True
+    kws_model_dir: str = "models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
+    kws_model_url: str = (
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
+        "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
+    )
+    # SHA-256 of the downloaded .tar.bz2 archive (verified before extraction); "" disables.
+    kws_model_sha256: str = "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"
+    kws_auto_download: bool = True
+    # Per-keyword detection knobs (the keyword-line `:boost #threshold`). A higher boost
+    # makes a phrase easier to fire; a lower threshold (0..1) accepts a weaker match.
+    # Defaults are sherpa's recommended starting point nudged toward recall for a
+    # non-native accent. Env: KWS_BOOST / KWS_THRESHOLD.
+    kws_boost: float = 1.5
+    kws_threshold: float = 0.25
+    # Optional accent variants: {word: [phrase, …]} — extra spellings ALL mapping to one
+    # logical word (the `@label`), e.g. {"maziko": ["ma zi ko", "ma tsi ko"]}. The word
+    # itself is always included as a spelling; these are added on top. Env: KWS_SPELLINGS
+    # as `word=alt1|alt2;word2=…`.
+    kws_spellings: dict[str, list[str]] = field(default_factory=dict)
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
     vad_silence_seconds: float = 0.7
@@ -904,6 +972,9 @@ class Config:
             music_player=env.get("MUSIC_PLAYER", "auto"),
             music_playback=env.get("MUSIC_PLAYBACK", "hybrid"),
             speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
+            kws_enabled=_env_bool("KWS_ENABLED", default=True),
+            kws_auto_download=_env_bool("KWS_AUTO_DOWNLOAD", default=True),
+            kws_spellings=_parse_kws_spellings(env.get("KWS_SPELLINGS")),
             speaker_diarize_enabled=_env_bool("SPEAKER_DIARIZE", default=False),
             diarize_auto_download=_env_bool("DIARIZE_AUTO_DOWNLOAD", default=True),
             stt_backend=env.get("STT_BACKEND", "local"),
@@ -1005,6 +1076,12 @@ class Config:
             cfg.speaker_threshold = float(env["SPEAKER_THRESHOLD"])
         if env.get("SPEAKER_MARGIN"):
             cfg.speaker_margin = float(env["SPEAKER_MARGIN"])
+        if env.get("KWS_BOOST"):
+            cfg.kws_boost = float(env["KWS_BOOST"])
+        if env.get("KWS_THRESHOLD"):
+            cfg.kws_threshold = float(env["KWS_THRESHOLD"])
+        if env.get("KWS_MODEL_DIR"):
+            cfg.kws_model_dir = env["KWS_MODEL_DIR"]
         if env.get("DIARIZE_SEGMENTATION_MODEL_PATH"):
             cfg.diarize_segmentation_model_path = env["DIARIZE_SEGMENTATION_MODEL_PATH"]
         if env.get("DIARIZE_EMBEDDING_MODEL_PATH"):
@@ -1112,6 +1189,10 @@ class Config:
             errors.append(f"wake_threshold must be in [0, 1]; got {self.wake_threshold}")
         if not 1 <= self.wake_phases <= 16:
             errors.append(f"wake_phases must be in [1, 16]; got {self.wake_phases}")
+        if self.kws_boost < 0.0:
+            errors.append(f"kws_boost must be >= 0; got {self.kws_boost}")
+        if not 0.0 <= self.kws_threshold <= 1.0:
+            errors.append(f"kws_threshold must be in [0, 1]; got {self.kws_threshold}")
         if not 0.0 <= self.vad_threshold <= 1.0:
             errors.append(f"vad_threshold must be in [0, 1]; got {self.vad_threshold}")
         if self.interrupt_min_words < 0:

@@ -245,6 +245,8 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  wake-gain {blue}{cfg.wake_gain}{reset}"
         f"  model {cfg.wake_model_path}  exists {os.path.isfile(cfg.wake_model_path)}"
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
+        f"  kws        enabled {blue}{cfg.kws_enabled}{reset}  (OR'd detector for CUSTOM words;"
+        f" official words stay openWakeWord-only)  boost {cfg.kws_boost}  threshold {cfg.kws_threshold}",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
         f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}"
         f"  diarize {blue}{cfg.speaker_diarize_enabled}{reset}"
@@ -1105,10 +1107,13 @@ def run_wake_loop(
     from .denoise import make_denoiser
     from .turn import make_turn_analyzer
     from .vad import SileroVad
-    from .wake import WakeUnavailable, WakeWord
+    from .wake import WakeUnavailable, make_wake_detector
 
     dbg = debug if debug is not None else _AudioDebug(False)
-    wake = WakeWord.from_config(cfg)
+    # The detector is openWakeWord for an official word, or openWakeWord-OR-sherpa-KWS for
+    # a custom word when KWS is enabled + available (fires if EITHER fires). Both expose
+    # the identical detect/reset/last_score surface listen_for_wake drives.
+    wake = make_wake_detector(cfg)
     if not wake.available():
         msg = (
             f'Wake model not found at {cfg.wake_model_path}. Train "{cfg.wake_phrase}" first '
@@ -1170,8 +1175,9 @@ def run_wake_loop(
         # Wake phrase fired: flash the GUI cue (bus.wake) AND play a distinct
         # detection chime so the user gets an unmistakable acknowledgement. This
         # runs once per detection (outside the follow-up loop), so it never beeps
-        # repeatedly while a conversation is in progress.
-        bus.wake()
+        # repeatedly while a conversation is in progress. ``detector`` names which
+        # detector fired ("oww"|"kws") so the GUI/log can show the OR'd path's winner.
+        bus.wake(detector=getattr(wake, "last_detector", "oww") or "oww")
         gate.gate()
         _play(chimes.chime_wake())
         gate.release()
@@ -1725,6 +1731,7 @@ def _emit_wake_test(
     *,
     available: bool = True,
     stats: dict[str, Any] | None = None,
+    detector: str = "oww",
 ) -> None:
     """Score + format + publish a ``wake_test_result`` (and a human EVENT-LOG line).
 
@@ -1742,7 +1749,9 @@ def _emit_wake_test(
         message = f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)"
     else:
         verdict = "detected" if fired else "not detected"
-        message = f"{word}: confidence {confidence:.2f} — {verdict}"
+        # Name the OR'd detector when a custom word fired via the sherpa-KWS path.
+        via = f" via {detector}" if fired and detector and detector != "oww" else ""
+        message = f"{word}: confidence {confidence:.2f} — {verdict}{via}"
     bus.log(("✓ " if fired else "✗ ") + message, "info" if available else "error")
     bus.state("idle")
     bus.wake_test_result(
@@ -1752,6 +1761,7 @@ def _emit_wake_test(
         fired=bool(fired),
         message=message,
         wav_path=wav_path,
+        detector=detector,
         **(stats or {}),
     )
 
@@ -1798,7 +1808,7 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
     ``wake_test_result`` carrying the same peak/level/levels/processing as a mic-check.
     Never raises — a missing model or a capture error becomes a clear failing message.
     """
-    from .wake import score_wake_clip, wake_model_for
+    from .wake import score_wake_clip_combined, wake_model_for
 
     if not os.path.isfile(wake_model_for(word)):
         _emit_wake_test(word, "server", 0.0, False, "", available=False)
@@ -1822,9 +1832,9 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         return
     clip16k = audio.resample_to(clip, device_rate, 16000)
     clip16k = audio.apply_gain(clip16k, cfg.mic_gain)  # software input gain (clip-protected)
-    confidence, fired, score_trace = score_wake_clip(
-        clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
-    )
+    # OR-combined: openWakeWord, then (custom word only) the open-vocabulary sherpa-KWS.
+    # ``detector`` names which fired ("oww"|"kws"); official words stay oWW-only.
+    confidence, fired, detector, score_trace = score_wake_clip_combined(clip16k, 16000, word, cfg)
     # Persist the outcome so per-word reliability is data-driven from REAL tests.
     from .config import record_wake_outcome
 
@@ -1840,7 +1850,7 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         wav_url=wav_url,
         score_trace=score_trace,
     )
-    _emit_wake_test(word, "server", confidence, fired, wav_path, stats=stats)
+    _emit_wake_test(word, "server", confidence, fired, wav_path, stats=stats, detector=detector)
 
 
 def _run_wake_test_browser(
@@ -1859,7 +1869,7 @@ def _run_wake_test_browser(
     ``wake_test_result`` carrying the same peak/level/levels/processing as a mic-check.
     No server gain is applied to a browser clip. Never raises — bad/empty PCM scores 0.0.
     """
-    from .wake import score_wake_clip, wake_model_for
+    from .wake import score_wake_clip_combined, wake_model_for
 
     if not os.path.isfile(wake_model_for(word)):
         _emit_wake_test(word, "browser", 0.0, False, "", available=False)
@@ -1873,9 +1883,8 @@ def _run_wake_test_browser(
     }
     clip = np.asarray(pcm, dtype=np.float32).ravel()
     rate = int(sample_rate) or cfg.sample_rate
-    confidence, fired, score_trace = score_wake_clip(
-        clip, rate, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, with_trace=True
-    )
+    # OR-combined: openWakeWord, then (custom word only) the open-vocabulary sherpa-KWS.
+    confidence, fired, detector, score_trace = score_wake_clip_combined(clip, rate, word, cfg)
     # Persist the outcome so per-word reliability is data-driven from REAL tests.
     from .config import record_wake_outcome
 
@@ -1888,7 +1897,7 @@ def _run_wake_test_browser(
     stats = _wake_test_stats(
         clip16k, processing=flags, hash8=hash8, wav_url=wav_url, score_trace=score_trace
     )
-    _emit_wake_test(word, "browser", confidence, fired, wav_path, stats=stats)
+    _emit_wake_test(word, "browser", confidence, fired, wav_path, stats=stats, detector=detector)
 
 
 def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | None, str, str]:
