@@ -43,7 +43,24 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       ports `benchmark.py`), and a `--benchmark` CLI. Event-grouped FA counting kept (NOT regressed to
       per-frame). Corpus recipe (LibriSpeech test-clean negatives, MUSAN/DEMAND noise) documented; no
       audio bundled. See round log below.
-- [ ] 5. **Mycroft Precise** — retrain-on-failures active learning; per-frame probability smoothing.
+- [~] 5. **Mycroft Precise** — JUDGED (2-panel), implementation CUT OFF by session limit (resets
+      2026-06-21 16:30 Europe/Berlin) — branches had 0 commits, removed; **RESUME by re-launching the
+      backend+GUI pair below.** Findings: trigger logic is OURS-equal/better (our mean-over-window+
+      refractory keeps the analog score Precise binarizes away — do NOT port `trigger_level`/GRU). TWO
+      genuine gaps to BUILD:
+      (A) **Output calibration** (Precise `ThresholdDecoder`): per-word map of raw score → calibrated
+      [0,1] (logit-normal / `Φ((logit(raw)−μ)/σ)` fit from saved positive-clip stats) applied in
+      `WakeWord.detect` BEFORE the moving-average AND identically in `score_wake_clip` (preserve
+      live==eval); default OFF/identity unless enough samples; makes `wake_threshold`/`wake_sensitivity`
+      model-independent. Config `wake_calibration`.
+      (B) **Active-learning closed loop** (port the LOOP, keep our cheap CPU rebuilders): we auto-save
+      positives + have `enroll_word`/`train_verifier` (seconds, no GPU) + the eval toolkit, but the loop
+      is OPEN. Add: live false-fire ring-buffer capture → `debug/recordings/wake_neg/<word>/`;
+      `_load_negative_clips` unions it; actions `mark_false_fire`/`mark_miss`/`capture_last_fire` →
+      rebuild → **EVAL-GATED: keep only if `separation`/`fa_eval` improves, else ROLL BACK** (golden
+      enrollment sacrosanct; cap refs); `record_wake_outcome` stores clip hash/path. Event
+      `relabel_result{action,rebuilt,accepted,sep_before/after,fa_before/after,message}`. GUI: "✗ Wasn't
+      me / ✓ Missed me / capture" buttons + the accepted/rolled-back result card + a calibration toggle.
 
 ## Our detection baseline
 
