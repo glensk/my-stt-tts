@@ -358,6 +358,8 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
    updates ONLY its own (word + source) panel so the two stay comparable. */
 .wake-panels{display:flex; flex-wrap:wrap; gap:8px}
 .wake-panel{flex:1 1 300px; min-width:0; display:flex; flex-direction:column; gap:5px}
+/* header row: the browser/server pill + the detector badge (which engine fired) */
+.wake-panel-head{display:flex; align-items:center; gap:7px; flex-wrap:wrap}
 .wake-panel .wake-src{display:inline-flex; align-items:center; gap:6px; align-self:flex-start;
   font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint);
   padding:2px 8px; border-radius:999px; border:1px solid var(--line2); background:#070d14}
@@ -385,6 +387,33 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .wake-reliab-fill.tier-red{background:var(--red)}
 .wake-reliab-pct{flex:0 0 auto; font-size:10px; letter-spacing:.4px; color:var(--ink-dim);
   min-width:34px; text-align:right; font-variant-numeric:tabular-nums}
+/* ---------- DETECTOR badge — which engine watches a wake word ----------
+   oWW = trained openWakeWord model · KWS = open-vocab sherpa-onnx (no training)
+   · oWW+KWS = both (custom word OR'd with a shipped model). Shown on the wake
+   list, the selected phrase, and on each wake-recall result panel (the engine
+   that actually fired). Colours: oWW cyan, KWS violet, both = split gradient. */
+.det-badge{display:inline-flex; align-items:center; gap:4px; flex:0 0 auto;
+  padding:1px 7px; border-radius:999px; font-size:8.5px; font-weight:700;
+  letter-spacing:1.1px; text-transform:uppercase; line-height:1.6;
+  border:1px solid var(--line2); background:#070d14; color:var(--ink-faint); white-space:nowrap}
+.det-badge.det-oww{border-color:var(--cyan-dim); color:var(--cyan)}
+.det-badge.det-kws{border-color:var(--violet); color:var(--violet)}
+.det-badge.det-oww-kws{border-color:var(--violet); color:var(--cyan);
+  background:linear-gradient(90deg,rgba(34,231,255,.10),rgba(157,123,255,.14))}
+.det-badge .det-dot{width:6px; height:6px; border-radius:50%; flex:0 0 auto; background:currentColor}
+/* selected-phrase detector badge sits to the right of the reliability bar */
+.wake-det-sel{margin-top:8px}
+/* ---------- KWS: open-vocab custom-wake-word helper + per-keyword knobs ----------
+   The helper line explains that a typed/custom phrase rides the open-vocab KWS
+   path (no GPU retrain) while shipped models use openWakeWord. The boost/threshold
+   knobs only apply to a KWS word, so they're hidden for official oWW-only words. */
+.kws-note{font-size:10px; letter-spacing:.2px; color:var(--ink-dim); line-height:1.55;
+  margin-top:8px; padding-left:1px}
+.kws-note b{color:var(--violet); font-weight:600}
+.kws-knobs[hidden]{display:none}
+.kws-knobs{margin-top:2px}
+.kws-knobs .kws-knobs-head{display:flex; align-items:center; gap:7px; margin-bottom:9px;
+  font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint)}
 /* SELECTABLE wake-recall block — one phrase picker + Browser/Server, then the
    per-source result panels for THAT phrase (rebuilt on change). */
 .wake-recall{display:flex; flex-direction:column; gap:11px}
@@ -1119,12 +1148,23 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                 </div>
                 <span class="wake-reliab-pct" id="wakeReliabPct"></span>
               </div>
+              <!-- Detector badge for the CURRENTLY SELECTED phrase (oWW / KWS /
+                   oWW+KWS) — which engine watches for it. Hidden when unknown. -->
+              <div class="wake-det-sel" id="wakeDetSel" role="note" hidden></div>
               <!-- Tier legend for the colour-coded options + the reliability bar. -->
               <div class="wake-legend" id="wakeLegend" role="note">
                 <span class="wl-title">measured chance it works for you:</span>
                 <span class="wl"><span class="wl-dot tier-green"></span>reliable</span>
                 <span class="wl"><span class="wl-dot tier-orange"></span>ok</span>
                 <span class="wl"><span class="wl-dot tier-red"></span>weak/untested</span>
+              </div>
+              <!-- KWS helper line — shown only when the backend reports open-vocab
+                   KWS is available (settings.kws_available). Clarifies that a
+                   typed/custom phrase needs NO training (open-vocab KWS) while the
+                   shipped models keep using openWakeWord. -->
+              <div class="kws-note" id="kwsNote" role="note" hidden>
+                Custom phrase → detected by <b>open-vocabulary KWS</b> (no training).
+                Shipped models use openWakeWord.
               </div>
             </div>
             <div class="field">
@@ -1138,13 +1178,39 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <!-- ★ Wake gain — the LIVE-LOOP fix knob (1–10×). Boosts the audio fed to
                  the wake model so a quiet "maziko" clears the threshold. The Find-gain
                  sweep on each recall row tells you what value to set here. -->
-            <div class="field" style="margin-bottom:0">
+            <div class="field">
               <label for="wakeGain">Wake gain <span class="v" id="wakeGainVal">1.00×</span>
                 <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake gain"
                       aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Capture gain applied to the audio fed to the <b>live wake loop</b> (1–10×). The usual cure for a dead wake word: a quiet mic never clears the threshold, so boost it here. Use <b>🔎 Find gain</b> on a recall row to see how the score climbs with gain, then set this. Default 1.0×.</span></span>
               </label>
               <input type="range" id="wakeGain" data-key="wake_gain" data-val="wakeGainVal" data-suffix="×"
                      min="1" max="10" step="0.5" aria-label="Wake-loop capture gain">
+            </div>
+            <!-- ★ Open-vocab KWS recall knobs — apply ONLY to a custom / KWS wake
+                 word (the open-vocabulary sherpa-onnx path). Boost amplifies the
+                 keyword's acoustic score; threshold is the score it must clear.
+                 Wired via [data-key] (kws_boost / kws_threshold), so they POST the
+                 same way every other config control does. Hidden for official
+                 oWW-only words (where they don't apply) and when KWS is unavailable. -->
+            <div class="kws-knobs" id="kwsKnobs" aria-label="Open-vocab KWS recall knobs"
+                 style="margin-bottom:0" hidden>
+              <div class="kws-knobs-head"><span class="det-badge det-kws"><span class="det-dot" aria-hidden="true"></span>KWS</span>recall knobs (custom word)</div>
+              <div class="field">
+                <label for="kwsBoost">KWS boost <span class="v" id="kwsBoostVal">1.50</span>
+                  <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS boost"
+                        aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Amplifies the open-vocab keyword's acoustic score (0.5–3.0). <b>Higher boost</b> = the phrase fires more easily (more false-positives). Applies only to the custom/KWS wake word. Default 1.5.</span></span>
+                </label>
+                <input type="range" id="kwsBoost" data-key="kws_boost" data-val="kwsBoostVal"
+                       min="0.5" max="3" step="0.05" aria-label="KWS keyword boost">
+              </div>
+              <div class="field" style="margin-bottom:0">
+                <label for="kwsThreshold">KWS threshold <span class="v" id="kwsThresholdVal">0.25</span>
+                  <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS threshold"
+                        aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0.1–0.5) the open-vocab keyword must clear to fire. <b>Lower threshold</b> = fires more easily / more false-positives; higher = stricter. Applies only to the custom/KWS wake word. Default 0.25.</span></span>
+                </label>
+                <input type="range" id="kwsThreshold" data-key="kws_threshold" data-val="kwsThresholdVal"
+                       min="0.1" max="0.5" step="0.01" aria-label="KWS keyword threshold">
+              </div>
             </div>
           </div>
 
@@ -1701,6 +1767,15 @@ function populate(s){
   settings.wake_gain = wg;
   const wgEl = $("#wakeGain"); if(wgEl) wgEl.value = wg;
   const wgVal = $("#wakeGainVal"); if(wgVal) wgVal.textContent = wg.toFixed(2) + "×";
+  // Open-vocab KWS recall knobs (per-keyword boost ~1.5 + threshold ~0.25). Seeded
+  // here so the sliders reflect the backend; visibility is driven by updateKwsUi()
+  // (via setWakeControls) — only shown for a custom/KWS word when KWS is available.
+  let kb = parseFloat(settings.kws_boost);     if(isNaN(kb)) kb = 1.5;
+  let kth = parseFloat(settings.kws_threshold); if(isNaN(kth)) kth = 0.25;
+  const kbEl = $("#kwsBoost");     if(kbEl) kbEl.value = kb;
+  const kbVal = $("#kwsBoostVal"); if(kbVal) kbVal.textContent = kb.toFixed(2);
+  const ktEl = $("#kwsThreshold");     if(ktEl) ktEl.value = kth;
+  const ktVal = $("#kwsThresholdVal"); if(ktVal) ktVal.textContent = kth.toFixed(2);
   updateVoiceNote();
   setVoiceControls(settings);
   applyHostApp(settings.host_app);
@@ -1776,12 +1851,84 @@ function wakeTierTitle(word){
   if(!isNaN(r)) t += (t ? " — " : "") + Math.round(r*100) + "% chance it works for you";
   return t;
 }
+// ---------- DETECTOR (oWW / KWS / both) ----------
+// SHARED CONTRACT: wake_word_info[word].detector ∈ "oww" | "kws" | "oww+kws".
+//   oww     = trained openWakeWord model (shipped: hey_jarvis/alexa/hey_mycroft…)
+//   kws     = open-vocabulary sherpa-onnx KWS — ANY typed phrase, NO training
+//   oww+kws = both engines watch it (custom word OR'd with a self-trained model)
+// The boost/threshold recall knobs only mean anything for a KWS-capable word.
+const DET_LABEL = {oww:"oWW", kws:"KWS", "oww+kws":"oWW+KWS"};
+const DET_CLASS = {oww:"det-oww", kws:"det-kws", "oww+kws":"det-oww-kws"};
+const DET_TITLE = {
+  oww:    "openWakeWord — trained model (shipped). Add a new word = GPU retrain.",
+  kws:    "open-vocabulary KWS — any typed phrase, no training needed.",
+  "oww+kws":"openWakeWord + open-vocab KWS — both engines watch this custom word."
+};
+// Normalised detector string for `word` ("" when unknown / KWS unavailable).
+function wakeDetectorOf(word){
+  const i = wakeInfoFor(word);
+  const d = i && typeof i.detector === "string" ? i.detector.toLowerCase() : "";
+  return DET_LABEL[d] ? d : "";
+}
+// Is `word` a shipped, trained openWakeWord model? (in settings.wake_words AND
+// not flagged kws). Used to decide oWW-only words (knobs don't apply to them).
+function wakeIsShippedOww(word){
+  const words = (settings && Array.isArray(settings.wake_words)) ? settings.wake_words : [];
+  return words.includes(word) && wakeDetectorOf(word) === "oww";
+}
+// Does this word ride the open-vocab KWS path at all? Either it's tagged kws /
+// oww+kws, OR (KWS available) it's a custom/typed phrase that is NOT a shipped
+// oWW-only model — those are detectable open-vocab with no training.
+function wakeUsesKws(word){
+  if(!kwsAvailable()) return false;
+  const d = wakeDetectorOf(word);
+  if(d === "kws" || d === "oww+kws") return true;
+  if(d === "oww") return false;                 // explicitly trained-only
+  return !!word && !wakeIsShippedOww(word);     // any other typed phrase → KWS
+}
+// True when the backend reports open-vocab KWS is available at all.
+function kwsAvailable(){ return !!(settings && settings.kws_available); }
+// A detector-badge element (or null) for a known detector string.
+function detBadge(det){
+  if(!DET_LABEL[det]) return null;
+  const b = document.createElement("span");
+  b.className = "det-badge " + DET_CLASS[det];
+  b.title = DET_TITLE[det] || "";
+  b.innerHTML = '<span class="det-dot" aria-hidden="true"></span>' + esc(DET_LABEL[det]);
+  return b;
+}
 // Decorate an <option> (label + title) for `word` from wake_word_info.
+// Native <option>s can't hold a coloured badge, so the detector rides the label
+// as a "· KWS" / "· oWW" suffix (only when KWS is available so shipped-only
+// installs look exactly as before).
 function decorateWakeOption(o, word){
   const dot = wakeTierDot(word);
-  o.textContent = (dot ? dot + " " : "") + word;
-  const title = wakeTierTitle(word);
+  const det = kwsAvailable() ? wakeDetectorOf(word) : "";
+  o.textContent = (dot ? dot + " " : "") + word + (det ? "  · " + DET_LABEL[det] : "");
+  let title = wakeTierTitle(word);
+  if(det) title += (title ? " — " : "") + DET_TITLE[det];
   if(title) o.title = title;
+}
+// Render the detector badge for the currently selected `word` next to the
+// reliability bar. Hidden when KWS is unavailable or the detector is unknown.
+function updateWakeDetBadge(word){
+  const host = $("#wakeDetSel"); if(!host) return;
+  host.innerHTML = "";
+  const det = kwsAvailable() ? wakeDetectorOf(word) : "";
+  const b = det ? detBadge(det) : null;
+  if(!b){ host.hidden = true; return; }
+  host.appendChild(b); host.hidden = false;
+}
+// Show/hide + label the open-vocab KWS UI for the SELECTED `word`:
+//  • the "custom phrase → KWS" helper line (whenever KWS is available),
+//  • the per-keyword boost/threshold recall knobs (only for a KWS-capable word).
+// All hidden entirely when the backend reports KWS unavailable (graceful).
+function updateKwsUi(word){
+  updateWakeDetBadge(word);
+  const note = $("#kwsNote"), knobs = $("#kwsKnobs");
+  const avail = kwsAvailable();
+  if(note) note.hidden = !avail;
+  if(knobs) knobs.hidden = !(avail && wakeUsesKws(word));
 }
 // Render the reliability BAR for the currently selected `word` (width=reliability,
 // colour=tier, tooltip = pct + note). Hidden when the word has no reliability info.
@@ -1822,8 +1969,9 @@ function setWakeControls(s){
   sel.hidden = false;
   // Reveal the text box only for a custom (non-shipped) phrase.
   input.hidden = known;
-  // Reliability bar tracks the selected phrase.
+  // Reliability bar + detector badge + KWS knobs track the selected phrase.
   updateWakeReliabBar(phrase);
+  updateKwsUi(phrase);
 }
 $("#wakeSelect").addEventListener("change", e=>{
   const v = e.target.value;
@@ -1831,16 +1979,20 @@ $("#wakeSelect").addEventListener("change", e=>{
     $("#wake").hidden = false;
     $("#wake").focus();
     updateWakeReliabBar("");   // no info for an as-yet-untyped custom phrase
+    // A custom (typed) phrase rides the open-vocab KWS path → keep the helper +
+    // knobs visible while the box is empty so the user knows no training is needed.
+    updateKwsUi($("#wake").value.trim());
     return;  // wait for the user to type a custom phrase
   }
   $("#wake").hidden = true;
   $("#wake").value = v;
   updateWakeReliabBar(v);
+  updateKwsUi(v);
   applyPatch({wake_phrase: v});
 });
 $("#wake").addEventListener("change", ()=>{
   const v = $("#wake").value.trim();
-  if(v){ updateWakeReliabBar(v); applyPatch({wake_phrase: v}); }
+  if(v){ updateWakeReliabBar(v); updateKwsUi(v); applyPatch({wake_phrase: v}); }
 });
 $("#wake").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("#wake").blur(); } });
 
@@ -3410,9 +3562,13 @@ function buildWakePanel(word, source){
   const key = wakePanelKey(word, source);
   const panel = document.createElement("div");
   panel.className = "wake-panel"; panel.setAttribute("data-source", source);
+  // Header row: the "browser/server" pill + (on a result) the detector badge that
+  // shows WHICH engine fired (oWW / KWS), injected by setWakePanelDetector().
+  const head = document.createElement("div"); head.className = "wake-panel-head";
   const src = document.createElement("span"); src.className = "wake-src";
   src.innerHTML = '<span class="src-dot" aria-hidden="true"></span>' + source;
-  panel.appendChild(src);
+  head.appendChild(src);
+  panel.appendChild(head);
   const result = document.createElement("div");
   result.className = "wake-result"; result.id = "wakeResult-" + key;
   result.setAttribute("role", "status"); result.setAttribute("aria-live", "polite");
@@ -3505,6 +3661,25 @@ function setWakeResult(word, source, cls, confPct, msg){
   if(valEl) valEl.textContent = (confPct==null) ? "…" : (confPct + "%");
   if(barEl) barEl.style.width = (confPct==null ? 0 : Math.max(0, Math.min(100, confPct))) + "%";
   if(msgEl) msgEl.textContent = msg || "";
+  // A fresh "recording…/scoring…" pass clears any stale fired-detector badge; the
+  // scored result re-adds it (showWakeResult → setWakePanelDetector).
+  if(cls === "testing"){
+    const head = wrap.parentElement && wrap.parentElement.querySelector(".wake-panel-head");
+    const old = head && head.querySelector(".det-badge"); if(old) old.remove();
+  }
+}
+// Render the detector badge into a result panel's "browser/server" label row, so
+// each panel shows WHICH engine fired (wake_test_result.detector ∈ oww|kws).
+// `det` "" clears it (e.g. a transient "recording…" reset).
+function setWakePanelDetector(word, source, det){
+  const key = wakePanelKey(word, source);
+  const wrap = document.getElementById("wakeResult-" + key);
+  const panel = wrap && wrap.parentElement;            // .wake-panel
+  const head = panel && panel.querySelector(".wake-panel-head");
+  if(!head) return;
+  const old = head.querySelector(".det-badge"); if(old) old.remove();
+  const b = det ? detBadge(det) : null;
+  if(b) head.appendChild(b);                           // sits beside the browser/server pill
 }
 // Confidence → verdict class. fired wins; else by the spec bands:
 // green (high) ≥0.5, amber (mid) 0.3–0.5, red (low) <0.3.
@@ -3524,10 +3699,17 @@ function showWakeResult(d){
   const conf = typeof d.confidence === "number" ? d.confidence : 0;
   const pct = Math.round(Math.max(0, Math.min(1, conf)) * 100);
   const cls = wakeVerdictClass(conf, !!d.fired);
+  // SHARED CONTRACT: wake_test_result.detector ∈ "oww"|"kws" = which engine scored
+  // this clip. Fall back to the word's configured detector when the event omits it.
+  let det = (typeof d.detector === "string" && DET_LABEL[d.detector.toLowerCase()])
+              ? d.detector.toLowerCase() : "";
+  if(!det){ const cfg = wakeDetectorOf(word); if(cfg && cfg !== "oww+kws") det = cfg; }
   let msg = (d.message || "") + " ";
   msg += d.fired ? "✓ would fire" : "✗ would not fire";
+  if(det) msg += " · via " + DET_LABEL[det];
   msg += " · " + source + ((d.wav_url || d.wav_path) ? " · clip saved for debugging" : "");
   setWakeResult(word, source, cls, pct, msg.trim());
+  setWakePanelDetector(word, source, det);     // badge: which engine fired (oWW/KWS)
   wakeBusy[word+"|"+source] = false;
   setWakeBtnRecording(word, source, false);
 
@@ -3956,26 +4138,36 @@ const DEMO_SETTINGS = {
   mic_permission:"notDetermined",     // demo: hint visible until a check "passes"
   host_app:"iTerm",                   // demo: name the server's host app in the server-mic note
   provider:"local", model:"llama-3.1-8b", model_deep:"llama-3.1-70b",
-  voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"maziko", wake_threshold:0.4,
+  // Demo default = a CUSTOM, typed wake phrase on the open-vocab KWS path (no GPU
+  // retrain) so the detector badge, "no-training" helper, and the per-keyword
+  // boost/threshold recall knobs all render offline on load.
+  voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"hey buddy", wake_threshold:0.4,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
-  wake_words:["maziko","nexus","hey_jarvis","alexa","computer","athena","nova","luna","sage","orion"],
-  // SHARED CONTRACT demo seed: per word {tier, note, reliability:0-1, tested, measured}.
+  // SHARED CONTRACT: open-vocab KWS (sherpa-onnx) is available + enabled. Per-keyword
+  // recall knobs default to boost 1.5 / threshold 0.25.
+  kws_available:true, kws_enabled:true, kws_boost:1.5, kws_threshold:0.25,
+  wake_words:["hey buddy","maziko","nexus","hey_jarvis","alexa","computer","athena","nova","luna","sage","orion"],
+  // SHARED CONTRACT demo seed: per word {tier, note, reliability:0-1, tested, measured,
+  //   detector:"oww"|"kws"|"oww+kws"}.
   // `reliability` = the MEASURED chance the word fires for THIS user (data-driven from
   // his wake tests) or a static prior. Seeded so the bar renders offline across all
   // three tiers: hey_jarvis 0.99 green (official), computer 0.55 orange, maziko 0.05
   // red (self-trained — fires 0% on a non-native accent), nexus 0.2 red.
+  // `detector`: shipped/self-trained words = openWakeWord ("oww"); "hey buddy" is a
+  // custom word watched by BOTH (oww+kws); "computer" demos a pure open-vocab "kws".
   wake_word_info:{
-    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true},
-    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false},
-    alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false},
-    computer:  {tier:"orange", note:"measured 0.55 over 4 tests",               reliability:0.55, tested:4, measured:true},
-    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false},
-    athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
-    nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
-    luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
-    sage:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false},
-    orion:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false}
+    "hey buddy":{tier:"green",  note:"custom phrase — open-vocab KWS, no training",   reliability:0.82, tested:3, measured:true,  detector:"oww+kws"},
+    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true,  detector:"oww"},
+    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false, detector:"oww"},
+    alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false, detector:"oww"},
+    computer:  {tier:"orange", note:"open-vocab KWS — measured 0.55 over 4 tests", reliability:0.55, tested:4, measured:true,  detector:"kws"},
+    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false, detector:"oww"},
+    athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
+    nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
+    luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
+    sage:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
+    orion:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"}
   },
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
@@ -4175,14 +4367,21 @@ function demoMicCheckResult(source){
 }
 // Demo wake-test result: a believable per-word/per-source score AND the full
 // contract extras (peak/levels/processing/hash/wav_url + int16/expected_level/
-// stats/score_trace) so the new wake UI is fully exercised offline. "maziko" fires
-// confidently (trace bumps over threshold); "nexus" lands amber (bump just under).
+// stats/score_trace + detector) so the new wake UI is fully exercised offline.
+// "maziko" + the custom "hey buddy" fire confidently (trace bumps over threshold);
+// other words land amber (bump just under).
 function demoWakeResult(word, source){
-  const fires = (word === "maziko");
+  const fires = (word === "maziko" || word === "hey buddy");
   const base = fires ? 0.86 : 0.42;
   const conf = Math.max(0, Math.min(1, base + (Math.random()*0.08 - 0.04)));
   const peak = fires ? 0.71 : 0.38;
+  // SHARED CONTRACT: report WHICH engine scored the clip. A custom (oww+kws) word
+  // is treated as fired by the open-vocab KWS path in the demo; an oWW-only word
+  // reports "oww". Falls back to "kws" for an unknown typed phrase.
+  const cfgDet = wakeDetectorOf(word);
+  const detector = (cfgDet === "oww") ? "oww" : "kws";
   return {type:"wake_test_result", word, source, confidence:conf, fired: conf >= 0.5,
+    detector: detector,
     peak: peak, level: Math.round(peak*100), duration_s: 2.0,
     sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
     processing: (source==="browser")
