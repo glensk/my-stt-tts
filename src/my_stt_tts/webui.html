@@ -421,6 +421,51 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .kws-knobs{margin-top:2px}
 .kws-knobs .kws-knobs-head{display:flex; align-items:center; gap:7px; margin-bottom:9px;
   font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint)}
+/* ---------- SENSITIVITY (Porcupine-style easy mode) ----------
+   The primary wake-tuning control: one 0–1 slider (higher = fewer misses / more
+   false-alarms). Below it a live CAPTION (backend-derived oWW threshold + the
+   measured "miss ~X% @ ≤target FA/h" when calibrated, else an uncalibrated note)
+   and the per-word GUIDANCE hint. The raw knobs (threshold/gain/window/refractory)
+   live behind the "Advanced" <details> below — sensitivity layers OVER them. */
+.sens-cap{font-size:10px; letter-spacing:.2px; color:var(--ink-dim); line-height:1.55;
+  margin-top:7px; padding-left:1px}
+.sens-cap .sc-thr{color:var(--cyan); font-variant-numeric:tabular-nums}
+.sens-cap .sc-miss{color:var(--green); font-weight:600}
+.sens-cap.warn .sc-miss{color:var(--amber)}
+.sens-cap .sc-uncal{color:var(--amber)}
+/* per-word guidance hint — a coloured dot (the selected phrase's tier) + the hint */
+.sens-guide{display:flex; align-items:flex-start; gap:7px; margin-top:7px; padding-left:1px;
+  font-size:10px; letter-spacing:.2px; color:var(--ink-dim); line-height:1.5}
+.sens-guide[hidden]{display:none}
+.sens-guide .sg-dot{width:8px; height:8px; border-radius:50%; flex:0 0 auto; margin-top:4px;
+  background:var(--ink-faint)}
+.sens-guide .sg-word{color:var(--ink); font-weight:600}
+/* the easy-mode/advanced split — keep the raw knobs in a fold so they aren't deleted */
+.adv-knobs[hidden]{display:none}
+.adv-knobs>summary{display:flex; align-items:center; gap:6px; cursor:pointer; list-style:none;
+  font-size:9px; letter-spacing:1.2px; text-transform:uppercase; color:var(--ink-faint);
+  margin:9px 0 2px; user-select:none; -webkit-user-select:none}
+.adv-knobs>summary::-webkit-details-marker{display:none}
+.adv-knobs>summary .chev{width:13px; height:13px; flex:0 0 auto; color:var(--ink-faint);
+  transition:transform .18s ease}
+.adv-knobs[open]>summary .chev{transform:rotate(90deg)}
+.adv-knobs>summary:hover{color:var(--ink-dim)}
+.adv-knobs .adv-body{padding-top:7px}
+/* ---------- per-SNR noise-robustness mini-table (miss-rate × SNR) ----------
+   Rows = clean / 10 dB / 5 dB → miss@target-FA, shown as a labelled bar so the
+   noise penalty (TV/kitchen) is visible at a glance. Lives under the FA/hour ROC. */
+.snr-table{display:flex; flex-direction:column; gap:5px; margin-top:2px}
+.snr-row{display:grid; grid-template-columns:54px 1fr 40px; align-items:center; gap:8px}
+.snr-row .snr-lbl{font-size:9px; letter-spacing:.6px; text-transform:uppercase;
+  color:var(--ink-dim); white-space:nowrap}
+.snr-row .snr-bar{height:7px; border-radius:4px; overflow:hidden; background:var(--ink-faint);
+  opacity:.92}
+.snr-row .snr-fill{height:100%; width:0; border-radius:4px; transition:width .25s ease}
+.snr-row .snr-fill.lo{background:var(--green)}     /* low miss = good */
+.snr-row .snr-fill.mid{background:var(--amber)}
+.snr-row .snr-fill.hi{background:var(--red)}       /* high miss = bad */
+.snr-row .snr-val{font-size:9.5px; letter-spacing:.3px; color:var(--ink-dim);
+  text-align:right; font-variant-numeric:tabular-nums}
 /* SELECTABLE wake-recall block — one phrase picker + Browser/Server, then the
    per-source result panels for THAT phrase (rebuilt on change). */
 .wake-recall{display:flex; flex-direction:column; gap:11px}
@@ -1234,51 +1279,87 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
                 Shipped models use openWakeWord.
               </div>
             </div>
-            <div class="field">
-              <label for="wakeThreshold">Wake sensitivity <span class="v" id="wakeThresholdVal">0.40</span>
-                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake sensitivity"
-                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0–1) the wake word must clear to fire. <b>Lower</b> = triggers more easily / more false-positives; <b>higher</b> = stricter (may miss a quiet "maziko"). Default 0.40.</span></span>
+            <!-- ★ SENSITIVITY — the easy-mode (Porcupine-style) primary wake knob.
+                 ONE 0–1 dial: higher = fewer misses / more false-alarms. Wired to
+                 settings.wake_sensitivity via [data-key]; the backend DERIVES the oWW
+                 decision threshold from it. The raw threshold/gain/KWS knobs live in
+                 the "Advanced" fold below — sensitivity layers OVER them, it does not
+                 replace them. The caption + guidance under it are filled by JS. -->
+            <div class="field" style="margin-bottom:6px">
+              <label for="wakeSensitivity">Sensitivity <span class="v" id="wakeSensitivityVal">0.50</span>
+                <span class="info" id="sensInfoHost"></span>
               </label>
-              <input type="range" id="wakeThreshold" data-key="wake_threshold" data-val="wakeThresholdVal"
-                     min="0" max="1" step="0.01" aria-label="Wake sensitivity threshold">
+              <input type="range" id="wakeSensitivity" data-key="wake_sensitivity" data-val="wakeSensitivityVal"
+                     min="0" max="1" step="0.01" aria-label="Wake sensitivity"
+                     aria-describedby="sensCap sensGuide">
             </div>
-            <!-- ★ Wake gain — the LIVE-LOOP fix knob (1–10×). Boosts the audio fed to
-                 the wake model so a quiet "maziko" clears the threshold. The Find-gain
-                 sweep on each recall row tells you what value to set here. -->
-            <div class="field">
-              <label for="wakeGain">Wake gain <span class="v" id="wakeGainVal">1.00×</span>
-                <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake gain"
-                      aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Capture gain applied to the audio fed to the <b>live wake loop</b> (1–10×). The usual cure for a dead wake word: a quiet mic never clears the threshold, so boost it here. Use <b>🔎 Find gain</b> on a recall row to see how the score climbs with gain, then set this. Default 1.0×.</span></span>
-              </label>
-              <input type="range" id="wakeGain" data-key="wake_gain" data-val="wakeGainVal" data-suffix="×"
-                     min="1" max="10" step="0.5" aria-label="Wake-loop capture gain">
+            <!-- Live caption: backend-derived oWW threshold + (if calibrated) the
+                 measured "miss ~X% @ ≤target FA/h" from the latest FA eval, else an
+                 "uncalibrated — run FA eval" note. Filled by updateSensitivityCaption(). -->
+            <div class="sens-cap" id="sensCap" role="note"></div>
+            <!-- Per-word GUIDANCE hint (wake_word_info[word].guidance) with a tier dot,
+                 so "hey_jarvis (green)" vs "maziko (red)" each show their own steer. -->
+            <div class="sens-guide" id="sensGuide" role="note" hidden>
+              <span class="sg-dot" id="sensGuideDot" aria-hidden="true"></span>
+              <span><span class="sg-word" id="sensGuideWord"></span><span id="sensGuideText"></span></span>
             </div>
-            <!-- ★ Open-vocab KWS recall knobs — apply ONLY to a custom / KWS wake
-                 word (the open-vocabulary sherpa-onnx path). Boost amplifies the
-                 keyword's acoustic score; threshold is the score it must clear.
-                 Wired via [data-key] (kws_boost / kws_threshold), so they POST the
-                 same way every other config control does. Hidden for official
-                 oWW-only words (where they don't apply) and when KWS is unavailable. -->
-            <div class="kws-knobs" id="kwsKnobs" aria-label="Open-vocab KWS recall knobs"
-                 style="margin-bottom:0" hidden>
-              <div class="kws-knobs-head"><span class="det-badge det-kws"><span class="det-dot" aria-hidden="true"></span>KWS</span>recall knobs (custom word)</div>
-              <div class="field">
-                <label for="kwsBoost">KWS boost <span class="v" id="kwsBoostVal">1.50</span>
-                  <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS boost"
-                        aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Amplifies the open-vocab keyword's acoustic score (0.5–3.0). <b>Higher boost</b> = the phrase fires more easily (more false-positives). Applies only to the custom/KWS wake word. Default 1.5.</span></span>
-                </label>
-                <input type="range" id="kwsBoost" data-key="kws_boost" data-val="kwsBoostVal"
-                       min="0.5" max="3" step="0.05" aria-label="KWS keyword boost">
+            <!-- ★ ADVANCED — the raw knobs sensitivity layers over. NOT deleted:
+                 wake_threshold (the derived oWW decision score), wake_gain (live-loop
+                 capture boost), and the open-vocab KWS recall knobs (boost/threshold).
+                 Folded away so the easy-mode Sensitivity dial is the default surface. -->
+            <details class="adv-knobs" id="wakeAdvanced" aria-label="Advanced wake knobs">
+              <summary>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Advanced — raw knobs
+              </summary>
+              <div class="adv-body">
+                <div class="field">
+                  <label for="wakeThreshold">Wake threshold <span class="v" id="wakeThresholdVal">0.40</span>
+                    <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake threshold"
+                          aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Raw score (0–1) the wake word must clear to fire — the knob the <b>Sensitivity</b> dial derives. <b>Lower</b> = triggers more easily / more false-positives; <b>higher</b> = stricter (may miss a quiet "maziko"). Default 0.40.</span></span>
+                  </label>
+                  <input type="range" id="wakeThreshold" data-key="wake_threshold" data-val="wakeThresholdVal"
+                         min="0" max="1" step="0.01" aria-label="Wake decision threshold">
+                </div>
+                <!-- ★ Wake gain — the LIVE-LOOP fix knob (1–10×). Boosts the audio fed to
+                     the wake model so a quiet "maziko" clears the threshold. The Find-gain
+                     sweep on each recall row tells you what value to set here. -->
+                <div class="field">
+                  <label for="wakeGain">Wake gain <span class="v" id="wakeGainVal">1.00×</span>
+                    <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About wake gain"
+                          aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Capture gain applied to the audio fed to the <b>live wake loop</b> (1–10×). The usual cure for a dead wake word: a quiet mic never clears the threshold, so boost it here. Use <b>🔎 Find gain</b> on a recall row to see how the score climbs with gain, then set this. Default 1.0×.</span></span>
+                  </label>
+                  <input type="range" id="wakeGain" data-key="wake_gain" data-val="wakeGainVal" data-suffix="×"
+                         min="1" max="10" step="0.5" aria-label="Wake-loop capture gain">
+                </div>
+                <!-- ★ Open-vocab KWS recall knobs — apply ONLY to a custom / KWS wake
+                     word (the open-vocabulary sherpa-onnx path). Boost amplifies the
+                     keyword's acoustic score; threshold is the score it must clear.
+                     Wired via [data-key] (kws_boost / kws_threshold), so they POST the
+                     same way every other config control does. Hidden for official
+                     oWW-only words (where they don't apply) and when KWS is unavailable. -->
+                <div class="kws-knobs" id="kwsKnobs" aria-label="Open-vocab KWS recall knobs"
+                     style="margin-bottom:0" hidden>
+                  <div class="kws-knobs-head"><span class="det-badge det-kws"><span class="det-dot" aria-hidden="true"></span>KWS</span>recall knobs (custom word)</div>
+                  <div class="field">
+                    <label for="kwsBoost">KWS boost <span class="v" id="kwsBoostVal">1.50</span>
+                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS boost"
+                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Amplifies the open-vocab keyword's acoustic score (0.5–3.0). <b>Higher boost</b> = the phrase fires more easily (more false-positives). Applies only to the custom/KWS wake word. Default 1.5.</span></span>
+                    </label>
+                    <input type="range" id="kwsBoost" data-key="kws_boost" data-val="kwsBoostVal"
+                           min="0.5" max="3" step="0.05" aria-label="KWS keyword boost">
+                  </div>
+                  <div class="field" style="margin-bottom:0">
+                    <label for="kwsThreshold">KWS threshold <span class="v" id="kwsThresholdVal">0.25</span>
+                      <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS threshold"
+                            aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0.1–0.5) the open-vocab keyword must clear to fire. <b>Lower threshold</b> = fires more easily / more false-positives; higher = stricter. Applies only to the custom/KWS wake word. Default 0.25.</span></span>
+                    </label>
+                    <input type="range" id="kwsThreshold" data-key="kws_threshold" data-val="kwsThresholdVal"
+                           min="0.1" max="0.5" step="0.01" aria-label="KWS keyword threshold">
+                  </div>
+                </div>
               </div>
-              <div class="field" style="margin-bottom:0">
-                <label for="kwsThreshold">KWS threshold <span class="v" id="kwsThresholdVal">0.25</span>
-                  <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About KWS threshold"
-                        aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Score (0.1–0.5) the open-vocab keyword must clear to fire. <b>Lower threshold</b> = fires more easily / more false-positives; higher = stricter. Applies only to the custom/KWS wake word. Default 0.25.</span></span>
-                </label>
-                <input type="range" id="kwsThreshold" data-key="kws_threshold" data-val="kwsThresholdVal"
-                       min="0.1" max="0.5" step="0.01" aria-label="KWS keyword threshold">
-              </div>
-            </div>
+            </details>
           </div>
 
           <!-- ============ 🤖 AGENT — the "agent, …" tool-dispatch path ============ -->
@@ -2012,6 +2093,92 @@ function updateWakeReliabBar(word){
   if(track) track.title = wakeTierTitle(word);
   wrap.hidden = false;
 }
+
+/* ---------- SENSITIVITY (Porcupine-style easy-mode wake dial) ----------
+   SHARED CONTRACT: settings.wake_sensitivity (0–1), the backend-DERIVED oWW
+   decision threshold (settings.wake_threshold — the backend computes it from the
+   sensitivity), settings.sensitivity_calibrated (bool), and per-word
+   wake_word_info[word].sensitivity + .guidance (a hint string). The slider is the
+   EASY-MODE layer over the raw knobs (which stay under the Advanced fold). When a
+   word carries its own sensitivity, the dial TRACKS the selected phrase. */
+// Default sensitivity for a word: its own wake_word_info.sensitivity if present,
+// else the global settings.wake_sensitivity, else 0.5.
+function wakeSensitivityOf(word){
+  const i = wakeInfoFor(word);
+  if(i && typeof i.sensitivity === "number") return i.sensitivity;
+  const g = parseFloat(settings && settings.wake_sensitivity);
+  return isNaN(g) ? 0.5 : g;
+}
+// Per-word guidance hint string ("" when none).
+function wakeGuidanceOf(word){
+  const i = wakeInfoFor(word);
+  return (i && typeof i.guidance === "string") ? i.guidance : "";
+}
+// The oWW decision threshold DERIVED from a sensitivity. The backend owns this and
+// ships it as settings.wake_threshold; this local fallback (higher sensitivity ⇒
+// LOWER threshold ⇒ fires more easily) only fills the caption offline/before a
+// settings round-trip. Mirrors a simple inverse map over the usable 0.2–0.95 band.
+function derivedThresholdFromSensitivity(sens){
+  const t = parseFloat(settings && settings.wake_threshold);
+  if(!isNaN(t) && t >= 0 && t <= 1) return t;     // prefer the backend-derived value
+  const s = Math.max(0, Math.min(1, isNaN(sens) ? 0.5 : sens));
+  return +(0.95 - s * 0.75).toFixed(2);
+}
+// The miss/target-FA operating point measured for `word` by the latest FA eval
+// (lastFaEval[word]) — used in the calibrated caption. null when none run.
+function lastFaPointFor(word){
+  const d = lastFaEval[word];
+  if(!d || typeof d.miss_at_target_fa !== "number" || typeof d.target_fa !== "number") return null;
+  return {miss: d.miss_at_target_fa, target_fa: d.target_fa};
+}
+// Move the Sensitivity slider + its readout to track the selected `word`.
+function syncSensitivitySlider(word){
+  const el = $("#wakeSensitivity"); if(!el) return;
+  const s = Math.max(0, Math.min(1, wakeSensitivityOf(word)));
+  el.value = s;
+  const v = $("#wakeSensitivityVal"); if(v) v.textContent = s.toFixed(2);
+}
+// Caption under the slider: backend-derived threshold + (if calibrated) the measured
+// "miss ~X% at ≤target FA/h" from the latest FA eval; else an uncalibrated note.
+function updateSensitivityCaption(word){
+  const cap = $("#sensCap"); if(!cap) return;
+  const sens = wakeSensitivityOf(word);
+  const thr = derivedThresholdFromSensitivity(sens);
+  let html = 'derived oWW threshold <span class="sc-thr">' + thr.toFixed(2) + '</span>';
+  const calibrated = !!(settings && settings.sensitivity_calibrated);
+  const fp = lastFaPointFor(word);
+  cap.classList.remove("warn");
+  if(calibrated && fp){
+    const missPct = Math.round(fp.miss * 100);
+    if(missPct > 25) cap.classList.add("warn");
+    html += ' — measured <span class="sc-miss">miss ~' + missPct
+          + '%</span> at ≤' + fp.target_fa + ' false-alarms/h';
+  }else if(calibrated){
+    html += ' — <span class="sc-uncal">run the 🔬 FA/hour eval on this word for a measured operating point</span>';
+  }else{
+    html += ' — <span class="sc-uncal">uncalibrated · run the 🔬 FA/hour eval for a measured operating point</span>';
+  }
+  cap.innerHTML = html;
+}
+// Per-word GUIDANCE hint line (tier dot + "word: hint"). Hidden when no guidance.
+function updateSensitivityGuide(word){
+  const wrap = $("#sensGuide"); if(!wrap) return;
+  const hint = wakeGuidanceOf(word);
+  if(!hint || !word){ wrap.hidden = true; return; }
+  const tier = wakeTierOf(word);
+  const dot = $("#sensGuideDot");
+  if(dot) dot.className = "sg-dot" + (tier ? " tier-" + tier : "");
+  const w = $("#sensGuideWord"); if(w) w.textContent = word + ": ";
+  const t = $("#sensGuideText"); if(t) t.textContent = hint;
+  wrap.hidden = false;
+}
+// Reflect the SELECTED `word` across the slider + caption + guidance in one call.
+function updateSensitivityUi(word){
+  syncSensitivitySlider(word);
+  updateSensitivityCaption(word);
+  updateSensitivityGuide(word);
+}
+
 function setWakeControls(s){
   const words = Array.isArray(s.wake_words) ? s.wake_words : [];
   const phrase = s.wake_phrase ?? "";
@@ -2039,6 +2206,8 @@ function setWakeControls(s){
   // Reliability bar + detector badge + KWS knobs track the selected phrase.
   updateWakeReliabBar(phrase);
   updateKwsUi(phrase);
+  // Sensitivity dial + caption + guidance track the selected phrase too.
+  updateSensitivityUi(phrase);
 }
 $("#wakeSelect").addEventListener("change", e=>{
   const v = e.target.value;
@@ -2049,19 +2218,53 @@ $("#wakeSelect").addEventListener("change", e=>{
     // A custom (typed) phrase rides the open-vocab KWS path → keep the helper +
     // knobs visible while the box is empty so the user knows no training is needed.
     updateKwsUi($("#wake").value.trim());
+    updateSensitivityUi($("#wake").value.trim());
     return;  // wait for the user to type a custom phrase
   }
   $("#wake").hidden = true;
   $("#wake").value = v;
   updateWakeReliabBar(v);
   updateKwsUi(v);
+  updateSensitivityUi(v);
   applyPatch({wake_phrase: v});
 });
 $("#wake").addEventListener("change", ()=>{
   const v = $("#wake").value.trim();
-  if(v){ updateWakeReliabBar(v); updateKwsUi(v); applyPatch({wake_phrase: v}); }
+  if(v){ updateWakeReliabBar(v); updateKwsUi(v); updateSensitivityUi(v); applyPatch({wake_phrase: v}); }
 });
 $("#wake").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("#wake").blur(); } });
+
+/* Sensitivity dial — live preview while dragging. The generic [data-key] wiring
+   updates the numeric readout and POSTs {wake_sensitivity} on change (the backend
+   then re-derives wake_threshold and the round-trip refreshes the caption). During
+   the drag we additionally recompute the caption against the LIVE slider value so
+   the derived-threshold preview tracks the thumb before the round-trip lands. */
+(function(){
+  // Mount the sensitivity ⓘ via the SHARED FIELD_INFO/fieldInfo helper (so it reuses
+  // the same fixed-positioned, non-clipping popover as every other tooltip). FIELD_INFO
+  // is a `const` defined LATER in this script (temporal dead zone), so defer the mount
+  // to a microtask — it runs after the synchronous top-level script finishes. Replaces
+  // the empty placeholder span with the bound info element.
+  Promise.resolve().then(()=>{
+    const host = $("#sensInfoHost");
+    if(host && typeof fieldInfo === "function"){
+      const info = fieldInfo("sensitivity");
+      if(info && host.parentNode) host.parentNode.replaceChild(info, host);
+    }
+  });
+  const el = $("#wakeSensitivity"); if(!el) return;
+  el.addEventListener("input", ()=>{
+    const cap = $("#sensCap"); if(!cap) return;
+    const s = Math.max(0, Math.min(1, parseFloat(el.value)));
+    // Preview the derived threshold from the LIVE value (inverse map, same band as
+    // derivedThresholdFromSensitivity's fallback). The committed value re-derives
+    // via the backend on the change → settings round-trip.
+    const thr = +(0.95 - s * 0.75).toFixed(2);
+    cap.classList.remove("warn");
+    cap.innerHTML = 'derived oWW threshold <span class="sc-thr">' + thr.toFixed(2)
+      + '</span> — <span class="sc-uncal">release to apply · re-run 🔬 FA/hour eval to re-measure</span>';
+  });
+})();
 
 /* ----------------------------------------------------------------
    VOICE CONTROLS GATING
@@ -2585,6 +2788,11 @@ const FIELD_INFO = {
                 ranges:"Needs a handful of positive clips (the word, your voice) + negatives (other words / speakers). More clips ⇒ a tighter filter. Empty corpus ⇒ record some first."},
   spectrogram: {what:"Mel-spectrogram of the saved clip (time → right, low→high mel-frequency up; brighter = more energy) with the per-frame wake score overlaid on the SAME time axis. Lets you see WHICH phonemes the score rose or died on — e.g. the score peaking on the stressed syllable, or never lifting because the onset was clipped/missing.",
                 ranges:"Score line crossing the threshold where the word is spoken ⇒ fires. A flat score under bright speech energy ⇒ the model heard audio but didn't recognise the word (recall/separation), not a level fault."},
+  // sensitivity (easy-mode wake dial) + per-SNR benchmark
+  sensitivity: {what:"The one-dial wake control (0–1, Porcupine's mental model). Higher = the word fires more easily (fewer MISSES, more FALSE-ALARMS); lower = stricter. The backend DERIVES the raw oWW decision threshold from it — the raw knobs are under Advanced. The caption shows that derived threshold and, once calibrated, the measured miss rate at your false-alarm budget.",
+                ranges:"Higher when the word is being MISSED (a quiet/accented phrase that never fires); lower when it triggers on TV/chatter. Run the 🔬 FA/hour eval to turn the dial into a measured operating point instead of a guess."},
+  "per-SNR miss":{what:"Miss rate at a FIXED false-alarm budget, broken down per NOISE LEVEL — clean room vs +10 dB vs +5 dB signal-to-noise (your room has TV / kitchen noise). It shows how robust the wake word stays as the room gets louder, which a single clean-room number hides.",
+                ranges:"Low miss across all rows = robust. A clean-room low that balloons at 5 dB = the word collapses in noise — raise Sensitivity, move the mic closer, or pick a better-separated phrase. Empty/clean-only ⇒ drop noisy WAVs into the eval corpus to measure it."},
 };
 // Build a bound <span class="info">ⓘ + popover</span> for a named field.
 function fieldInfo(name){
@@ -3104,6 +3312,65 @@ function buildFaRoc(d){
   }
   const info = evalInfo("FA/hour ROC"); if(info) cap.appendChild(document.createTextNode(" ")), cap.appendChild(info);
   wrap.appendChild(cap);
+  // Per-SNR noise-robustness breakdown (clean / 10 dB / 5 dB → miss@target-FA) when
+  // the eval carried it; else the clean-only number + the "drop noisy WAVs" note.
+  const snr = buildPerSnrTable(d, targetFa);
+  if(snr) wrap.appendChild(snr);
+  return wrap;
+}
+// ---------- 2b. PER-SNR NOISE-ROBUSTNESS (miss-rate × SNR) ----------
+// SHARED CONTRACT: fa_eval_result.per_snr = [{snr_db, miss_at_target_fa, points:[…]}]
+// (+ optional snr_list). Renders a small labelled-bar table — rows = clean / 10 dB /
+// 5 dB → miss@target-FA — so the noise penalty (TV/kitchen) is visible. With no
+// per_snr block, falls back to the clean number + the backend's "drop noisy WAVs" note.
+function buildPerSnrTable(d, targetFa){
+  const wrap = document.createElement("div"); wrap.className = "eval-panel eval-snr";
+  const rows = Array.isArray(d.per_snr)
+    ? d.per_snr.filter(r=> r && typeof r.miss_at_target_fa === "number")
+    : [];
+  // Highest SNR (cleanest) first → clean, 10 dB, 5 dB descending.
+  rows.sort((a,b)=> (b.snr_db ?? Infinity) - (a.snr_db ?? Infinity));
+  const tf = (typeof targetFa === "number") ? targetFa
+           : (typeof d.target_fa === "number" ? d.target_fa : null);
+  const lblOf = r=>{
+    const v = r.snr_db;
+    if(v == null || v === Infinity || v >= 90) return "clean";
+    return v + " dB";
+  };
+  const missClass = m=> m <= 0.10 ? "lo" : (m <= 0.30 ? "mid" : "hi");
+  // Empty / clean-only → just the clean number + the "drop noise WAVs" guidance.
+  if(!rows.length){
+    const cleanMiss = (typeof d.miss_at_target_fa === "number") ? d.miss_at_target_fa : null;
+    const e = document.createElement("div"); e.className = "eval-empty";
+    e.innerHTML = (cleanMiss != null
+        ? 'Clean-room only: miss <b style="color:var(--green)">'+Math.round(cleanMiss*100)+'%</b>'
+          + (tf != null ? ' @ ≤'+tf+' FA/h. ' : '. ')
+        : '')
+      + (d.snr_message ? esc(d.snr_message)
+         : 'Drop noisy WAVs into <code>~/.my-stt-tts/wake_eval/'+esc(d.word||"")+'/neg_noise/</code> to measure per-SNR robustness.');
+    wrap.appendChild(e);
+    return wrap;
+  }
+  const head = document.createElement("div"); head.className = "ep-cap";
+  head.innerHTML = "noise robustness — miss rate per SNR"
+    + (tf != null ? ' @ ≤<b>'+tf+'</b> FA/h' : "");
+  const info = evalInfo("per-SNR miss"); if(info){ head.appendChild(document.createTextNode(" ")); head.appendChild(info); }
+  wrap.appendChild(head);
+  const table = document.createElement("div"); table.className = "snr-table"; table.setAttribute("role","table");
+  rows.forEach(r=>{
+    const m = Math.max(0, Math.min(1, r.miss_at_target_fa));
+    const row = document.createElement("div"); row.className = "snr-row"; row.setAttribute("role","row");
+    const lbl = document.createElement("span"); lbl.className = "snr-lbl"; lbl.textContent = lblOf(r);
+    const barWrap = document.createElement("div"); barWrap.className = "snr-bar";
+    const fill = document.createElement("div"); fill.className = "snr-fill " + missClass(m);
+    fill.style.width = Math.round(m*100) + "%";
+    barWrap.appendChild(fill);
+    barWrap.title = "miss " + Math.round(m*100) + "% at " + lblOf(r);
+    const val = document.createElement("span"); val.className = "snr-val"; val.textContent = Math.round(m*100) + "%";
+    row.appendChild(lbl); row.appendChild(barWrap); row.appendChild(val);
+    table.appendChild(row);
+  });
+  wrap.appendChild(table);
   return wrap;
 }
 // Linear-interpolate true-accept at a given false-accepts/hour from the sorted curve.
@@ -3266,6 +3533,9 @@ function renderWakeEval(word){
 }
 // Map of word → the last saved-clip hash, so the Spectrogram button targets a real clip.
 const lastEvalHash = {};
+// Map of word → the last fa_eval_result, so the Sensitivity caption can show the
+// measured "miss @ target-FA" operating point for the selected phrase (calibrated).
+const lastFaEval = {};
 // Clear the busy flag on whichever tool button last fired into this output host.
 function clearEvalBusy(out){
   if(out && out._pendingBtn){ out._pendingBtn.classList.remove("busy"); }
@@ -3281,6 +3551,11 @@ function handleEvalResult(d){
   }else if(d.type === "fa_eval_result"){
     const out = evalSlot("roc", d.word); if(!out) return;
     clearEvalBusy(out); out.innerHTML = ""; out.appendChild(buildFaRoc(d));
+    // Remember this operating point so the Sensitivity caption can show the measured
+    // miss@target-FA for this phrase; refresh the caption if it's the selected one.
+    if(d.word){ lastFaEval[d.word] = d; }
+    if(typeof updateSensitivityCaption === "function"
+       && d.word === (settings && settings.wake_phrase)){ updateSensitivityCaption(d.word); }
     log("🔬 FA/hour eval ["+(d.word||"")+"]: miss "
         + (typeof d.miss_at_target_fa==="number"? Math.round(d.miss_at_target_fa*100)+"%":"?")
         + " @ "+(d.target_fa!=null?d.target_fa:"?")+" FA/h", "evt");
@@ -3333,8 +3608,21 @@ function demoFaEval(word){
             fa_per_hour: fa, true_accept: +ta.toFixed(3)};
   });
   const taAt = interpTA(points, targetFa);
+  const cleanMiss = +(1-taAt).toFixed(3);
+  // SHARED CONTRACT demo seed: per-SNR robustness (clean / 10 dB / 5 dB). Miss climbs
+  // as the room gets noisier; a weak word (low rel) collapses faster, so the noise
+  // penalty is visibly worse — the "your room has TV/kitchen noise" story renders.
+  const snrList = [Infinity, 10, 5];
+  const penalty = {Infinity:0, 10:0.10 + (1-rel)*0.18, 5:0.22 + (1-rel)*0.34};
+  const perSnr = snrList.map(snr=>{
+    const add = penalty[snr] || 0;
+    const miss = Math.max(0, Math.min(0.99, cleanMiss + add));
+    return {snr_db: (snr === Infinity ? 99 : snr),
+            miss_at_target_fa: +miss.toFixed(3), points: points};
+  });
   return {type:"fa_eval_result", word: word||"", points: points,
-    miss_at_target_fa: +(1-taAt).toFixed(3), target_fa: targetFa};
+    miss_at_target_fa: cleanMiss, target_fa: targetFa,
+    per_snr: perSnr, snr_list: snrList.map(s=> s === Infinity ? 99 : s)};
 }
 // Verifier: trained on a handful of clips. A never-tested word reports a tiny/empty corpus.
 function demoVerifier(word){
@@ -4631,6 +4919,10 @@ const DEMO_SETTINGS = {
   // retrain) so the detector badge, "no-training" helper, and the per-keyword
   // boost/threshold recall knobs all render offline on load.
   voice_en:"en_US-amy-medium", length_scale:1.0, wake_phrase:"hey buddy", wake_threshold:0.4,
+  // SHARED CONTRACT: the easy-mode wake dial (0–1). The backend DERIVES wake_threshold
+  // from it; sensitivity_calibrated flips true once an FA eval pinned a real operating
+  // point, so the slider caption shows the measured "miss ~X% @ ≤target FA/h".
+  wake_sensitivity:0.5, sensitivity_calibrated:true,
   mic_gain:2.0,                       // demo: a boosted gain so the badge shows "gain 2.0×"
   wake_gain:1.0,                      // demo: the live-loop wake-gain knob (1–10×)
   // SHARED CONTRACT: open-vocab KWS (sherpa-onnx) is available + enabled. Per-keyword
@@ -4645,18 +4937,22 @@ const DEMO_SETTINGS = {
   // red (self-trained — fires 0% on a non-native accent), nexus 0.2 red.
   // `detector`: shipped/self-trained words = openWakeWord ("oww"); "hey buddy" is a
   // custom word watched by BOTH (oww+kws); "computer" demos a pure open-vocab "kws".
+  // SHARED CONTRACT: each word also carries a per-word `sensitivity` (0–1, the dial
+  // tracks the selected phrase) + a `guidance` hint — a green word sits comfortably,
+  // a red word ("maziko") gets a "Raise sensitivity" steer so the easy-mode read
+  // ("hey_jarvis green vs maziko red") shows its own sensitivity + hint offline.
   wake_word_info:{
-    "hey buddy":{tier:"green",  note:"custom phrase — open-vocab KWS, no training",   reliability:0.82, tested:3, measured:true,  detector:"oww+kws"},
-    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true,  detector:"oww"},
-    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false, detector:"oww"},
-    alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false, detector:"oww"},
-    computer:  {tier:"orange", note:"open-vocab KWS — measured 0.55 over 4 tests", reliability:0.55, tested:4, measured:true,  detector:"kws"},
-    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false, detector:"oww"},
-    athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
-    nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
-    luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
-    sage:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"},
-    orion:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww"}
+    "hey buddy":{tier:"green",  note:"custom phrase — open-vocab KWS, no training",   reliability:0.82, tested:3, measured:true,  detector:"oww+kws", sensitivity:0.50, guidance:"comfortable — fires reliably at the default dial; nudge down if the TV trips it."},
+    maziko:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.05, tested:6, measured:true,  detector:"oww", sensitivity:0.85, guidance:"Raise sensitivity — it still misses on your accent; or pick a better-separated phrase / retrain."},
+    hey_jarvis:{tier:"green",  note:"official, fires reliably",                  reliability:0.99, tested:0, measured:false, detector:"oww", sensitivity:0.45, guidance:"official model — leave near default; very low miss, low false-alarm."},
+    alexa:     {tier:"green",  note:"official, fires reliably",                  reliability:0.90, tested:0, measured:false, detector:"oww", sensitivity:0.45, guidance:"official model — default is fine; lower it slightly in a noisy room."},
+    computer:  {tier:"orange", note:"open-vocab KWS — measured 0.55 over 4 tests", reliability:0.55, tested:4, measured:true,  detector:"kws", sensitivity:0.65, guidance:"middling — raise a little if it misses, but watch for false-alarms on speech."},
+    nexus:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.20, tested:0, measured:false, detector:"oww", sensitivity:0.80, guidance:"Raise sensitivity — weak/untested; consider a shipped word instead."},
+    athena:    {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
+    nova:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
+    luna:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
+    sage:      {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."},
+    orion:     {tier:"red",    note:"self-trained, weak on non-native accents", reliability:0.30, tested:0, measured:false, detector:"oww", sensitivity:0.75, guidance:"Raise sensitivity — untested; run the FA eval before trusting it."}
   },
   music_playback:"hybrid",            // demo: hybrid so the muted-video path is exercised locally
   agent_workspace:"~/voice-agent", agent_model:"claude-opus-4",
