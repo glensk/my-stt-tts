@@ -558,6 +558,75 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .score-trace .st-line{fill:none; stroke:var(--ink-dim); stroke-width:1.3; vector-effect:non-scaling-stroke}
 .score-trace .st-line.hot{stroke:var(--green)}
 .score-trace .st-cap{font-size:8.5px; letter-spacing:.5px; color:var(--ink-faint); white-space:nowrap}
+/* ---------- 🔬 DETECTION-EVAL toolkit (histogram · FA/hour ROC · verifier · spectrogram) ----------
+   Lives under the wake-recall picker, scoped to the SELECTED phrase. Each tool is a
+   button that POSTs its action; the result event renders an inline SVG/canvas chart in
+   the SAME aesthetic as the gain-sweep / score-trace above. Demo-seeded so all render
+   offline. */
+.eval-block{display:flex; flex-direction:column; gap:10px; margin-top:11px; padding:10px 11px;
+  border:1px solid var(--line2); border-radius:9px; background:linear-gradient(180deg,#070e15,#060b11)}
+.eval-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.eval-head .eh-title{font-size:10px; letter-spacing:1.4px; text-transform:uppercase; color:var(--violet); font-weight:600}
+.eval-head .eh-word{font-size:10px; letter-spacing:.3px; color:var(--ink-dim)}
+.eval-head .eh-word b{color:var(--ink); font-weight:600}
+.eval-btns{display:flex; gap:7px; flex-wrap:wrap}
+/* the four eval buttons share the violet "score-clip" pill family */
+.eval-btn{display:inline-flex; align-items:center; gap:6px; padding:5px 11px; border-radius:999px;
+  border:1px solid var(--violet); background:rgba(157,123,255,.07); color:var(--violet);
+  font-size:10px; letter-spacing:.4px; cursor:pointer; transition:.15s; text-transform:none}
+.eval-btn:hover{box-shadow:0 0 12px -4px var(--violet)}
+.eval-btn:disabled{opacity:.5; cursor:default; box-shadow:none}
+.eval-btn.busy{animation:blink .9s steps(2) infinite}
+.eval-btn svg{width:12px; height:12px}
+.eval-out{display:flex; flex-direction:column; gap:9px}
+.eval-out:empty{display:none}
+.eval-panel{display:flex; flex-direction:column; gap:5px}
+.eval-panel .ep-cap{font-size:9.5px; letter-spacing:.3px; color:var(--ink-dim); line-height:1.55}
+.eval-panel .ep-cap b{font-weight:600}
+.eval-panel .ep-cap.warn b{color:var(--amber)} .eval-panel .ep-cap.good b{color:var(--green)}
+.eval-empty{font-size:10px; letter-spacing:.3px; color:var(--amber); line-height:1.55}
+.eval-empty code{font-size:9.5px}
+/* histogram — green positives vs red negatives, overlaid, threshold rule */
+.eval-hist svg{display:block; width:320px; max-width:92vw; height:120px;
+  border:1px solid var(--line2); border-radius:7px; background:#060c12}
+.eval-hist .eh-axis{stroke:var(--line2); stroke-width:1; vector-effect:non-scaling-stroke}
+.eval-hist .eh-pos{fill:var(--green); opacity:.55}
+.eval-hist .eh-neg{fill:var(--red); opacity:.5}
+.eval-hist .eh-thr{stroke:var(--amber); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.85}
+.eval-hist .eh-lbl{fill:var(--ink-faint); font-size:7px; letter-spacing:.3px}
+.eval-hist .eh-thr-lbl{fill:var(--amber); font-size:7px; letter-spacing:.3px}
+.eval-hist .eh-leg{display:flex; gap:13px; font-size:9px; letter-spacing:.4px; color:var(--ink-dim)}
+.eval-hist .eh-leg i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px}
+.eval-hist .eh-leg .lp{background:var(--green)} .eval-hist .eh-leg .ln{background:var(--red)}
+/* FA/hour ROC-DET — true-accept (y) vs false-accepts/hour (x), operating point marked */
+.eval-roc svg{display:block; width:320px; max-width:92vw; height:128px;
+  border:1px solid var(--line2); border-radius:7px; background:#060c12}
+.eval-roc .er-axis{stroke:var(--line2); stroke-width:1; vector-effect:non-scaling-stroke}
+.eval-roc .er-grid{stroke:var(--line2); stroke-width:.6; stroke-dasharray:2 3; vector-effect:non-scaling-stroke; opacity:.45}
+.eval-roc .er-line{fill:none; stroke:var(--cyan); stroke-width:1.6; vector-effect:non-scaling-stroke}
+.eval-roc .er-dot{fill:var(--cyan)}
+.eval-roc .er-op{fill:var(--amber)}
+.eval-roc .er-op-rule{stroke:var(--amber); stroke-width:1; stroke-dasharray:2 2; vector-effect:non-scaling-stroke; opacity:.8}
+.eval-roc .er-lbl{fill:var(--ink-faint); font-size:7px; letter-spacing:.3px}
+.eval-roc .er-op-lbl{fill:var(--amber); font-size:7px; letter-spacing:.3px}
+/* verifier result card */
+.eval-verif{display:flex; align-items:flex-start; gap:9px; padding:8px 10px; border-radius:8px;
+  border:1px solid var(--line2); background:#060c12; font-size:10.5px; letter-spacing:.3px; line-height:1.5; color:var(--ink-dim)}
+.eval-verif .ev-dot{width:9px; height:9px; border-radius:50%; flex:0 0 auto; margin-top:3px; background:var(--ink-faint)}
+.eval-verif.ok{border-color:var(--green); box-shadow:0 0 16px -7px var(--green)}
+.eval-verif.ok .ev-dot{background:var(--green); box-shadow:var(--glow) var(--green)}
+.eval-verif.fail{border-color:var(--red)} .eval-verif.fail .ev-dot{background:var(--red)}
+.eval-verif b{color:var(--ink); font-weight:600}
+.eval-verif .ev-n{color:var(--cyan)}
+/* spectrogram heatmap (canvas) + score-trace overlay (SVG) on a shared time axis */
+.eval-spec{display:flex; flex-direction:column; gap:4px}
+.eval-spec .es-stage{position:relative; width:320px; max-width:92vw;
+  border:1px solid var(--line2); border-radius:7px; overflow:hidden; background:#060c12}
+.eval-spec canvas{display:block; width:100%; height:110px; image-rendering:pixelated}
+.eval-spec .es-overlay{position:absolute; inset:0; width:100%; height:100%}
+.eval-spec .es-thr{stroke:var(--amber); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.9}
+.eval-spec .es-trace{fill:none; stroke:#fff; stroke-width:1.4; vector-effect:non-scaling-stroke; filter:drop-shadow(0 0 2px rgba(0,0,0,.9))}
+.eval-spec .es-axislbl{font-size:8.5px; letter-spacing:.4px; color:var(--ink-faint); display:flex; justify-content:space-between}
 /* browser AGC/NS/EC A/B toggle — flip the processing chain OFF and re-run without a reload */
 .ab-toggle{display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px;
   border:1px solid var(--line2); background:#060c12; font-size:9.5px; letter-spacing:.4px;
@@ -944,6 +1013,11 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
               </div>
               <!-- Per-source result panels for the SELECTED phrase, rebuilt on change. -->
               <div class="wake-rows" id="wakeRows"></div>
+              <!-- 🔬 DETECTION-EVAL toolkit, scoped to the SELECTED phrase: positives-vs-
+                   negatives score histogram, FA/hour ROC-DET operating-point curve, a
+                   custom speaker verifier, and a spectrogram + score-trace overlay. Built
+                   per-word by renderWakeEval() (called from renderWakePanels). -->
+              <div class="eval-block" id="wakeEval"></div>
             </div>
           </div>
 
@@ -2502,6 +2576,15 @@ const FIELD_INFO = {
                 ranges:">15 dB good · 8–15 dB marginal · <8 dB noisy (move closer / quieter room)."},
   LUFS:        {what:"Integrated loudness (LUFS) — perceived loudness of the clip. Higher = louder. Useful to compare clips, not a hard pass/fail.",
                 ranges:"Higher = louder. Typical speech lands around −20 LUFS; far lower = very quiet capture."},
+  // 🔬 detection-eval tools
+  "score histogram":{what:"Distribution of the model's MAX score over your saved positives (the wake word, green) vs negatives (everything else, red). The threshold is the vertical rule. If the green hump sits far ABOVE the red one with the threshold in the gap, detection is healthy; if green overlaps red, the model can't tell them apart no matter how you set the threshold.",
+                ranges:"Positives clustering with negatives ⇒ a recall / separation problem, NOT a level problem — raising gain won't fix it; retrain the word. High separation ⇒ pick the threshold in the empty gap."},
+  "FA/hour ROC":{what:"The real keyword-spotting (KWS) operating curve: true-accept rate (y) against FALSE ACCEPTS PER HOUR (x), traced by sweeping the threshold. The marked point is the miss rate at your false-alarm budget. Accuracy on its own lies; a detector that fires all day has 100% recall and is useless — the x-axis is what keeps it honest.",
+                ranges:"Up-and-left is better. The operating point = miss rate (1 − true-accept) at a FIXED false-alarms/hour budget — the metric you actually tune to."},
+  "verifier":  {what:"A speaker-specific second-stage filter trained on YOUR saved clips: the first stage (the shipped wake model) proposes a hit, the verifier confirms it's your voice saying the word. Cuts false accepts from other people / TV without retraining the base model.",
+                ranges:"Needs a handful of positive clips (the word, your voice) + negatives (other words / speakers). More clips ⇒ a tighter filter. Empty corpus ⇒ record some first."},
+  spectrogram: {what:"Mel-spectrogram of the saved clip (time → right, low→high mel-frequency up; brighter = more energy) with the per-frame wake score overlaid on the SAME time axis. Lets you see WHICH phonemes the score rose or died on — e.g. the score peaking on the stressed syllable, or never lifting because the onset was clipped/missing.",
+                ranges:"Score line crossing the threshold where the word is spoken ⇒ fires. A flat score under bright speech energy ⇒ the model heard audio but didn't recognise the word (recall/separation), not a level fault."},
 };
 // Build a bound <span class="info">ⓘ + popover</span> for a named field.
 function fieldInfo(name){
@@ -2882,6 +2965,420 @@ function showGainSweepResult(d){
   log("🔎 gain sweep ["+word+"]: "
         + (first ? "fires at "+first.gain+"× — raise wake gain" : "no gain fired in sweep"),
         first ? "evt" : "info");
+}
+
+/* ============================================================
+   🔬 DETECTION-EVAL TOOLKIT  — the EVALUATION/DEBUG visualizations that explain
+   WHY a wake word does (or doesn't) fire, beyond the single-clip level checks:
+     1. positives-vs-negatives score HISTOGRAM (is it a separation problem?)
+     2. FA/hour ROC-DET operating-point curve (the real KWS metric)
+     3. a custom speaker VERIFIER (a second-stage filter on your own clips)
+     4. a SPECTROGRAM + score-trace overlay (which phonemes the score rose on)
+   All inline SVG/canvas, CSP-safe, same aesthetic as the gain-sweep / score-trace.
+   Each tool POSTs its SHARED-CONTRACT action and renders the matching *_result event;
+   offline (DEMO) it seeds a believable result so every chart is visible without a
+   backend. Scoped to the SELECTED wake phrase — renderWakeEval(word) rebuilds it.
+   ============================================================ */
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs){
+  const e = document.createElementNS(SVG_NS, tag);
+  if(attrs) for(const k in attrs){ e.setAttribute(k, attrs[k]); }
+  return e;
+}
+// A ready-bound ⓘ for one of the eval tools (reuses FIELD_INFO + fieldInfo()).
+function evalInfo(name){ return fieldInfo(name); }
+
+// ---------- 1. POSITIVES-vs-NEGATIVES SCORE HISTOGRAM ----------
+// Two overlaid histograms (green positives, red negatives) of the model's max-score,
+// the threshold as a vertical rule + the `separation` figure. The whole read: if the
+// green hump overlaps the red cluster, it's a recall/separation problem (retrain),
+// NOT a level problem (gain won't help).
+function buildScoreHistogram(d){
+  const wrap = document.createElement("div"); wrap.className = "eval-panel eval-hist";
+  const pos = Array.isArray(d.pos_scores) ? d.pos_scores.filter(v=> typeof v==="number") : [];
+  const neg = Array.isArray(d.neg_scores) ? d.neg_scores.filter(v=> typeof v==="number") : [];
+  const T = (typeof d.threshold === "number") ? Math.max(0, Math.min(1, d.threshold)) : wakeThreshold();
+  const BINS = 20, W = 320, H = 120, PL = 8, PR = 8, PT = 8, PB = 16;
+  const hist = arr=>{ const h = new Array(BINS).fill(0);
+    arr.forEach(v=>{ let b = Math.floor(Math.max(0, Math.min(0.9999, v))*BINS); h[b]++; }); return h; };
+  const hp = hist(pos), hn = hist(neg);
+  const maxC = Math.max(1, Math.max.apply(null, hp.concat(hn)));
+  const xOf = s => PL + Math.max(0, Math.min(1, s)) * (W-PL-PR);
+  const yOf = c => PT + (1 - c/maxC) * (H-PT-PB);
+  const bw = (W-PL-PR)/BINS;
+  const svg = svgEl("svg", {viewBox:"0 0 "+W+" "+H, role:"img",
+    "aria-label":"positive versus negative wake-score histogram"});
+  // axes
+  svg.appendChild(svgEl("line", {class:"eh-axis", x1:PL, y1:H-PB, x2:W-PR, y2:H-PB}));
+  // bars — negatives behind, positives in front (both translucent so overlap is visible)
+  const bars = (h, cls)=>{ for(let i=0;i<BINS;i++){ if(!h[i]) continue;
+    svg.appendChild(svgEl("rect", {class:cls, x:(PL+i*bw).toFixed(1), y:yOf(h[i]).toFixed(1),
+      width:Math.max(0.5,bw-0.6).toFixed(1), height:(H-PB-yOf(h[i])).toFixed(1)})); } };
+  bars(hn, "eh-neg"); bars(hp, "eh-pos");
+  // threshold rule + label + 0/1 x-ticks
+  svg.appendChild(svgEl("line", {class:"eh-thr", x1:xOf(T).toFixed(1), y1:PT, x2:xOf(T).toFixed(1), y2:H-PB}));
+  const thrLbl = svgEl("text", {class:"eh-thr-lbl", x:xOf(T).toFixed(1), y:PT+7, "text-anchor":"middle"});
+  thrLbl.textContent = "thr "+T.toFixed(2); svg.appendChild(thrLbl);
+  const t0 = svgEl("text", {class:"eh-lbl", x:PL, y:H-4}); t0.textContent = "0"; svg.appendChild(t0);
+  const t1 = svgEl("text", {class:"eh-lbl", x:W-PR, y:H-4, "text-anchor":"end"}); t1.textContent = "1.0"; svg.appendChild(t1);
+  const tm = svgEl("text", {class:"eh-lbl", x:(PL+(W-PL-PR)/2).toFixed(1), y:H-4, "text-anchor":"middle"});
+  tm.textContent = "max score →"; svg.appendChild(tm);
+  wrap.appendChild(svg);
+  // legend
+  const leg = document.createElement("div"); leg.className = "eh-leg";
+  leg.innerHTML = '<span><i class="lp"></i>positives ('+pos.length+')</span>'
+                + '<span><i class="ln"></i>negatives ('+neg.length+')</span>';
+  wrap.appendChild(leg);
+  // caption — separation value + the diagnostic read. Low/overlapping separation ⇒
+  // the recall/separation message (gain won't help); high ⇒ healthy.
+  const sep = (typeof d.separation === "number") ? d.separation : null;
+  const cap = document.createElement("div"); cap.className = "ep-cap";
+  const bad = sep != null && sep < 0.20;
+  cap.classList.add(bad ? "warn" : "good");
+  const sepTxt = sep==null ? "" : "separation <b>"+sep.toFixed(2)+"</b> — ";
+  cap.innerHTML = sepTxt + (bad
+    ? "positives OVERLAP the negative cluster ⇒ a <b>recall / separation problem, not level</b> — more gain won't help; retrain the word."
+    : "positives sit clearly above negatives with the threshold in the gap ⇒ healthy separation.");
+  const info = evalInfo("score histogram"); if(info) cap.appendChild(document.createTextNode(" ")), cap.appendChild(info);
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+// ---------- 2. FA/HOUR ROC-DET OPERATING-POINT CURVE ----------
+// true-accept (y, 0..1) vs FALSE ACCEPTS PER HOUR (x, the real KWS axis). The
+// operating point = the miss rate at a fixed false-alarm budget (target_fa) — marked.
+function buildFaRoc(d){
+  const wrap = document.createElement("div"); wrap.className = "eval-panel eval-roc";
+  let pts = Array.isArray(d.points)
+    ? d.points.filter(p=> p && typeof p.fa_per_hour==="number" && typeof p.true_accept==="number")
+    : [];
+  // Empty corpus → the backend's "drop WAVs into <dir>" guidance instead of a chart.
+  if(!pts.length || d.empty){
+    const e = document.createElement("div"); e.className = "eval-empty";
+    e.innerHTML = d.message ? esc(d.message)
+      : 'No evaluation corpus yet — drop labelled WAVs into <code>~/.my-stt-tts/wake_eval/'+esc(d.word||"")+'/{pos,neg}/</code> and re-run.';
+    wrap.appendChild(e);
+    return wrap;
+  }
+  pts = pts.slice().sort((a,b)=> a.fa_per_hour - b.fa_per_hour);
+  const W = 320, H = 128, PL = 26, PR = 10, PT = 8, PB = 18;
+  const faMax = Math.max(1, Math.max.apply(null, pts.map(p=> p.fa_per_hour)));
+  const xOf = fa => PL + Math.max(0, Math.min(1, fa/faMax)) * (W-PL-PR);
+  const yOf = ta => PT + (1 - Math.max(0, Math.min(1, ta))) * (H-PT-PB);
+  const svg = svgEl("svg", {viewBox:"0 0 "+W+" "+H, role:"img",
+    "aria-label":"true-accept versus false-accepts per hour"});
+  // grid + axes
+  [0,0.25,0.5,0.75,1].forEach(g=>{
+    svg.appendChild(svgEl("line", {class:"er-grid", x1:PL, y1:yOf(g), x2:W-PR, y2:yOf(g)}));
+  });
+  svg.appendChild(svgEl("line", {class:"er-axis", x1:PL, y1:PT, x2:PL, y2:H-PB}));
+  svg.appendChild(svgEl("line", {class:"er-axis", x1:PL, y1:H-PB, x2:W-PR, y2:H-PB}));
+  const txt = (x,y,s,cls,anchor)=>{ const t = svgEl("text", {class:cls||"er-lbl", x:x, y:y});
+    if(anchor) t.setAttribute("text-anchor", anchor); t.textContent = s; svg.appendChild(t); return t; };
+  txt(2, yOf(1)+3, "TA 1"); txt(2, yOf(0)+3, "0");
+  txt(PL, H-5, "0 FA/h"); txt(W-PR, H-5, faMax.toFixed(faMax<10?1:0)+" FA/h", "er-lbl", "end");
+  // the curve + dots
+  const line = svgEl("polyline", {class:"er-line",
+    points: pts.map(p=> xOf(p.fa_per_hour).toFixed(1)+","+yOf(p.true_accept).toFixed(1)).join(" ")});
+  svg.appendChild(line);
+  pts.forEach(p=> svg.appendChild(svgEl("circle", {class:"er-dot",
+    cx:xOf(p.fa_per_hour).toFixed(1), cy:yOf(p.true_accept).toFixed(1), r:"2"})));
+  // operating point — the true-accept at target_fa (miss = 1 − TA). Interpolate.
+  const targetFa = (typeof d.target_fa === "number") ? d.target_fa : null;
+  const missAt = (typeof d.miss_at_target_fa === "number") ? d.miss_at_target_fa : null;
+  if(targetFa != null){
+    const taAt = (missAt != null) ? (1 - missAt) : interpTA(pts, targetFa);
+    const ox = xOf(targetFa), oy = yOf(taAt);
+    svg.appendChild(svgEl("line", {class:"er-op-rule", x1:ox.toFixed(1), y1:PT, x2:ox.toFixed(1), y2:H-PB}));
+    svg.appendChild(svgEl("circle", {class:"er-op", cx:ox.toFixed(1), cy:oy.toFixed(1), r:"3.6"}));
+    txt(Math.min(W-PR, ox+3), Math.max(PT+7, oy-4),
+        "@"+targetFa+" FA/h", "er-op-lbl");
+  }
+  wrap.appendChild(svg);
+  const cap = document.createElement("div"); cap.className = "ep-cap";
+  if(missAt != null && targetFa != null){
+    cap.innerHTML = "miss rate <b>"+Math.round(missAt*100)+"%</b> at a budget of <b>"
+      + targetFa + " false alarms/hour</b> — the real KWS operating point.";
+  }else{
+    cap.innerHTML = "true-accept vs false-accepts/hour — up-and-left is better.";
+  }
+  const info = evalInfo("FA/hour ROC"); if(info) cap.appendChild(document.createTextNode(" ")), cap.appendChild(info);
+  wrap.appendChild(cap);
+  return wrap;
+}
+// Linear-interpolate true-accept at a given false-accepts/hour from the sorted curve.
+function interpTA(pts, fa){
+  if(!pts.length) return 0;
+  if(fa <= pts[0].fa_per_hour) return pts[0].true_accept;
+  if(fa >= pts[pts.length-1].fa_per_hour) return pts[pts.length-1].true_accept;
+  for(let i=1;i<pts.length;i++){
+    if(fa <= pts[i].fa_per_hour){
+      const a = pts[i-1], b = pts[i], span = (b.fa_per_hour - a.fa_per_hour) || 1;
+      const t = (fa - a.fa_per_hour)/span;
+      return a.true_accept + t*(b.true_accept - a.true_accept);
+    }
+  }
+  return pts[pts.length-1].true_accept;
+}
+
+// ---------- 3. CUSTOM SPEAKER VERIFIER ----------
+function buildVerifierCard(d){
+  const wrap = document.createElement("div"); wrap.className = "eval-panel";
+  const card = document.createElement("div");
+  const ok = !!d.trained;
+  card.className = "eval-verif " + (ok ? "ok" : "fail");
+  const dot = document.createElement("span"); dot.className = "ev-dot"; dot.setAttribute("aria-hidden","true");
+  const body = document.createElement("div");
+  const head = ok ? "✓ verifier trained" : "✗ verifier not trained";
+  const np = (typeof d.n_pos === "number") ? d.n_pos : "?";
+  const nn = (typeof d.n_neg === "number") ? d.n_neg : "?";
+  body.innerHTML = "<b>"+esc(head)+"</b> — "
+    + 'on <span class="ev-n">'+np+'</span> positive / <span class="ev-n">'+nn+'</span> negative clips'
+    + (d.path ? '<br><span style="color:var(--ink-faint)">'+esc(d.path)+'</span>' : "")
+    + (d.message ? "<br>"+esc(d.message) : "");
+  card.appendChild(dot); card.appendChild(body);
+  wrap.appendChild(card);
+  const cap = document.createElement("div"); cap.className = "ep-cap";
+  cap.appendChild(document.createTextNode("a speaker-specific second-stage filter trained on your saved clips."));
+  const info = evalInfo("verifier"); if(info) cap.appendChild(document.createTextNode(" ")), cap.appendChild(info);
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+// ---------- 4. SPECTROGRAM + SCORE-TRACE OVERLAY ----------
+// `grid` = [[0..1 …] …] (mels rows × frames cols). Painted as a viridis-ish heatmap on
+// a <canvas>; the `score_trace` is overlaid as a white line + threshold rule on the
+// SAME time axis so you can see which phonemes the score rose / died on.
+const VIRIDIS = [   // 8 stops, dark→bright, approx viridis (CSP-safe inline ramp)
+  [68,1,84],[72,40,120],[62,74,137],[49,104,142],
+  [38,130,142],[31,158,137],[53,183,121],[180,222,44]];
+function viridis(t){
+  t = Math.max(0, Math.min(1, t));
+  const x = t*(VIRIDIS.length-1), i = Math.floor(x), f = x-i;
+  const a = VIRIDIS[i], b = VIRIDIS[Math.min(VIRIDIS.length-1, i+1)];
+  return [Math.round(a[0]+(b[0]-a[0])*f), Math.round(a[1]+(b[1]-a[1])*f), Math.round(a[2]+(b[2]-a[2])*f)];
+}
+function buildSpectrogram(d){
+  const wrap = document.createElement("div"); wrap.className = "eval-panel eval-spec";
+  const grid = Array.isArray(d.grid) ? d.grid : [];
+  const mels = grid.length || (typeof d.mels==="number"?d.mels:0);
+  const frames = (grid[0] && grid[0].length) || (typeof d.frames==="number"?d.frames:0);
+  const stage = document.createElement("div"); stage.className = "es-stage";
+  const canvas = document.createElement("canvas");
+  // Draw at native grid resolution; CSS scales it up (image-rendering:pixelated).
+  canvas.width = Math.max(1, frames); canvas.height = Math.max(1, mels);
+  const ctx = canvas.getContext("2d");
+  if(ctx && mels && frames){
+    const img = ctx.createImageData(frames, mels);
+    for(let r=0;r<mels;r++){
+      // row 0 of `grid` = lowest mel; canvas y=0 is the TOP, so flip so low freq sits low.
+      const row = grid[r] || [];
+      const cy = mels-1-r;
+      for(let c=0;c<frames;c++){
+        const [R,G,B] = viridis(row[c]==null ? 0 : row[c]);
+        const o = (cy*frames + c)*4;
+        img.data[o]=R; img.data[o+1]=G; img.data[o+2]=B; img.data[o+3]=255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  stage.appendChild(canvas);
+  // overlay: threshold rule + score-trace line on a 0..100 × 0..100 viewBox (stretched).
+  const trace = Array.isArray(d.score_trace) ? d.score_trace : [];
+  const T = wakeThreshold();
+  const ov = svgEl("svg", {class:"es-overlay", viewBox:"0 0 100 100", preserveAspectRatio:"none",
+    role:"img", "aria-label":"wake score trace over the spectrogram"});
+  const yOf = v => 100 - Math.max(0, Math.min(1, v))*100;
+  ov.appendChild(svgEl("line", {class:"es-thr", x1:0, y1:yOf(T).toFixed(1), x2:100, y2:yOf(T).toFixed(1)}));
+  if(trace.length){
+    const n = trace.length;
+    const pts = trace.map((v,i)=> ((n===1?0:(i/(n-1))*100)).toFixed(1)+","+yOf(v).toFixed(1)).join(" ");
+    ov.appendChild(svgEl("polyline", {class:"es-trace", points:pts}));
+  }
+  stage.appendChild(ov);
+  wrap.appendChild(stage);
+  const ax = document.createElement("div"); ax.className = "es-axislbl";
+  ax.innerHTML = "<span>0 s</span><span>"+mels+" mel × "+frames+" frames</span><span>~2 s</span>";
+  wrap.appendChild(ax);
+  const cap = document.createElement("div"); cap.className = "ep-cap";
+  cap.appendChild(document.createTextNode("white = per-frame wake score (amber = threshold) over the mel-spectrogram."));
+  const info = evalInfo("spectrogram"); if(info) cap.appendChild(document.createTextNode(" ")), cap.appendChild(info);
+  wrap.appendChild(cap);
+  return wrap;
+}
+
+/* ---------- eval-toolkit wiring (buttons · POST · result routing) ---------- */
+// Per-word output host for each tool, so a result event renders into the RIGHT slot
+// even though only the selected word's block is mounted at a time.
+const evalHost = {hist:{}, roc:{}, verif:{}, spec:{}};
+let evalWord = "";                          // the word the eval block is currently built for
+function evalSlot(kind, word){ return evalHost[kind] && evalHost[kind][word||evalWord]; }
+// Build a labelled eval button that POSTs `action` for `word`; offline seeds `demoFn`.
+// Remembers itself on the output host (`_pendingBtn`) so the *_result event clears the
+// busy state on the RIGHT button when a real backend round-trip returns.
+function makeEvalBtn(label, svg, action, word, out, demoFn, extraParams){
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "eval-btn";
+  btn.innerHTML = svg + "<span>"+esc(label)+"</span>";
+  btn.addEventListener("click", ()=>{
+    btn.classList.add("busy"); out.innerHTML = ""; out._pendingBtn = btn;
+    if(DEMO){
+      setTimeout(()=>{ btn.classList.remove("busy"); handleEvalResult(demoFn(word)); }, 450);
+    }else{
+      const p = Object.assign({action: action, word: word}, extraParams||{});
+      postAction(p);
+    }
+  });
+  return btn;
+}
+// Render the whole eval block for `word` into #wakeEval (rebuilt on phrase change).
+const ICON_HIST = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20V10M9 20V5M14 20v-8M19 20V8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+const ICON_ROC  = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h16M5 18C8 8 13 6 19 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_VER  = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="9" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M5 20a7 7 0 0 1 14 0M16 8l1.6 1.6L21 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_SPEC = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 14c2-5 4 3 6-1s4-4 6 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+function renderWakeEval(word){
+  const block = $("#wakeEval"); if(!block) return;
+  evalWord = word; block.innerHTML = "";
+  // header
+  const head = document.createElement("div"); head.className = "eval-head";
+  const title = document.createElement("span"); title.className = "eh-title"; title.textContent = "🔬 Detection eval";
+  const w = document.createElement("span"); w.className = "eh-word"; w.innerHTML = "for <b>“"+esc(word)+"”</b>";
+  head.appendChild(title); head.appendChild(w);
+  block.appendChild(head);
+  // buttons + per-tool output hosts
+  const outHist = document.createElement("div"); outHist.className = "eval-out";
+  const outRoc  = document.createElement("div"); outRoc.className = "eval-out";
+  const outVer  = document.createElement("div"); outVer.className = "eval-out";
+  const outSpec = document.createElement("div"); outSpec.className = "eval-out";
+  evalHost.hist[word] = outHist; evalHost.roc[word] = outRoc;
+  evalHost.verif[word] = outVer; evalHost.spec[word] = outSpec;
+  const btns = document.createElement("div"); btns.className = "eval-btns";
+  // the spectrogram acts on the most-recent saved clip for this word|source (see
+  // lastEvalHash); falls back to a deterministic demo hash so the button always works.
+  const specHash = lastEvalHash[word] || shortHash("wake|"+word+"|server|demo");
+  const bHist = makeEvalBtn("Score histogram", ICON_HIST, "score_histogram", word, outHist, demoScoreHistogram);
+  const bRoc  = makeEvalBtn("FA/hour curve", ICON_ROC, "fa_eval", word, outRoc, demoFaEval);
+  const bVer  = makeEvalBtn("Train verifier", ICON_VER, "train_verifier", word, outVer, demoVerifier);
+  const bSpec = makeEvalBtn("Spectrogram", ICON_SPEC, "spectrogram", word, outSpec, ()=> demoSpectrogram(specHash, word), {hash: specHash});
+  btns.appendChild(bHist); btns.appendChild(bRoc); btns.appendChild(bVer); btns.appendChild(bSpec);
+  block.appendChild(btns);
+  block.appendChild(outHist); block.appendChild(outRoc); block.appendChild(outVer); block.appendChild(outSpec);
+}
+// Map of word → the last saved-clip hash, so the Spectrogram button targets a real clip.
+const lastEvalHash = {};
+// Clear the busy flag on whichever tool button last fired into this output host.
+function clearEvalBusy(out){
+  if(out && out._pendingBtn){ out._pendingBtn.classList.remove("busy"); }
+}
+// Single router for all four *_result events → the right per-word output host.
+function handleEvalResult(d){
+  if(!d || !d.type) return;
+  if(d.type === "score_histogram_result"){
+    const out = evalSlot("hist", d.word); if(!out) return;
+    clearEvalBusy(out); out.innerHTML = ""; out.appendChild(buildScoreHistogram(d));
+    log("🔬 score histogram ["+(d.word||"")+"]: separation "
+        + (typeof d.separation==="number"? d.separation.toFixed(2):"?"), "evt");
+  }else if(d.type === "fa_eval_result"){
+    const out = evalSlot("roc", d.word); if(!out) return;
+    clearEvalBusy(out); out.innerHTML = ""; out.appendChild(buildFaRoc(d));
+    log("🔬 FA/hour eval ["+(d.word||"")+"]: miss "
+        + (typeof d.miss_at_target_fa==="number"? Math.round(d.miss_at_target_fa*100)+"%":"?")
+        + " @ "+(d.target_fa!=null?d.target_fa:"?")+" FA/h", "evt");
+  }else if(d.type === "verifier_result"){
+    const out = evalSlot("verif", d.word); if(!out) return;
+    clearEvalBusy(out); out.innerHTML = ""; out.appendChild(buildVerifierCard(d));
+    log("🔬 verifier ["+(d.word||"")+"]: "+(d.trained?"trained":"not trained")
+        + " ("+(d.n_pos!=null?d.n_pos:"?")+"+/"+(d.n_neg!=null?d.n_neg:"?")+"−)", d.trained?"evt":"info");
+  }else if(d.type === "spectrogram_result"){
+    // The spectrogram routes by the CURRENTLY-mounted word's host (the hash addresses a
+    // clip of the selected word). Fall back to the active eval word.
+    const out = evalSlot("spec", evalWord) || evalSlot("spec", d.word);
+    if(!out) return;
+    clearEvalBusy(out); out.innerHTML = ""; out.appendChild(buildSpectrogram(d));
+    log("🔬 spectrogram ["+esc(String(d.hash||"").slice(0,8))+"]: "
+        + (d.mels||0)+"×"+(d.frames||0), "evt");
+  }
+}
+
+/* ---------- eval-toolkit DEMO seeders (visible offline) ---------- */
+// Histogram: positives clustered high, negatives low. A BAD word (low reliability —
+// maziko/nexus) gets heavy overlap + low separation so the "recall problem" caption
+// shows; a good word gets a clean gap.
+function demoScoreHistogram(word){
+  const info = (settings.wake_word_info||{})[word] || {};
+  const bad = (typeof info.reliability === "number") ? info.reliability < 0.4
+            : (word === "maziko" || word === "nexus");
+  const rnd = (m,s)=>{ let g=0; for(let i=0;i<4;i++) g+=Math.random(); return Math.max(0,Math.min(1, m + (g/4-0.5)*2*s)); };
+  const pos = [], neg = [];
+  // negatives always sit low; positives high (good) or smeared down into the negs (bad)
+  for(let i=0;i<60;i++) neg.push(rnd(0.18, 0.10));
+  for(let i=0;i<40;i++) pos.push(bad ? rnd(0.34, 0.16) : rnd(0.74, 0.10));
+  // separation ≈ gap between the cluster means, normalized — small (overlap) when bad
+  const mean = a=> a.reduce((x,y)=>x+y,0)/(a.length||1);
+  const separation = Math.max(0, Math.round((mean(pos)-mean(neg))*100)/100);
+  return {type:"score_histogram_result", word: word||"", pos_scores: pos, neg_scores: neg,
+    threshold: wakeThreshold(), separation: separation};
+}
+// FA/hour ROC: a believable sweep — true-accept rises as you allow more false-accepts/h.
+// A bad word's curve is dragged down (you pay more FA/h for the same recall).
+function demoFaEval(word){
+  const info = (settings.wake_word_info||{})[word] || {};
+  const rel = (typeof info.reliability === "number") ? info.reliability : 0.6;
+  const targetFa = 1;                                    // 1 false alarm/hour budget
+  const fas = [0.1, 0.25, 0.5, 1, 2, 4, 8];
+  const ceil = Math.min(0.99, 0.55 + rel*0.45);          // best achievable true-accept
+  const points = fas.map(fa=>{
+    const ta = Math.min(ceil, ceil*(1 - Math.exp(-fa*(0.7+rel))));
+    return {threshold: +(0.6 - Math.log2(fa+0.1)*0.05).toFixed(3),
+            fa_per_hour: fa, true_accept: +ta.toFixed(3)};
+  });
+  const taAt = interpTA(points, targetFa);
+  return {type:"fa_eval_result", word: word||"", points: points,
+    miss_at_target_fa: +(1-taAt).toFixed(3), target_fa: targetFa};
+}
+// Verifier: trained on a handful of clips. A never-tested word reports a tiny/empty corpus.
+function demoVerifier(word){
+  const info = (settings.wake_word_info||{})[word] || {};
+  const tested = (typeof info.tested === "number") ? info.tested : 0;
+  const nPos = Math.max(0, tested), nNeg = tested ? tested*4 : 0;
+  const trained = nPos >= 2;
+  return {type:"verifier_result", word: word||"", trained: trained,
+    path: trained ? "~/.my-stt-tts/verifiers/"+wakeSlug(word)+".npz" : null,
+    n_pos: nPos, n_neg: nNeg,
+    message: trained
+      ? "speaker filter fitted (logistic on the embedding) — applied as a 2nd stage"
+      : "need ≥2 positive clips — record the word a few times, then retrain"};
+}
+// Spectrogram: a small mel×frame grid with a voiced blob mid-clip + a matching score
+// bump. `over` (a good word) lifts the trace over threshold; a bad word stays under.
+function demoSpectrogram(hash, word){
+  const info = (settings.wake_word_info||{})[word] || {};
+  const over = (typeof info.reliability === "number") ? info.reliability >= 0.4
+             : !(word === "maziko" || word === "nexus");
+  const mels = 24, frames = 48;
+  const grid = [];
+  const cFrame = frames*0.55, fw = frames*0.18;          // the spoken word sits mid-clip
+  for(let r=0;r<mels;r++){
+    const row = [];
+    const fEnv = Math.exp(-Math.pow((r - mels*0.35)/(mels*0.45),2));   // energy weighted to lower mels
+    for(let c=0;c<frames;c++){
+      const tEnv = Math.exp(-Math.pow((c-cFrame)/fw,2));
+      // a couple of formant-ish bands so it reads like speech, not noise
+      const band = 0.5 + 0.5*Math.sin(r*0.9 + c*0.25);
+      const v = tEnv*fEnv*(0.55 + 0.45*band) + Math.random()*0.05;
+      row.push(Math.max(0, Math.min(1, v)));
+    }
+    grid.push(row);
+  }
+  const T = wakeThreshold();
+  const score_trace = [];
+  const peakV = over ? Math.min(1, T+0.34) : Math.max(0, T-0.07);
+  for(let c=0;c<frames;c++){
+    const bump = peakV*Math.exp(-Math.pow((c-cFrame)/(fw*1.1),2));
+    score_trace.push(Math.max(0, Math.min(1, bump + Math.random()*0.03)));
+  }
+  return {type:"spectrogram_result", hash: hash||shortHash("spec|"+word), mels: mels, frames: frames,
+    grid: grid, score_trace: score_trace};
 }
 
 // 🔍 SCORE-THIS-CLIP button — re-scores a SAVED recording (predict_clip) for the
@@ -3596,6 +4093,7 @@ function renderWakePanels(word){
   host.innerHTML = "";
   host.appendChild(buildWakeRow(word));
   aimWakeButtons(word);
+  renderWakeEval(word);          // 🔬 rebuild the detection-eval toolkit for THIS phrase
 }
 // Fill the phrase selector (settings.wake_words, colour-coded by tier) and render the
 // panels for the configured/selected phrase. Falls back to maziko/nexus when the list
@@ -3734,6 +4232,9 @@ function showWakeResult(d){
     scoreClip: true,                     // 🔍 re-score this saved clip against the wake model (task 4)
     reason: reason, detail: detail, fired: !!d.fired,   // ★ firing verdict banner (task 4)
   });
+  // 🔬 Remember THIS clip's hash so the detection-eval Spectrogram button targets the
+  // most recent real recording of the word (falls back to a demo hash when none yet).
+  if(d.hash){ lastEvalHash[word] = d.hash; }
   // Browser path can clip when getUserMedia's AGC has already normalized the signal
   // AND a >1× capture gain is then applied — peak slams to 100% and the wake model
   // reads the distorted audio as ~0. Flag it on the BROWSER panel only.
@@ -3962,6 +4463,13 @@ function handleEvent(raw){
     case "score_clip_result":
       // 🔍 Score-this-clip — re-scored saved recording → confidence / fired on the row.
       showScoreClipResult(d); break;
+    case "score_histogram_result":
+    case "fa_eval_result":
+    case "verifier_result":
+    case "spectrogram_result":
+      // 🔬 Detection-eval toolkit — positives-vs-negatives histogram · FA/hour ROC-DET ·
+      // custom verifier · spectrogram+score-trace. One router → the right per-word host.
+      handleEvalResult(d); break;
     case "music":
       // NOW-PLAYING panel: playing/paused/resumed/stopped + (hybrid+local) video.
       handleMusic(d); break;
@@ -4231,6 +4739,14 @@ function enterDemo(){
   showGainSweepResult(Object.assign(demoGainSweep(demoWord, shortHash("wake|"+demoWord+"|server|demo")), {source:"server"}));
   showScoreClipResult(Object.assign(demoScoreClip(demoWord, shortHash("wake|"+demoWord+"|browser|demo")),
                                      {_clipKey: "wakeExtras-"+wakePanelKey(demoWord, "browser")}));
+  // 🔬 Seed the four DETECTION-EVAL charts for the selected phrase so EVERY chart
+  // (positives-vs-negatives histogram · FA/hour ROC-DET · verifier card · spectrogram +
+  // score-trace overlay) renders offline without a click. The seeders key off the word's
+  // demo reliability, so a weak word shows the overlap/"recall problem" read.
+  handleEvalResult(demoScoreHistogram(demoWord));
+  handleEvalResult(demoFaEval(demoWord));
+  handleEvalResult(demoVerifier(demoWord));
+  handleEvalResult(demoSpectrogram(shortHash("wake|"+demoWord+"|server|demo"), demoWord));
   demoStep = 0;
   runDemoStep();
 }
