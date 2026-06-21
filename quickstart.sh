@@ -90,6 +90,29 @@ if ! command -v uv >/dev/null 2>&1; then
 	exit 1
 fi
 
+# --- Ensure mpv (music playback) is available --------------------------------
+# Music playback streams through mpv, and pause/resume need its IPC socket.
+# Without mpv, "play <song>" falls back to a non-pausable player (or fails), so we
+# check up front, try to install it, and HALT before opening the browser if it
+# can't be made available. Override with MSTT_SKIP_MPV_CHECK=1.
+if [ -z "${MSTT_SKIP_MPV_CHECK:-}" ] && ! command -v mpv >/dev/null 2>&1; then
+	echo "quickstart: mpv is not installed (needed for music playback + pause/resume)."
+	if command -v brew >/dev/null 2>&1; then
+		echo "quickstart: installing mpv via Homebrew…"
+		brew install mpv || true
+	elif command -v apt-get >/dev/null 2>&1; then
+		echo "quickstart: installing mpv via apt-get…"
+		sudo apt-get install -y mpv || true
+	fi
+	if ! command -v mpv >/dev/null 2>&1; then
+		echo "quickstart: could not install mpv — halting before opening the browser." >&2
+		echo "  Install it (macOS: brew install mpv | Linux: apt install mpv), then re-run." >&2
+		echo "  Or skip this check: MSTT_SKIP_MPV_CHECK=1 ./quickstart.sh" >&2
+		exit 1
+	fi
+	echo "quickstart: mpv installed ✓"
+fi
+
 echo "quickstart: syncing the environment (uv sync --extra all)…"
 uv sync --extra all
 
