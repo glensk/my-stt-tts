@@ -766,6 +766,66 @@ def find_recordings(pattern: str) -> list[str]:
     return sorted(hits)
 
 
+def read_wav_float(path: str, *, target_rate: int | None = 16000) -> tuple[np.ndarray, int]:
+    """Read a (mono or multi-channel) WAV into float32 PCM in [-1, 1] at ``target_rate``.
+
+    The single reusable WAV loader shared by every clip-scoring diagnostic (wake gain
+    sweep, score-clip, the new histogram / FA-eval / spectrogram eval actions). Reads
+    8/16/24/32-bit PCM via :mod:`wave`, normalizes to float32 mono (multi-channel is
+    averaged down), and — unless ``target_rate`` is ``None`` — resamples to it (the
+    wake/embedding models expect 16 kHz). Returns ``(clip, rate)`` where ``rate`` is
+    the post-resample rate (== ``target_rate`` when one was requested). Raises
+    ``OSError``/``wave.Error``/``ValueError`` on an unreadable or empty file so callers
+    decide how to degrade — the eval workers turn that into a clear per-file skip.
+    """
+    import wave
+
+    with wave.open(path, "rb") as wf:
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        rate = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+    if not raw:
+        raise ValueError(f"empty WAV: {path}")
+    if sampwidth == 1:  # unsigned 8-bit PCM, centered at 128
+        data = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sampwidth == 2:
+        data = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    elif sampwidth == 3:  # packed 24-bit LE -> sign-extend to int32
+        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        ints = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+        ints = np.where(ints >= (1 << 23), ints - (1 << 24), ints)
+        data = ints.astype(np.float32) / float(1 << 23)
+    elif sampwidth == 4:
+        data = np.frombuffer(raw, dtype="<i4").astype(np.float32) / float(1 << 31)
+    else:
+        raise ValueError(f"unsupported WAV sample width {sampwidth} bytes: {path}")
+    if n_channels > 1:  # average channels down to mono
+        data = data.reshape(-1, n_channels).mean(axis=1).astype(np.float32)
+    if target_rate is not None and rate != target_rate:
+        data = resample_to(data, rate, target_rate)
+        rate = target_rate
+    return data.astype(np.float32, copy=False), int(rate)
+
+
+def list_wavs(directory: str) -> list[str]:
+    """Sorted absolute paths of every ``*.wav`` directly inside ``directory``.
+
+    The negative-corpus reader for the eval actions: the user drops wake-word-free
+    WAVs into :data:`Config.negative_corpus_dir` and these are the negatives the
+    histogram / FA-eval scores. Non-recursive (a flat drop-in folder), case-insensitive
+    on the extension, and returns ``[]`` for a missing/empty directory (callers emit a
+    clear "drop WAVs into <dir>" message rather than crashing).
+    """
+    import glob
+
+    if not os.path.isdir(directory):
+        return []
+    hits = glob.glob(os.path.join(directory, "*.wav"))
+    hits += glob.glob(os.path.join(directory, "*.WAV"))
+    return sorted(set(os.path.abspath(p) for p in hits))
+
+
 # A preflight is considered failed when this fraction (or more) of capture frames
 # were dropped/overflowed over the short test window — a persistently-overflowing
 # mic queue means capture can't keep up and the pipeline would record nothing. A

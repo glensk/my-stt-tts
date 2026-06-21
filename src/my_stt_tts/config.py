@@ -925,6 +925,17 @@ class Config:
     # Seconds of the wake stream captured by the recorder (the first N s after Start).
     wake_debug_seconds: float = 5.0
 
+    # --- Wake EVALUATION toolkit (negatives + FA/hour + ROC/DET + verifier) ---
+    # A directory of wake-word-FREE WAVs the user drops in: ambient room tone, TV,
+    # podcasts, conversation that must NOT trigger the wake word. The eval actions
+    # (score_histogram / fa_eval / train_verifier) read it to MEASURE the negative
+    # side the prior positives-only diagnostics never could — false-accepts/hour, the
+    # ROC/DET operating points, the positive-vs-negative score separation. Empty =>
+    # the actions emit a clear "drop WAVs into <dir>" message (never crash). The whole
+    # debug/ tree is git-ignored, so the default lands beside the saved recordings.
+    # Env: WAKE_NEG_CORPUS.
+    negative_corpus_dir: str = "debug/negatives"
+
     # Skip the startup audio preflight HARD STOP (the broken-audio gate that refuses
     # to open the GUI / start a mic loop when capture can't deliver 16 kHz or the mic
     # queue persistently overflows). Power-user escape hatch — also ``--skip-audio-
@@ -1049,6 +1060,8 @@ class Config:
             cfg.wake_phases = int(env["WAKE_PHASES"])
         if env.get("WAKE_DEBUG_SECONDS"):
             cfg.wake_debug_seconds = float(env["WAKE_DEBUG_SECONDS"])
+        if env.get("WAKE_NEG_CORPUS"):
+            cfg.negative_corpus_dir = env["WAKE_NEG_CORPUS"]
         if env.get("VAD_THRESHOLD"):
             cfg.vad_threshold = float(env["VAD_THRESHOLD"])
         if env.get("VAD_SILENCE_SECONDS"):
