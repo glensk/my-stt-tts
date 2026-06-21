@@ -4,19 +4,28 @@
 > `webui.html`), so they're queued to avoid merge conflicts. Launch as a backend+GUI pair once
 > Wave 1 is merged + CI-green.
 
-## Backend (after `kws-detector` merges) — branch e.g. `ptt-defaults-fix`
+## Backend (after `kws-detector` merges) — branch `ptt-defaults`
 
-- [ ] **CRITICAL — PTT MLX-thread bug.** PTT errors "There is no Stream(gpu, 0) in current thread":
-      `_ptt_target` runs STT in a FRESH daemon thread per click, but parakeet-mlx's GPU stream has
-      thread affinity (model loaded on another thread). FIX: route ALL MLX/STT work through ONE
-      long-lived worker thread (serial executor) so the model is loaded+used on the same thread
-      (covers PTT, mic-test, wake, barge-in). Verify PTT shows transcript + acts again.
-- [ ] **Default wake phrase = `hey_jarvis`** (fires 99-100% on Albert; maziko/nexus red). Config default.
-- [ ] **Exact model label `opus-4.8 xlarge`** (not just "opus"/"opus-4.8 · think") in settings + the
-      ASSISTANT transcript label — show model + the effort/size tier the CLI runs at.
-- [ ] **mstt-side mpv preflight** mirroring quickstart.sh (halt early / clear msg if mpv missing).
-- [ ] **Always `score_clip` with a DETAILED reason** — when a clip wouldn't fire, say which word it
-      didn't detect + why (e.g. "level too low", "wake word not detected", peak/SNR context).
+- [x] **CRITICAL — PTT MLX-thread bug.** PTT errored "There is no Stream(gpu, 0) in current thread":
+      `_ptt_target` ran STT in a FRESH daemon thread per click, but parakeet-mlx's GPU stream has
+      thread affinity (model loaded on another thread). FIXED: all MLX/STT work now marshals onto ONE
+      long-lived `_STTWorker` thread (`stt.stt_worker()`, serial queue) so the model is loaded + used
+      on the same thread — `ParakeetSTT.transcribe` submits its load+decode to the worker and blocks
+      for the result (public surface unchanged). Covers PTT, mic-test, wake, barge-in (all reach
+      `ParakeetSTT.transcribe`). Test: two caller threads transcribe, MLX only ever touched from the
+      one worker thread; PTT capture on a fresh thread no longer raises.
+- [x] **Default wake phrase = `hey_jarvis`** — `config.py` field + `from_env` + `quickstart.sh` now
+      default to `hey_jarvis` (fires 99-100% on Albert; maziko/nexus red). All words stay selectable.
+- [x] **Exact model label `opus-4.8 xlarge`** — `CLAUDE_CLI_REASONING="xlarge"`, `model_label` joins
+      it space-separated (`claude-cli / opus-4.8 xlarge`, dropping `· think`). Surfaced on
+      `bus.response(model=…)`, `settings_text`, and a new `settings_dict["model_label"]` field.
+- [x] **mstt-side mpv preflight** — `_mpv_preflight_gate` halts `main()` before opening `--browser`
+      when mpv is missing (clear msg + install hint), skippable with `MSTT_SKIP_MPV_CHECK=1`,
+      no-op when `music_enabled=false`. Mirrors quickstart.sh for the direct `./mstt --browser` path.
+- [x] **Always `score_clip`/`wake_test` with a DETAILED reason** — `_classify_wake_outcome` classifies
+      every outcome into `reason` ∈ {fired, level_too_low, not_detected, unavailable, no_clip} + a
+      human `detail` (names the word + why: "level too low (pk N) — move closer" vs "wake word not
+      detected (level OK)"). Emitted on BOTH `score_clip_result` and `wake_test_result`.
 
 ## GUI (after `gui-kws` merges) — branch e.g. `gui-unify-checks`
 

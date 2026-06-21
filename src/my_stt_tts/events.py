@@ -645,6 +645,8 @@ class EventBus:
         stats: dict[str, Any] | None = None,
         score_trace: list[float] | None = None,
         detector: str = "oww",
+        reason: str = "",
+        detail: str = "",
     ) -> None:
         """Publish the outcome of a wake-word test (GUI "Wake test"); DATA priority.
 
@@ -669,6 +671,13 @@ class EventBus:
         ``detector`` ("oww" | "kws") names which detector produced the fire/score: an
         official word is always "oww"; a custom word may fire via the OR'd sherpa-KWS path
         ("kws") when openWakeWord misses it. Defaults to "oww".
+
+        ``reason`` classifies the outcome for the GUI: ``"fired"`` (the word fired),
+        ``"level_too_low"`` (the capture was below the wake-usable int16 floor, so the
+        model was starved regardless of the word), or ``"not_detected"`` (the level was
+        OK but confidence stayed below threshold — a recall miss). ``detail`` is the
+        human one-liner naming the word + why (e.g. ``"maziko: level too low (pk 1882)
+        — move closer"`` / ``"hey_jarvis: wake word not detected (level OK)"``).
         """
         self.publish(
             {
@@ -678,6 +687,8 @@ class EventBus:
                 "confidence": confidence,
                 "fired": fired,
                 "message": message,
+                "reason": reason,
+                "detail": detail,
                 "detector": detector,
                 "wav_path": wav_path,
                 "peak": round(float(peak), 4),
@@ -738,6 +749,8 @@ class EventBus:
         fired: bool,
         int16_peak: int,
         message: str,
+        reason: str = "",
+        detail: str = "",
     ) -> None:
         """Publish the result of scoring the EXACT saved WAV (GUI ``score_clip``).
 
@@ -746,6 +759,11 @@ class EventBus:
         scores ~0 here, the model/word is the problem, not capture. ``confidence`` is
         the max openWakeWord score (0..1); ``int16_peak`` is the clip's magnitude on
         the ±32768 scale the model sees (so a low value explains a low score).
+
+        ``reason`` classifies the outcome for the GUI: ``"fired"`` / ``"level_too_low"``
+        (the clip's ``int16_peak`` is below the wake-usable floor) / ``"not_detected"``
+        (level OK but confidence stayed sub-threshold). ``detail`` is the human one-liner
+        naming the word + why (e.g. ``"maziko: level too low (pk 1882) — move closer"``).
         """
         self.publish(
             {
@@ -756,6 +774,8 @@ class EventBus:
                 "fired": bool(fired),
                 "int16_peak": int(int16_peak),
                 "message": message,
+                "reason": reason,
+                "detail": detail,
             }
         )
 

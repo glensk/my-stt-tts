@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import logging
 import os
+import shutil
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -702,13 +703,13 @@ def _speak(tts: TTSRouter, gate: audio.MicGate, sentence: str) -> None:
 
 
 def _model_label(cfg: Config) -> str:
-    """Exact model + reasoning-level label for the active brain (e.g.
-    ``claude-cli / opus-4.8 · think``) for the UI.
+    """Exact model + effort/size-tier label for the active brain (e.g.
+    ``claude-cli / opus-4.8 xlarge``) for the UI.
 
     Carried on the ``llm_request`` state detail and the final ``response`` event so
     the page can show an "ASSISTANT · <model>" label. Delegates to
     :func:`config.model_label` so the bare CLI alias / pinned API id resolves to the
-    precise marketing version and the claude-cli reasoning level is appended."""
+    precise marketing version and the claude-cli effort/size tier is appended."""
     return model_label(cfg.llm_provider, cfg.llm_model)
 
 
@@ -1722,6 +1723,44 @@ def _save_wake_test_wav(clip16k: np.ndarray, word: str, source: str) -> str:
         return ""
 
 
+def _classify_wake_outcome(
+    word: str,
+    *,
+    fired: bool,
+    confidence: float,
+    int16_peak: int,
+    threshold: float,
+    available: bool = True,
+) -> tuple[str, str]:
+    """Classify a wake score into the contract's ``(reason, detail)`` (shared by the
+    wake-test + score-clip paths).
+
+    ``reason`` is one of ``"fired"`` / ``"level_too_low"`` / ``"not_detected"`` /
+    ``"unavailable"``; ``detail`` is a human one-liner naming the word + why. The
+    level floor is :data:`audio._INT16_LOW_PEAK` — the same int16 peak under which
+    :func:`audio._expected_level` reads "low" and the (un-normalized) wake model is
+    starved. So a quiet capture is reported as ``level_too_low`` (the dominant
+    failure: "move closer") rather than blamed on the word's recall, while a loud
+    capture that still doesn't clear ``threshold`` is a genuine ``not_detected``
+    recall miss (level OK)."""
+    if not available:
+        return (
+            "unavailable",
+            f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+        )
+    if fired:
+        return "fired", f"{word}: fired (confidence {confidence:.2f})"
+    if int16_peak < audio._INT16_LOW_PEAK:  # noqa: SLF001 — shared wake-usable floor
+        return (
+            "level_too_low",
+            f"{word}: level too low (pk {int16_peak}) — move closer or raise the mic gain",
+        )
+    return (
+        "not_detected",
+        f"{word}: wake word not detected (level OK, confidence {confidence:.2f} < {threshold:.2f})",
+    )
+
+
 def _emit_wake_test(
     word: str,
     source: str,
@@ -1732,6 +1771,7 @@ def _emit_wake_test(
     available: bool = True,
     stats: dict[str, Any] | None = None,
     detector: str = "oww",
+    threshold: float = 0.4,
 ) -> None:
     """Score + format + publish a ``wake_test_result`` (and a human EVENT-LOG line).
 
@@ -1742,11 +1782,30 @@ def _emit_wake_test(
 
     ``stats`` (optional) carries the level-meter extras the GUI shares with a
     mic-check: ``peak``/``level``/``rms``/``duration_s``/``sample_rate``/``levels``/
-    ``processing``/``hash``/``wav_url``. Absent (unavailable model) -> the event still
-    publishes with the level fields at their zero defaults.
+    ``processing``/``hash``/``wav_url`` + a nested ``stats`` (:func:`audio.capture_stats`).
+    Absent (unavailable model) -> the event still publishes with the level fields at
+    their zero defaults.
+
+    ALWAYS classifies the outcome into the contract's ``reason``/``detail`` (see
+    :func:`_classify_wake_outcome`): ``level_too_low`` when the captured int16 peak is
+    below the wake-usable floor, ``not_detected`` when the level is OK but confidence
+    stayed sub-threshold, ``fired`` otherwise — so the GUI always explains WHY a clip
+    did or didn't fire, naming the word.
     """
+    # The int16 peak the wake model actually saw (from the nested capture_stats), used
+    # to tell a too-quiet capture apart from a genuine recall miss.
+    inner = (stats or {}).get("stats") or {}
+    int16_peak = int(inner.get("int16_peak", 0))
+    reason, detail = _classify_wake_outcome(
+        word,
+        fired=fired,
+        confidence=confidence,
+        int16_peak=int16_peak,
+        threshold=threshold,
+        available=available,
+    )
     if not available:
-        message = f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)"
+        message = detail
     else:
         verdict = "detected" if fired else "not detected"
         # Name the OR'd detector when a custom word fired via the sherpa-KWS path.
@@ -1762,6 +1821,8 @@ def _emit_wake_test(
         message=message,
         wav_path=wav_path,
         detector=detector,
+        reason=reason,
+        detail=detail,
         **(stats or {}),
     )
 
@@ -1850,7 +1911,16 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
         wav_url=wav_url,
         score_trace=score_trace,
     )
-    _emit_wake_test(word, "server", confidence, fired, wav_path, stats=stats, detector=detector)
+    _emit_wake_test(
+        word,
+        "server",
+        confidence,
+        fired,
+        wav_path,
+        stats=stats,
+        detector=detector,
+        threshold=cfg.wake_threshold,
+    )
 
 
 def _run_wake_test_browser(
@@ -1897,7 +1967,16 @@ def _run_wake_test_browser(
     stats = _wake_test_stats(
         clip16k, processing=flags, hash8=hash8, wav_url=wav_url, score_trace=score_trace
     )
-    _emit_wake_test(word, "browser", confidence, fired, wav_path, stats=stats, detector=detector)
+    _emit_wake_test(
+        word,
+        "browser",
+        confidence,
+        fired,
+        wav_path,
+        stats=stats,
+        detector=detector,
+        threshold=cfg.wake_threshold,
+    )
 
 
 def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | None, str, str]:
@@ -2000,21 +2079,33 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
 
     The GUI ``score_clip`` action: load the saved clip by ``hash8`` and run it through
     :func:`wake.score_wake_clip` with NO extra gain. If a clip that SHOULD fire also
-    scores ~0 here, the model/word is the problem, not capture. Emits a
-    ``score_clip_result`` with the confidence + the clip's ``int16_peak`` (so a low
-    score is explained by a low level). Never raises — a missing clip/model is a clear
-    message.
+    scores ~0 here, the model/word is the problem, not capture. ALWAYS computes the
+    score and classifies the outcome into the contract's ``reason``/``detail`` (see
+    :func:`_classify_wake_outcome`): ``level_too_low`` when the clip's ``int16_peak`` is
+    below the wake-usable floor, ``not_detected`` when the level is OK but confidence
+    stayed sub-threshold, ``fired`` otherwise. Never raises — a missing clip/model is a
+    clear message.
     """
     from .wake import score_wake_clip, wake_model_for
 
     if not os.path.isfile(wake_model_for(word)):
+        _, detail = _classify_wake_outcome(
+            word,
+            fired=False,
+            confidence=0.0,
+            int16_peak=0,
+            threshold=cfg.wake_threshold,
+            available=False,
+        )
         bus.score_clip_result(
             word=word,
             hash=str(hash8 or ""),
             confidence=0.0,
             fired=False,
             int16_peak=0,
-            message=f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+            message=detail,
+            reason="unavailable",
+            detail=detail,
         )
         bus.state("idle")
         return
@@ -2029,6 +2120,8 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
             fired=False,
             int16_peak=0,
             message=f"no saved clip ({which})",
+            reason="no_clip",
+            detail=f"{word}: no saved clip ({which}) to score",
         )
         bus.state("idle")
         return
@@ -2036,6 +2129,13 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
         clip16k, 16000, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
     )
     int16_peak = int(audio.capture_stats(clip16k, 16000)["int16_peak"])
+    reason, detail = _classify_wake_outcome(
+        word,
+        fired=fired,
+        confidence=confidence,
+        int16_peak=int16_peak,
+        threshold=cfg.wake_threshold,
+    )
     verdict = "detected" if fired else "not detected"
     message = f"{word}: confidence {confidence:.2f} on {base} (int16 peak {int16_peak}) — {verdict}"
     bus.log(("✓ " if fired else "✗ ") + message)
@@ -2046,6 +2146,8 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
         fired=fired,
         int16_peak=int16_peak,
         message=message,
+        reason=reason,
+        detail=detail,
     )
     bus.state("idle")
 
@@ -2493,6 +2595,35 @@ def _audio_preflight_gate(cfg: Config, args: argparse.Namespace) -> int | None:
     return None
 
 
+def _mpv_preflight_gate(cfg: Config) -> int | None:
+    """HALT EARLY when launching the GUI without mpv (mirrors quickstart.sh).
+
+    Music plays SERVER-side through mpv, and pause/resume need its IPC socket; without
+    mpv "play <song>" can't work. ``quickstart.sh`` already checks before opening the
+    browser, but a DIRECT ``./mstt --browser`` launch bypasses it — this covers that
+    path. Returns a NON-ZERO exit code (so :func:`main` returns it BEFORE opening the
+    browser) when mpv is missing, ``None`` when it is safe to proceed. No-op (returns
+    ``None``) when music is disabled or the check is opted out with
+    ``MSTT_SKIP_MPV_CHECK=1``. Unlike quickstart it does not try to install mpv — it
+    only gates and points at the install command (the browser launch is non-recoverable
+    here, so a clear stop beats a half-working control room)."""
+    if os.environ.get("MSTT_SKIP_MPV_CHECK"):
+        return None
+    if not cfg.music_enabled:
+        return None  # no music -> mpv is irrelevant
+    if shutil.which("mpv") is not None:
+        return None
+    msg = (
+        "mpv is not installed (needed for music playback + pause/resume) — halting "
+        "before opening the browser.\n"
+        "  Install it (macOS: brew install mpv | Linux: apt install mpv), then re-run.\n"
+        "  Or skip this check: MSTT_SKIP_MPV_CHECK=1 ./mstt --browser"
+    )
+    print(msg, file=sys.stderr)
+    bus.log(msg, "error")
+    return 4
+
+
 def main(argv: list[str] | None = None) -> int:
     """Validate config, build components, run the chosen loop. Returns exit code."""
     args = _parse_args(argv)
@@ -2529,6 +2660,16 @@ def main(argv: list[str] | None = None) -> int:
     gate_rc = _audio_preflight_gate(cfg, args)
     if gate_rc is not None:
         return gate_rc
+
+    # HALT EARLY (mpv preflight, mirroring quickstart.sh): a DIRECT ./mstt --browser
+    # launch bypasses quickstart's mpv check, so cover it here — refuse to open the
+    # control room with no mpv (music + pause/resume would silently fail) unless the
+    # user opts out with MSTT_SKIP_MPV_CHECK=1. Only the GUI launches a long-lived
+    # server where this matters; terminal/transport modes pass through.
+    if args.browser:
+        mpv_rc = _mpv_preflight_gate(cfg)
+        if mpv_rc is not None:
+            return mpv_rc
 
     brain = Brain(cfg)
     tts = TTSRouter(cfg)
