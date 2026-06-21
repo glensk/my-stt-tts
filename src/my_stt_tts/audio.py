@@ -82,6 +82,72 @@ def _sd() -> Any:  # noqa: ANN401 — thin lazy accessor
     return sd
 
 
+def is_device_contention_error(exc: BaseException) -> bool:
+    """True if ``exc`` looks like a CoreAudio/PortAudio device-contention error.
+
+    The always-listen wake loop holds the input device; when a server mic diagnostic
+    opens its OWN stream a moment too soon (before the OS has released the wake
+    stream's device) PortAudio raises with the macOS AUHAL error ``-50`` (paramErr) —
+    e.g. ``||PaMacCore (AUHAL)|| Error on line 2523: err='-50'``. That is transient:
+    the device is free a moment later, so the open is worth RETRYING rather than
+    surfaced as a permission/no-device failure. We treat any ``sounddevice``
+    ``PortAudioError`` as contention (the open of an input stream failing is, in this
+    codebase's call sites, always a busy/contended device), and additionally any
+    exception whose text carries the tell-tale ``-50`` / ``paramErr`` / ``PaMacCore``
+    markers — so a backend that wraps the error in a plain ``RuntimeError`` (or a test
+    double) is still recognised.
+    """
+    try:
+        sd = _sd()
+        pa_error: type[BaseException] = sd.PortAudioError
+    except Exception:  # noqa: BLE001 — no sounddevice / no PortAudio: fall back to text match
+        pa_error = ()  # type: ignore[assignment]
+    if pa_error and isinstance(exc, pa_error):  # type: ignore[arg-type]
+        return True
+    text = str(exc).lower()
+    return any(m in text for m in ("-50", "paramerr", "pamaccore", "device unavailable"))
+
+
+def _capture_with_retry(
+    attempt_fn: Any,  # noqa: ANN401 — () -> T, one capture attempt
+    *,
+    retries: int = 1,
+    settle_s: float = 0.0,
+) -> Any:  # noqa: ANN401 — returns whatever attempt_fn returns
+    """Run a one-shot capture ``attempt_fn``, retrying on a CoreAudio contention error.
+
+    macOS hands an input device over asynchronously, so a capture started just after
+    the wake loop released its own can hit a transient ``PortAudioError`` (AUHAL
+    ``-50`` / paramErr) — either raised at OPEN, or (worse) the stream opens but
+    delivers near-silence while flagging an input error. ``attempt_fn`` performs ONE
+    full open+record+close and raises a :func:`is_device_contention_error` on either
+    symptom; this runs it up to ``retries`` total attempts, waiting ``settle_s``
+    between tries so the OS frees the device. A NON-contention error (genuine
+    missing/denied device) is re-raised immediately — no pointless retries. The last
+    attempt's error propagates so a persistently-busy device still surfaces.
+    """
+    attempts = max(1, int(retries))
+    last_exc: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return attempt_fn()
+        except Exception as exc:  # noqa: BLE001 — classify + maybe retry
+            last_exc = exc
+            if attempt >= attempts or not is_device_contention_error(exc):
+                raise
+            log.warning(
+                "mic capture: device contention (%s); retry %d/%d after %.0f ms settle",
+                exc,
+                attempt + 1,
+                attempts,
+                settle_s * 1000,
+            )
+            if settle_s > 0:
+                time.sleep(settle_s)
+    # Unreachable (the loop either returns or raises), but keep mypy happy.
+    raise last_exc if last_exc is not None else RuntimeError("mic capture failed")
+
+
 def resample_to(arr: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     """Linear-resample float32 mono PCM from ``src_rate`` to ``dst_rate`` (pure).
 
@@ -343,7 +409,13 @@ def mic_test(sample_rate: int, *, seconds: float = 1.5, frame_samples: int = 128
     return mic_test_verdict(captured=True, rms=rms, peak=peak, permission=permission)
 
 
-def record_fixed(sample_rate: int, *, seconds: float = 3.0) -> tuple[np.ndarray, int]:
+def record_fixed(
+    sample_rate: int,
+    *,
+    seconds: float = 3.0,
+    retries: int = 1,
+    settle_s: float = 0.0,
+) -> tuple[np.ndarray, int]:
     """Capture a fixed ``seconds`` of mic audio at the device rate (float32 mono).
 
     Returns ``(clip, device_rate)`` where ``clip`` is the RAW capture at the rate the
@@ -357,35 +429,71 @@ def record_fixed(sample_rate: int, *, seconds: float = 3.0) -> tuple[np.ndarray,
     Unlike :func:`record_until_silence` there is no VAD/endpointing — it records the
     full window, so the replay plays back exactly what the mic heard. Raises on a
     device/PortAudio failure; the caller (a worker thread) is expected to guard it.
+
+    ``retries`` / ``settle_s`` make the input-stream OPEN tolerant of the CoreAudio
+    device-contention race: under ``--browser --wake`` the always-listen wake loop has
+    just released the input device, and macOS frees it asynchronously, so the first
+    open can raise a transient AUHAL ``-50`` (paramErr). It is retried up to
+    ``retries`` total attempts with a ``settle_s`` backoff between them (defaults keep
+    the classic single-attempt behaviour). See :func:`_open_input_with_retry`. If the
+    stream opens but PortAudio reports an input-error/overflow status on its callbacks
+    (the device handed over while still contended — capture comes back near-silent
+    WITHOUT raising), that is recorded and raised as a contention error at the end so
+    the caller can retry / report "busy" rather than a bogus permission failure.
     """
     sd = _sd()
     device_rate = _supported_capture_rate(sd, sample_rate)
-    frames_q: queue.Queue[np.ndarray] = queue.Queue()
 
-    def _callback(indata, _frames, _time, _status) -> None:  # noqa: ANN001
-        frames_q.put(indata[:, 0].copy())
+    def _attempt() -> np.ndarray:
+        frames_q: queue.Queue[np.ndarray] = queue.Queue()
+        status_errors: list[str] = []
 
-    collected: list[np.ndarray] = []
-    with sd.InputStream(
-        samplerate=device_rate,
-        channels=1,
-        dtype="float32",
-        blocksize=1280,
-        callback=_callback,
-    ):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
+        def _callback(indata, _frames, _time, status) -> None:  # noqa: ANN001
+            # A non-falsy status carries PortAudio CallbackFlags (input overflow/error).
+            # On macOS a contended hand-off can flag input errors yet still deliver
+            # (near-silent) frames; record it so a silent capture is treated as "busy".
+            if status:
+                status_errors.append(str(status))
+            frames_q.put(indata[:, 0].copy())
+
+        collected: list[np.ndarray] = []
+        # NB: the open (the `with` entry) is INSIDE the attempt so a raised AUHAL -50
+        # at open is one of the contention symptoms _capture_with_retry retries on.
+        # Using the InputStream context manager (not explicit start/stop/close) keeps
+        # the stream STOPPED+CLOSED on `__exit__` — the device is released the instant
+        # the attempt ends, which is exactly what the wake↔mic-check hand-off needs.
+        with sd.InputStream(
+            samplerate=device_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=1280,
+            callback=_callback,
+        ):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    collected.append(frames_q.get(timeout=0.1))
+                except queue.Empty:
+                    continue
+        # Drain anything queued right at the deadline so the tail isn't lost.
+        while True:
             try:
-                collected.append(frames_q.get(timeout=0.1))
+                collected.append(frames_q.get_nowait())
             except queue.Empty:
-                continue
-    # Drain anything queued right at the deadline so the tail isn't lost.
-    while True:
-        try:
-            collected.append(frames_q.get_nowait())
-        except queue.Empty:
-            break
-    raw = np.concatenate(collected) if collected else np.zeros(0, dtype=np.float32)
+                break
+        raw = np.concatenate(collected) if collected else np.zeros(0, dtype=np.float32)
+        # A near-silent capture that ALSO reported a PortAudio input-error status is
+        # the contention race (the wake loop hadn't fully released the device): the
+        # stream opened but delivered silence. Raise it as a contention error so
+        # _capture_with_retry retries — only when the audio is actually silent (a
+        # healthy capture with a stray overflow flag is fine and returned as-is).
+        if status_errors and (raw.size == 0 or float(np.max(np.abs(raw))) < _SILENCE_PEAK):
+            raise sd.PortAudioError(  # noqa: TRY003 — carries the device-contention markers
+                f"input device contention (PaMacCore status: {'; '.join(status_errors)})"
+            )
+        return raw
+
+    raw = _capture_with_retry(_attempt, retries=retries, settle_s=settle_s)
     # Return the RAW capture at the device rate — the replay plays it at this same
     # rate for faithful pitch/speed. (Do NOT resample to 16 kHz here.)
     return raw, device_rate
