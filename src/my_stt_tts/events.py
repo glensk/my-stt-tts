@@ -166,6 +166,29 @@ def _fmt_score_clip_result(e: dict[str, Any]) -> str:
     )
 
 
+def _fmt_score_histogram_result(e: dict[str, Any]) -> str:
+    pos = e.get("pos_scores", []) or []
+    neg = e.get("neg_scores", []) or []
+    return f"{e.get('word', '')} pos={len(pos)} neg={len(neg)} separation={e.get('separation', 0)}"
+
+
+def _fmt_fa_eval_result(e: dict[str, Any]) -> str:
+    pts = e.get("points", []) or []
+    return (
+        f"{e.get('word', '')} {len(pts)} points miss@{e.get('target_fa', 0)}fa/h="
+        f"{e.get('miss_at_target_fa', 0)}"
+    )
+
+
+def _fmt_verifier_result(e: dict[str, Any]) -> str:
+    state = "trained" if e.get("trained") else "not-trained"
+    return f"{e.get('word', '')} {state} pos={e.get('n_pos', 0)} neg={e.get('n_neg', 0)}"
+
+
+def _fmt_spectrogram_result(e: dict[str, Any]) -> str:
+    return f"{e.get('hash', '')} {e.get('mels', 0)}x{e.get('frames', 0)} mel grid"
+
+
 def _fmt_metrics(e: dict[str, Any]) -> str:
     return f"speech_id={e.get('speech_id', '')} stages_ms={e.get('stages_ms', {})}"
 
@@ -189,6 +212,10 @@ _CONSOLE_FORMATTERS = {
     "wake_test_result": _fmt_wake_test_result,
     "wake_gain_sweep_result": _fmt_wake_gain_sweep_result,
     "score_clip_result": _fmt_score_clip_result,
+    "score_histogram_result": _fmt_score_histogram_result,
+    "fa_eval_result": _fmt_fa_eval_result,
+    "verifier_result": _fmt_verifier_result,
+    "spectrogram_result": _fmt_spectrogram_result,
     "metrics": _fmt_metrics,
     "wake": _fmt_wake,
 }
@@ -776,6 +803,143 @@ class EventBus:
                 "message": message,
                 "reason": reason,
                 "detail": detail,
+            }
+        )
+
+    def score_histogram_result(
+        self,
+        *,
+        word: str,
+        pos_scores: list[float],
+        neg_scores: list[float],
+        threshold: float,
+        separation: float,
+        message: str = "",
+    ) -> None:
+        """Publish the positives-vs-negatives max-score histogram (GUI ``score_histogram``).
+
+        DATA priority — the eval toolkit's recall-vs-level proof (Task 1). ``pos_scores``
+        is the per-clip MAX openWakeWord score over every SAVED positive clip for ``word``;
+        ``neg_scores`` the same over the negative corpus. ``threshold`` is the configured
+        wake threshold (the GUI draws it as a divider line). ``separation`` is the
+        single-scalar gap (d-prime / mean-gap; see :func:`my_stt_tts.wake.separation`):
+        high = the word scores cleanly above the negatives, ≈0 = they overlap (the
+        recall problem, finally visible). ``message`` is the human one-liner.
+        """
+        self.publish(
+            {
+                "type": "score_histogram_result",
+                "word": word,
+                "pos_scores": [round(float(v), 4) for v in pos_scores],
+                "neg_scores": [round(float(v), 4) for v in neg_scores],
+                "threshold": round(float(threshold), 4),
+                "separation": round(float(separation), 4),
+                "message": message,
+            }
+        )
+
+    def fa_eval_result(
+        self,
+        *,
+        word: str,
+        points: list[dict[str, Any]],
+        miss_at_target_fa: float,
+        target_fa: float,
+        neg_seconds: float = 0.0,
+        message: str = "",
+    ) -> None:
+        """Publish the false-accepts/hour + ROC/DET operating curve (GUI ``fa_eval``).
+
+        DATA priority — the operating-point sweep (Task 2). ``points`` is the
+        threshold-swept ``[{threshold, fa_per_hour, true_accept}]`` list: ``fa_per_hour``
+        counts false-accept EVENTS over the negative corpus (NOT frames — a sustained
+        trigger is one event) converted to wall-clock, ``true_accept`` is the positive
+        recall at that threshold (together a ROC/DET point). ``miss_at_target_fa`` is the
+        miss-rate (1 − recall) at the ``target_fa`` false-accept budget, ``np.interp``-
+        olated along the FA/hour ↦ miss curve. ``neg_seconds`` is the corpus duration the
+        FA/hour normalizes against; ``message`` is the human one-liner (or the "drop WAVs
+        into <dir>" hint when the corpus is empty).
+        """
+        self.publish(
+            {
+                "type": "fa_eval_result",
+                "word": word,
+                "points": [
+                    {
+                        "threshold": round(float(p.get("threshold", 0.0)), 4),
+                        "fa_per_hour": round(float(p.get("fa_per_hour", 0.0)), 4),
+                        "true_accept": round(float(p.get("true_accept", 0.0)), 4),
+                    }
+                    for p in points
+                ],
+                "miss_at_target_fa": round(float(miss_at_target_fa), 4),
+                "target_fa": round(float(target_fa), 4),
+                "neg_seconds": round(float(neg_seconds), 2),
+                "message": message,
+            }
+        )
+
+    def verifier_result(
+        self,
+        *,
+        word: str,
+        trained: bool,
+        path: str,
+        n_pos: int,
+        n_neg: int,
+        message: str,
+    ) -> None:
+        """Publish the outcome of training a custom verifier (GUI ``train_verifier``).
+
+        DATA priority — the openWakeWord-style logistic-regression head (Task 3). ``trained``
+        is whether a verifier was fit + saved; ``path`` is the (git-ignored) artifact path
+        when it was; ``n_pos`` / ``n_neg`` are the clips that actually embedded; ``message``
+        is the human one-liner (success, "need >=3 positives", or "needs scikit-learn").
+        """
+        self.publish(
+            {
+                "type": "verifier_result",
+                "word": word,
+                "trained": bool(trained),
+                "path": path,
+                "n_pos": int(n_pos),
+                "n_neg": int(n_neg),
+                "message": message,
+            }
+        )
+
+    def spectrogram_result(
+        self,
+        *,
+        hash: str,  # noqa: A002 — wire field name per the shared GUI contract
+        mels: int,
+        frames: int,
+        grid: list[list[float]],
+        score_trace: list[float],
+        freqs: list[float] | None = None,
+        times: list[float] | None = None,
+        message: str = "",
+    ) -> None:
+        """Publish a log-mel spectrogram of a saved clip (GUI ``spectrogram``).
+
+        DATA priority — the visual capture inspector (Task 4). ``grid`` is a ``mels ×
+        frames`` normalized log-mel magnitude matrix (downsampled for the wire),
+        ``score_trace`` the per-frame wake score across the SAME clip (drawn under the
+        spectrogram so a localized spike lines up with where the word is). ``freqs`` /
+        ``times`` are the band-center frequencies (Hz) / column times (s) for the axes;
+        ``hash`` is the clip's 8-hex content id.
+        """
+        self.publish(
+            {
+                "type": "spectrogram_result",
+                "hash": hash,
+                "mels": int(mels),
+                "frames": int(frames),
+                "grid": grid,
+                "score_trace": [round(float(v), 4) for v in score_trace],
+                "freqs": [round(float(f), 1) for f in (freqs or [])],
+                "times": [round(float(t), 3) for t in (times or [])],
+                "message": message,
             }
         )
 
