@@ -12,16 +12,103 @@ this wraps the documented ``transcribe(path)`` API and reads ``.text`` /
 from __future__ import annotations
 
 import logging
+import queue
 import tempfile
+import threading
 import wave
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 
 log = logging.getLogger("my_stt_tts.stt")
+
+_T = TypeVar("_T")
+
+
+class _STTWorker:
+    """A single long-lived thread that owns the MLX engine and runs ALL transcription.
+
+    parakeet-mlx loads its model — and creates its GPU (Metal) stream — on whatever
+    thread first touches it. MLX streams have **thread affinity**: a call from any
+    OTHER thread raises ``There is no Stream(gpu, 0) in current thread``. The GUI
+    spawns a FRESH daemon thread per push-to-talk / mic-test / wake action (and the
+    wake loop + barge-in paths run on their own threads), so the model-load thread and
+    the call thread differed and PTT crashed.
+
+    The fix: marshal every transcribe call onto ONE dedicated worker thread. Callers
+    submit a closure and block for its result, so the model is always loaded on — and
+    only ever called from — this single worker thread, regardless of which thread the
+    caller runs on. The worker is a process-wide lazy singleton (see :func:`stt_worker`);
+    work is serialized through a queue, so concurrent callers are simply queued.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[
+            tuple[Callable[[], Any], queue.Queue[tuple[Any, BaseException | None]]]
+        ] = queue.Queue()
+        self._thread = threading.Thread(target=self._run, name="mstt-stt-worker", daemon=True)
+        self._started = False
+        self._start_lock = threading.Lock()
+        # The id of the worker thread, exposed so a test can assert every MLX call
+        # landed on the SAME thread (the affinity invariant). Set when the thread runs.
+        self.thread_ident: int | None = None
+
+    def _ensure_started(self) -> None:
+        if self._started:
+            return
+        with self._start_lock:
+            if not self._started:
+                self._thread.start()
+                self._started = True
+
+    def _run(self) -> None:
+        self.thread_ident = threading.get_ident()
+        while True:
+            fn, reply = self._queue.get()
+            try:
+                result: Any = fn()
+                err: BaseException | None = None
+            except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
+                result, err = None, exc
+            reply.put((result, err))
+
+    def submit(self, fn: Callable[[], _T]) -> _T:
+        """Run ``fn`` on the worker thread and block for its result (re-raising errors).
+
+        If called FROM the worker thread itself (e.g. one engine method calling
+        another), run inline to avoid a self-deadlock — it is already on the right
+        thread, which is exactly the affinity guarantee we want.
+        """
+        self._ensure_started()
+        if threading.get_ident() == self.thread_ident:
+            return fn()
+        reply: queue.Queue[tuple[Any, BaseException | None]] = queue.Queue(maxsize=1)
+        self._queue.put((fn, reply))
+        result, err = reply.get()
+        if err is not None:
+            raise err
+        return result  # type: ignore[no-any-return]
+
+
+_WORKER: _STTWorker | None = None
+_WORKER_LOCK = threading.Lock()
+
+
+def stt_worker() -> _STTWorker:
+    """The process-wide single STT worker thread (lazy singleton).
+
+    Every MLX/parakeet transcribe call is marshalled onto this one thread so the model
+    is loaded on — and only ever called from — the thread that owns its GPU stream.
+    """
+    global _WORKER  # noqa: PLW0603 — intentional lazy singleton
+    if _WORKER is None:
+        with _WORKER_LOCK:
+            if _WORKER is None:
+                _WORKER = _STTWorker()
+    return _WORKER
 
 
 @dataclass
@@ -256,7 +343,18 @@ class ParakeetSTT:
             self._model = from_pretrained(self.model_id)
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> STTResult:
-        """Transcribe a float32 mono clip to text + detected language."""
+        """Transcribe a float32 mono clip to text + detected language.
+
+        MLX has thread-affine GPU streams: the model must be loaded on AND every
+        decode must run on ONE consistent thread, or a call from a different thread
+        raises ``There is no Stream(gpu, 0) in current thread`` (the PTT crash). So the
+        actual model load + decode is marshalled onto the single :func:`stt_worker`
+        thread; the caller (PTT/mic-test/wake/barge-in worker threads) simply blocks
+        for the result. The public surface is unchanged."""
+        return stt_worker().submit(lambda: self._transcribe_on_worker(audio, sample_rate))
+
+    def _transcribe_on_worker(self, audio: np.ndarray, sample_rate: int) -> STTResult:
+        """The real MLX load + decode — ALWAYS runs on the single STT worker thread."""
         self._ensure()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name

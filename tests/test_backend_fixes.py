@@ -481,14 +481,14 @@ def test_response_event_omits_model_when_blank() -> None:
 
 
 def test_model_label_format() -> None:
-    # The label is now the EXACT model + reasoning level (GUI contract): the
-    # version id maps to its marketing version and claude-cli appends its reasoning
-    # level (`· think`). See config.model_label.
+    # The label is the EXACT model + effort/size tier (GUI contract): the version id
+    # maps to its marketing version and claude-cli appends the tier it runs at
+    # (`xlarge`, space-separated — not `· think`). See config.model_label.
     cfg = Config(llm_provider="claude-cli", llm_model="claude-haiku-4-5")
-    assert main_mod._model_label(cfg) == "claude-cli / haiku-4.5 · think"
-    # The default brain (opus-sub) renders exactly as the contract specifies.
+    assert main_mod._model_label(cfg) == "claude-cli / haiku-4.5 xlarge"
+    # The default brain (opus-sub) renders EXACTLY as the contract specifies.
     opus = Config(llm_provider="claude-cli", llm_model="opus")
-    assert main_mod._model_label(opus) == "claude-cli / opus-4.8 · think"
+    assert main_mod._model_label(opus) == "claude-cli / opus-4.8 xlarge"
 
 
 # --------------------------------------------------------------------------- #
@@ -606,3 +606,305 @@ def test_record_replay_reports_duration_at_device_rate() -> None:
         main_mod._run_mic_record_replay(Config(anthropic_api_key="x"), seconds=2.0)
 
     assert any("2.0s" in m and "48000 Hz" in m for m in logs), logs
+
+
+# --------------------------------------------------------------------------- #
+# (1 CRITICAL) single-STT-thread marshalling — the PTT MLX-affinity fix        #
+# --------------------------------------------------------------------------- #
+
+
+class _AffinityEngine:
+    """A ParakeetSTT stand-in whose MLX `_ensure`/decode record the calling thread.
+
+    Mimics the MLX thread-affinity constraint: it remembers the thread that first
+    "loaded the model" and ASSERTS every later decode runs on that SAME thread —
+    raising the exact runtime error MLX raises otherwise. The real fix routes all
+    calls through one worker thread, so this never raises."""
+
+    def __init__(self) -> None:
+        from my_stt_tts.stt import ParakeetSTT, STTResult
+
+        self._stt = ParakeetSTT("fake-model")
+        self._stt._model = self  # the "MLX model" is this object
+        self._STTResult = STTResult
+        self._load_thread: int | None = None
+        self.call_threads: list[int] = []
+
+    def transcribe(self, _wav_path):  # noqa: ANN001 — mirrors parakeet_mlx.Model.transcribe
+        import threading as _t
+
+        ident = _t.get_ident()
+        if self._load_thread is None:
+            self._load_thread = ident  # the GPU stream is created on THIS thread
+        elif ident != self._load_thread:
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread")
+        self.call_threads.append(ident)
+
+        class _R:
+            text = "ok"
+            language = "en"
+
+        return _R()
+
+
+def test_stt_calls_from_two_threads_share_one_worker_thread() -> None:
+    import threading
+
+    eng = _AffinityEngine()
+    clip = np.ones(1600, dtype=np.float32)
+    results: list[str] = []
+
+    def call() -> None:
+        results.append(eng._stt.transcribe(clip, 16000).text)
+
+    # Two DIFFERENT caller threads (as the GUI spawns per PTT/mic/wake action).
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    # Both transcriptions succeeded (no MLX cross-thread crash)…
+    assert results == ["ok", "ok"]
+    # …and the underlying MLX engine was ONLY ever touched from ONE consistent
+    # thread (the affinity invariant), even though two distinct callers asked.
+    assert len(set(eng.call_threads)) == 1
+    # …and that one thread is the dedicated STT worker, not either caller's thread.
+    from my_stt_tts.stt import stt_worker
+
+    assert eng.call_threads[0] == stt_worker().thread_ident
+
+
+def test_stt_worker_reraises_engine_error_on_caller_thread() -> None:
+    import pytest
+
+    from my_stt_tts.stt import stt_worker
+
+    def boom() -> None:
+        raise ValueError("decode failed")
+
+    # An error inside the worker is re-raised on the caller's thread (not swallowed).
+    with pytest.raises(ValueError, match="decode failed"):
+        stt_worker().submit(boom)
+
+
+def test_ptt_capture_routes_transcription_through_worker() -> None:
+    # The PTT capture path (_capture_ptt) must transcribe via the same engine surface,
+    # which now marshals onto the worker — so a fresh-thread PTT click no longer
+    # crashes. Drive it with a tiny captured clip + the affinity engine.
+    import threading
+
+    eng = _AffinityEngine()
+    clip = np.ones(1600, dtype=np.float32)
+
+    with (
+        patch.object(main_mod, "_capture_ptt_clip", create=True),
+        patch.object(main_mod.audio, "record_until_silence", return_value=clip),
+        patch.object(main_mod, "_play"),
+        patch.object(main_mod.bus, "state"),
+        patch.object(main_mod, "_signal_mic_confirmed"),
+    ):
+        out: dict[str, str] = {}
+
+        def run() -> None:
+            cap = main_mod._capture_ptt(Config(), eng._stt, main_mod.audio.MicGate(0.0))
+            out["text"] = cap.text
+
+        # Run on a FRESH thread (the bug's trigger) — must not raise.
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(timeout=5.0)
+
+    assert out["text"] == "ok"
+
+
+# --------------------------------------------------------------------------- #
+# (4) mstt-side mpv preflight — halt before opening the browser if mpv missing #
+# --------------------------------------------------------------------------- #
+
+
+def test_mpv_preflight_halts_when_missing() -> None:
+    cfg = Config()  # music_enabled defaults True
+    with (
+        patch.object(main_mod.shutil, "which", return_value=None),
+        patch.dict("os.environ", {}, clear=False),
+        patch.object(main_mod.bus, "log"),
+    ):
+        import os
+
+        os.environ.pop("MSTT_SKIP_MPV_CHECK", None)
+        rc = main_mod._mpv_preflight_gate(cfg)
+    assert rc == 4  # non-zero -> main returns it BEFORE opening the browser
+
+
+def test_mpv_preflight_passes_when_present() -> None:
+    cfg = Config()
+    with patch.object(main_mod.shutil, "which", return_value="/usr/local/bin/mpv"):
+        assert main_mod._mpv_preflight_gate(cfg) is None
+
+
+def test_mpv_preflight_skippable_via_env() -> None:
+    cfg = Config()
+    with (
+        patch.object(main_mod.shutil, "which", return_value=None),
+        patch.dict("os.environ", {"MSTT_SKIP_MPV_CHECK": "1"}),
+    ):
+        assert main_mod._mpv_preflight_gate(cfg) is None  # opted out -> no halt
+
+
+def test_mpv_preflight_noop_when_music_disabled() -> None:
+    cfg = Config(music_enabled=False)
+    with patch.object(main_mod.shutil, "which", return_value=None):
+        assert main_mod._mpv_preflight_gate(cfg) is None  # no music -> mpv irrelevant
+
+
+def test_main_browser_halts_early_when_mpv_missing() -> None:
+    # A direct `./mstt --browser` with no mpv halts BEFORE building the brain / opening
+    # the GUI (the quickstart check only covers the quickstart path).
+    with (
+        patch.object(main_mod.shutil, "which", return_value=None),
+        patch.object(main_mod, "_run_browser") as run_browser,
+        patch.object(main_mod, "Brain") as brain_cls,
+        patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}),
+    ):
+        import os
+
+        os.environ.pop("MSTT_SKIP_MPV_CHECK", None)
+        rc = main_mod.main(["--browser", "--type"])
+    assert rc == 4
+    run_browser.assert_not_called()  # the browser was never opened
+    brain_cls.assert_not_called()  # not even the heavy components were built
+
+
+# --------------------------------------------------------------------------- #
+# (5) score-clip / wake-test ALWAYS classify a detailed reason + detail        #
+# --------------------------------------------------------------------------- #
+
+
+def test_classify_wake_outcome_level_too_low() -> None:
+    # A quiet capture (int16 peak below the wake-usable floor) reads level_too_low,
+    # NOT a recall miss — the dominant "move closer" failure.
+    reason, detail = main_mod._classify_wake_outcome(
+        "maziko", fired=False, confidence=0.05, int16_peak=1882, threshold=0.4
+    )
+    assert reason == "level_too_low"
+    assert "maziko" in detail and "1882" in detail
+
+
+def test_classify_wake_outcome_not_detected_when_level_ok() -> None:
+    # Loud enough but still sub-threshold -> a genuine recall miss (level OK).
+    reason, detail = main_mod._classify_wake_outcome(
+        "hey_jarvis", fired=False, confidence=0.2, int16_peak=12000, threshold=0.4
+    )
+    assert reason == "not_detected"
+    assert "hey_jarvis" in detail and "level OK" in detail
+
+
+def test_classify_wake_outcome_fired() -> None:
+    reason, detail = main_mod._classify_wake_outcome(
+        "hey_jarvis", fired=True, confidence=0.8, int16_peak=12000, threshold=0.4
+    )
+    assert reason == "fired"
+    assert "hey_jarvis" in detail
+
+
+def test_classify_wake_outcome_unavailable() -> None:
+    reason, detail = main_mod._classify_wake_outcome(
+        "nope", fired=False, confidence=0.0, int16_peak=0, threshold=0.4, available=False
+    )
+    assert reason == "unavailable"
+    assert "unavailable" in detail
+
+
+def test_score_clip_emits_level_too_low_reason(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    import json
+
+    # A quiet saved clip: score_clip must emit reason=level_too_low + a naming detail.
+    quiet = (np.ones(16000, dtype=np.float32) * 0.01).astype(np.float32)  # very low level
+    events: list[dict] = []
+    b = EventBus()
+    sub = b.subscribe()
+    cfg = Config(anthropic_api_key="sk-test", wake_threshold=0.5, wake_phases=1)
+    with (
+        patch.object(main_mod, "bus", b),
+        patch.object(main_mod.os.path, "isfile", return_value=True),
+        patch.object(
+            main_mod, "_load_saved_wake_clip", return_value=(quiet, "abcd1234", "clip.wav")
+        ),
+        patch("my_stt_tts.wake.score_wake_clip", return_value=(0.02, False)),
+    ):
+        main_mod._run_score_clip(cfg, "maziko", "abcd1234")
+    while True:
+        try:
+            events.append(json.loads(sub.get(timeout=0.5)))
+        except Exception:  # noqa: BLE001 — queue drained
+            break
+    result = next(e for e in events if e["type"] == "score_clip_result")
+    assert result["reason"] == "level_too_low"
+    assert "maziko" in result["detail"]
+
+
+def test_score_clip_emits_not_detected_when_level_ok(monkeypatch) -> None:  # noqa: ANN001
+    import json
+
+    loud = (np.ones(16000, dtype=np.float32) * 0.5).astype(np.float32)  # int16 peak ~16k
+    events: list[dict] = []
+    b = EventBus()
+    sub = b.subscribe()
+    cfg = Config(anthropic_api_key="sk-test", wake_threshold=0.5, wake_phases=1)
+    with (
+        patch.object(main_mod, "bus", b),
+        patch.object(main_mod.os.path, "isfile", return_value=True),
+        patch.object(
+            main_mod, "_load_saved_wake_clip", return_value=(loud, "c0ffee99", "clip.wav")
+        ),
+        patch("my_stt_tts.wake.score_wake_clip", return_value=(0.2, False)),
+    ):
+        main_mod._run_score_clip(cfg, "hey_jarvis", "c0ffee99")
+    while True:
+        try:
+            events.append(json.loads(sub.get(timeout=0.5)))
+        except Exception:  # noqa: BLE001
+            break
+    result = next(e for e in events if e["type"] == "score_clip_result")
+    assert result["reason"] == "not_detected"
+    assert "hey_jarvis" in result["detail"]
+
+
+def test_wake_test_result_carries_reason_and_detail() -> None:
+    import json
+
+    b = EventBus()
+    sub = b.subscribe()
+    b.wake_test_result(
+        word="maziko",
+        source="server",
+        confidence=0.05,
+        fired=False,
+        message="x",
+        reason="level_too_low",
+        detail="maziko: level too low (pk 1882) — move closer",
+    )
+    evt = json.loads(sub.get(timeout=1.0))
+    assert evt["reason"] == "level_too_low"
+    assert evt["detail"] == "maziko: level too low (pk 1882) — move closer"
+
+
+def test_score_clip_result_carries_reason_and_detail() -> None:
+    import json
+
+    b = EventBus()
+    sub = b.subscribe()
+    b.score_clip_result(
+        word="hey_jarvis",
+        hash="abcd1234",
+        confidence=0.2,
+        fired=False,
+        int16_peak=12000,
+        message="x",
+        reason="not_detected",
+        detail="hey_jarvis: wake word not detected (level OK)",
+    )
+    evt = json.loads(sub.get(timeout=1.0))
+    assert evt["reason"] == "not_detected"
+    assert "level OK" in evt["detail"]
