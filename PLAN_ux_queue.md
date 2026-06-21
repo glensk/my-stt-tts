@@ -30,6 +30,9 @@
 - [ ] **Fix control-row ⓘ tooltip clipping** — the PUSH-TO-TALK ⓘ tooltip text is still cut off
       (earlier fix didn't fully cover the controls row); ensure it renders fully, anchored, un-clipped.
 - [ ] **Always show 'Score this clip' result with detail** on every test panel.
+- [ ] **Music player: ONE Pause/Play toggle button** — merge the separate Pause + Resume buttons
+      into a single toggle (⏸ Pause while playing, ▶ Play while paused), reflecting the `music`
+      event's paused/resumed state.
 
 ## Done already (this batch)
 
