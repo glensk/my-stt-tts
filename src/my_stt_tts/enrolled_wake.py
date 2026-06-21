@@ -135,6 +135,13 @@ def enrolled_clips_for(
     return sorted(hits)
 
 
+# Cap on enrolled references per word. The few-shot detector compares each live window
+# against EVERY reference (max cosine), so an unbounded set both slows scoring and lets a
+# single mislabeled positive linger forever. The most RECENT clips are kept (a re-enrollment
+# from a growing recordings folder keeps the user's latest voice). 0 / None = no cap.
+MAX_REFS = 40
+
+
 def enroll_word(
     word: str,
     *,
@@ -143,6 +150,7 @@ def enroll_word(
     recordings_dir: str | None = None,
     embeddings_dir: str = EMBEDDINGS_DIR,
     min_clips: int = 3,
+    max_refs: int | None = MAX_REFS,
 ) -> dict[str, Any]:
     """Enroll ``word`` from clips → per-clip reference embeddings saved to ``.npz``.
 
@@ -156,6 +164,10 @@ def enroll_word(
     * openWakeWord absent (``wake`` extra) → ``enrolled=False`` + a clear install hint.
     * fewer than ``min_clips`` usable clips → ``enrolled=False`` + a "need >= N" message.
     * success → ``enrolled=True``, ``path`` set, ``n_refs`` = clips that actually embedded.
+
+    ``max_refs`` (default :data:`MAX_REFS`) caps how many references are kept — the MOST
+    RECENT clips win when the source folder has grown past the cap (the active-learning loop's
+    bound so the few-shot set can't grow without limit). ``None`` / ``0`` disables the cap.
 
     Never raises — every failure is reported as ``enrolled=False`` with a message a CLI / GUI
     shows verbatim, mirroring :func:`my_stt_tts.wake_verifier.train_verifier`.
@@ -183,6 +195,8 @@ def enroll_word(
     refs = [
         v for v in (mean_embed(c, sr, features=feats) for c, sr in audio_clips) if v is not None
     ]
+    if max_refs and len(refs) > int(max_refs):
+        refs = refs[-int(max_refs) :]  # keep the most recent references (cap the few-shot set)
     if len(refs) < min_clips:
         return {
             "enrolled": False,

@@ -118,6 +118,7 @@ class WakeWord:
         refractory: int = 0,
         custom_verifier: Any = None,  # noqa: ANN401 — my_stt_tts.wake_verifier.CustomVerifier
         verifier_threshold: float = 0.5,
+        calibrator: Any = None,  # noqa: ANN401 — my_stt_tts.calibration.Calibrator | None
     ) -> None:
         self.model_path = model_path
         self.threshold = threshold
@@ -155,6 +156,14 @@ class WakeWord:
         self.verifier_threshold = float(verifier_threshold)
         self.last_verifier_score: float = 0.0
         self._verify_window = np.zeros(0, dtype=np.float32)
+        # Optional per-word OUTPUT calibrator (Mycroft Precise's ThresholdDecoder idea — see
+        # my_stt_tts.calibration). When set, the per-frame MAX-over-phases score is mapped
+        # through it BEFORE the moving-average deque, so threshold=0.5 means the same thing
+        # across models. None (or an identity Calibrator) is byte-identical to before. The
+        # IDENTICAL map is applied in score_wake_clip, preserving live == eval.
+        from .calibration import Calibrator
+
+        self.calibrator = calibrator if calibrator is not None else Calibrator.identity()
 
     @classmethod
     def from_config(cls, cfg: Config) -> WakeWord:
@@ -174,6 +183,15 @@ class WakeWord:
                 log.info("wake: loaded custom verifier for %r", cfg.wake_phrase)
         except Exception as exc:  # noqa: BLE001 — verifier is best-effort; never block the loop
             log.debug("custom verifier not loaded for %r: %s", cfg.wake_phrase, exc)
+        # Per-word output calibrator (Precise's ThresholdDecoder idea): only a real map when
+        # wake_calibration is ON *and* a fit was persisted for the word, else identity.
+        from .calibration import calibrator_for
+
+        calibrator = calibrator_for(
+            cfg.wake_phrase, enabled=getattr(cfg, "wake_calibration", False)
+        )
+        if calibrator.enabled:
+            log.info("wake: loaded output calibration for %r (n=%d)", cfg.wake_phrase, calibrator.n)
         return cls(
             cfg.wake_model_path,
             cfg.wake_threshold,
@@ -181,6 +199,7 @@ class WakeWord:
             window=getattr(cfg, "wake_window", 1),
             refractory=getattr(cfg, "wake_refractory", 0),
             custom_verifier=verifier,
+            calibrator=calibrator,
         )
 
     def available(self) -> bool:
@@ -288,6 +307,12 @@ class WakeWord:
                     best = max(best, float(max(values)))
                     scored = True
         if scored:
+            # Output calibration (Precise's ThresholdDecoder idea): map the raw MAX-over-phases
+            # score through the per-word monotone calibrator BEFORE it becomes last_score and
+            # BEFORE the moving-average deque, so threshold=0.5 is model-independent. An identity
+            # calibrator (default / calibration OFF) returns best unchanged — byte-identical.
+            # score_wake_clip applies the IDENTICAL map to the same per-frame score (live == eval).
+            best = float(self.calibrator.apply(best))
             self.last_score = best
             # Feed the moving-average ring buffer ONLY on a fresh frame, so an
             # unscored warmup call (no full 1280-frame yet) does not re-push a stale
@@ -485,6 +510,7 @@ def score_wake_clip(
     refractory: int = ...,
     patience: int = ...,
     debounce: int = ...,
+    calibrator: Any = ...,
     with_trace: Literal[False] = ...,
 ) -> tuple[float, bool]: ...
 
@@ -503,6 +529,7 @@ def score_wake_clip(
     refractory: int = ...,
     patience: int = ...,
     debounce: int = ...,
+    calibrator: Any = ...,
     with_trace: Literal[True],
 ) -> tuple[float, bool, list[float]]: ...
 
@@ -520,6 +547,7 @@ def score_wake_clip(
     refractory: int = 0,
     patience: int = 1,
     debounce: int = 0,
+    calibrator: Any = None,  # noqa: ANN401 — my_stt_tts.calibration.Calibrator | None
     with_trace: bool = False,
 ) -> tuple[float, bool] | tuple[float, bool, list[float]]:
     """Score a recorded clip against the wake model for ``word`` (the GUI diagnostic).
@@ -551,6 +579,13 @@ def score_wake_clip(
     the input to :func:`count_fa_events`, :func:`moving_average_fires`, and
     :func:`fired_with_patience`.
 
+    ``calibrator`` (a :class:`my_stt_tts.calibration.Calibrator`, default ``None`` =
+    identity) is applied INSIDE the same :meth:`WakeWord.detect` path the live loop runs,
+    so every per-frame score in the trace — and thus ``confidence`` and ``fired`` — is the
+    calibrated value, IDENTICAL to what the live detector would compute (the LIVE == EVAL
+    invariant). Pass the SAME calibrator the live loop uses (built from
+    :func:`my_stt_tts.calibration.calibrator_for`) so the eval measures the running config.
+
     Defensive: an empty clip, a missing model file, or an unavailable openWakeWord
     backend all return zero confidence (and an empty trace) rather than raising — the
     caller turns that into a clear "model unavailable" message instead of crashing.
@@ -569,7 +604,7 @@ def score_wake_clip(
     arr = resample_to(arr, int(sample_rate), 16000)
     if gain != 1.0:
         arr = apply_gain(arr, gain)
-    detector = WakeWord(model_path, threshold, phases=phases)
+    detector = WakeWord(model_path, threshold, phases=phases, calibrator=calibrator)
     best = 0.0
     trace: list[float] = []
     try:
@@ -781,8 +816,10 @@ def score_wake_clip_combined(
     forced to ``"oww"`` — KWS is NEVER consulted (the guardrail). Fully defensive: a KWS
     failure simply leaves the oWW result intact.
     """
+    from .calibration import calibrator_for
     from .config import is_official_wake_word
 
+    calibrator = calibrator_for(word, enabled=getattr(cfg, "wake_calibration", False))
     conf, oww_fired, trace = score_wake_clip(
         clip,
         sample_rate,
@@ -790,6 +827,7 @@ def score_wake_clip_combined(
         threshold=cfg.wake_threshold,
         phases=cfg.wake_phases,
         wakewords_dir=wakewords_dir,
+        calibrator=calibrator,
         with_trace=True,
     )
     if oww_fired:
@@ -848,6 +886,7 @@ def score_clip_set(
     threshold: float = 0.4,
     phases: int = 8,
     wakewords_dir: str = WAKEWORDS_DIR,
+    calibrator: Any = None,  # noqa: ANN401 — my_stt_tts.calibration.Calibrator | None
 ) -> tuple[list[float], list[list[float]]]:
     """Score a SET of clips for ``word`` → ``(max_scores, per_clip_traces)``.
 
@@ -858,6 +897,10 @@ def score_clip_set(
     or an unavailable backend makes :func:`score_wake_clip` return ``0.0`` per clip, so
     this never raises. ``sample_rate`` applies to every clip (they are 16 kHz once read
     via :func:`my_stt_tts.audio.read_wav_float`, so the default is the common case).
+
+    ``calibrator`` (default ``None`` = identity) is forwarded to every
+    :func:`score_wake_clip`, so when calibration is on the histogram + FA-eval measure the
+    SAME calibrated scores the live detector emits (live == eval).
     """
     max_scores: list[float] = []
     traces: list[list[float]] = []
@@ -869,6 +912,7 @@ def score_clip_set(
             threshold=threshold,
             phases=phases,
             wakewords_dir=wakewords_dir,
+            calibrator=calibrator,
             with_trace=True,
         )
         max_scores.append(round(float(conf), 4))

@@ -146,6 +146,8 @@ def record_wake_outcome(
     source: str,
     path: str | None = None,
     ts: str | None = None,
+    clip_hash: str = "",
+    clip_path: str = "",
 ) -> None:
     """Append one wake-test outcome for ``word`` to ``debug/wake_stats.json``.
 
@@ -153,6 +155,13 @@ def record_wake_outcome(
     data-driven from this user's real tests. ``ts`` defaults to the system clock at
     call time (ISO-8601). Best-effort — a disk/JSON error is logged and swallowed so a
     diagnostic never crashes (the GUI just keeps the prior).
+
+    ``clip_hash`` / ``clip_path`` LINK the outcome to the saved clip (Mycroft Precise's
+    active-learning idea — repo #5): with the clip recorded against the outcome, a logged
+    miss or false fire becomes ACTIONABLE — the GUI can offer "✗ wasn't me" / "✓ missed me"
+    on that exact clip and the relabel loop can find it by hash. Empty (the default) keeps the
+    legacy shape for callers that don't save a clip. ``path`` is the stats-file path override
+    (NOT the clip) — kept distinct from ``clip_path`` for back-compat.
     """
     import json
     import logging
@@ -165,6 +174,10 @@ def record_wake_outcome(
         "source": str(source),
         "ts": ts or _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime()),
     }
+    if clip_hash:
+        entry["hash"] = str(clip_hash)
+    if clip_path:
+        entry["clip_path"] = str(clip_path)
     try:
         stats = load_wake_stats(target)
         stats.setdefault(str(word), []).append(entry)
@@ -845,6 +858,17 @@ class Config:
     # the first fire anyway, so a single activation is byte-identical; it only de-duplicates
     # the FA count / re-trigger). Env: WAKE_REFRACTORY.
     wake_refractory: int = 8
+    # Per-word OUTPUT calibration (Mycroft Precise's ThresholdDecoder idea — repo #5 of the
+    # wake checker loop; see my_stt_tts.calibration). When ON, the per-frame wake score is
+    # mapped through a per-word monotone calibrator (fit from the saved positive clips' score
+    # stats) BEFORE the moving-average + threshold, so wake_threshold=0.5 means the same thing
+    # ("as confident as your weakest genuine wake") across models — making the threshold /
+    # sensitivity knobs model-independent. The SAME map is applied in the offline eval
+    # (score_wake_clip), preserving live == eval. DEFAULT OFF: it only changes behaviour when
+    # this is on AND a calibration was actually fit + persisted for the word (enough positive
+    # samples); otherwise the map is identity (byte-identical). The active-learning rebuild
+    # (mark_miss/mark_false_fire) re-fits it. Env: WAKE_CALIBRATION (default false).
+    wake_calibration: bool = False
     follow_up_seconds: float = 8.0
     sample_rate: int = 16000
     # Software input gain applied to SERVER-captured mic audio (mic_check / wake_test
@@ -1258,6 +1282,7 @@ class Config:
             kws_auto_download=_env_bool("KWS_AUTO_DOWNLOAD", default=True),
             kws_spellings=_parse_kws_spellings(env.get("KWS_SPELLINGS")),
             fewshot_wake_enabled=_env_bool("FEWSHOT_WAKE_ENABLED", default=True),
+            wake_calibration=_env_bool("WAKE_CALIBRATION", default=False),
             speaker_diarize_enabled=_env_bool("SPEAKER_DIARIZE", default=False),
             diarize_auto_download=_env_bool("DIARIZE_AUTO_DOWNLOAD", default=True),
             stt_backend=env.get("STT_BACKEND", "local"),

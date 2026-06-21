@@ -91,7 +91,16 @@ def settings_dict(
     _derived_thr, _derived_calibrated = sensitivity_to_threshold(
         cfg.wake_phrase, cfg.sensitivity_for(cfg.wake_phrase), curve=None
     )
+    # Per-word OUTPUT calibration state (Precise's ThresholdDecoder idea, repo #5): whether a
+    # calibrator has been FIT + persisted for the word, and on how many positive samples. The
+    # GUI shows this beside the calibration toggle so the user knows a word is actually
+    # calibrated (vs. the switch on but no fit yet -> identity map). Independent of which
+    # detector(s) serve the word, so it is attached for official + custom alike.
+    from .calibration import Calibrator
+
     for word, info in word_info.items():
+        cal = Calibrator.load(word)
+        info["calibration"] = {"calibrated": cal.enabled, "n": cal.n}
         if is_official_wake_word(word):
             info["detector"] = "oww"
             continue
@@ -153,6 +162,12 @@ def settings_dict(
         # uses the SAME criterion (live == eval).
         "wake_window": getattr(cfg, "wake_window", 1),
         "wake_refractory": getattr(cfg, "wake_refractory", 0),
+        # Per-word OUTPUT calibration master switch (Mycroft Precise's ThresholdDecoder idea,
+        # repo #5). When on, each word's saved per-word calibrator (fit from its positive-clip
+        # score stats) maps the raw score so wake_threshold=0.5 is model-independent; the per-
+        # word fit state (calibrated bool + sample count) rides wake_word_info[w].calibration.
+        # Off (default) is byte-identical. The active-learning rebuild re-fits it.
+        "wake_calibration": getattr(cfg, "wake_calibration", False),
         # The pre-shipped wake words present on disk, so the UI offers the real
         # choices as a dropdown (empty list -> the page falls back to free text).
         "wake_words": available_wake_words(),
@@ -279,6 +294,10 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
     if "wake_refractory" in data:
         # Floor at 0 (validate() requires >= 0). 0 = no post-fire lockout (old behaviour).
         cfg.wake_refractory = max(0, int(data["wake_refractory"]))
+    if "wake_calibration" in data:
+        # Per-word OUTPUT calibration master switch (Precise's ThresholdDecoder idea). On only
+        # changes behaviour when a calibrator was actually fit for the word; off is identity.
+        cfg.wake_calibration = bool(data["wake_calibration"])
     if "kws_enabled" in data:
         # Toggle the OR'd sherpa-KWS path for custom words (official words ignore it).
         cfg.kws_enabled = bool(data["kws_enabled"])

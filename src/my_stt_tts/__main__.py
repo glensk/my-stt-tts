@@ -250,6 +250,7 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"{' (master)' if cfg.wake_sensitivity_set else ' (threshold is master)'}"
         f"  phases {blue}{cfg.wake_phases}{reset}"
         f"  window {blue}{cfg.wake_window}{reset}  refractory {blue}{cfg.wake_refractory}{reset}"
+        f"  calibration {blue}{cfg.wake_calibration}{reset}"
         f"  mic-gain {blue}{cfg.mic_gain}{reset}"
         f"  wake-gain {blue}{cfg.wake_gain}{reset}"
         f"  noise-corpus {cfg.noise_corpus_dir}"
@@ -1117,6 +1118,7 @@ def run_wake_loop(
     speaker_id: object | None = None,
     stop: threading.Event | None = None,
     debug: Any = None,
+    fire_buffer: audio.WakeFireBuffer | None = None,
 ) -> int:
     """Always-listen: on the wake phrase, capture (VAD), respond, then follow up.
 
@@ -1184,6 +1186,7 @@ def run_wake_loop(
                 stop=stop,
                 on_debug=dbg,
                 recorder=recorder,
+                fire_buffer=fire_buffer,
             )
         except WakeUnavailable as exc:
             # Construction/predict failed (e.g. an openwakeword API/version
@@ -1324,6 +1327,11 @@ class _WakeController:
         self._thread: threading.Thread | None = None
         self._stop: threading.Event | None = None
         self._ptt_busy = False
+        # Active-learning ring buffer (repo #5): the wake loop feeds every scored frame and
+        # snapshots the window on each fire, so capture_last_fire can save the triggering
+        # audio as a negative. Owned here (survives loop restarts) and read from the action
+        # thread.
+        self._fire_buffer = audio.WakeFireBuffer(cfg.sample_rate)
 
     def start_wake(self) -> None:
         """Start the always-listen wake loop in a daemon thread (idempotent)."""
@@ -1414,6 +1422,10 @@ class _WakeController:
         if was_listening:
             self.start_wake()  # restore the always-listen loop we paused for the diagnostic
 
+    def last_fire_audio(self) -> np.ndarray | None:
+        """The most-recent live wake fire's audio window (for capture_last_fire), or None."""
+        return self._fire_buffer.last_fire
+
     def _wake_target(self, stop: threading.Event) -> None:
         try:
             run_wake_loop(
@@ -1425,6 +1437,7 @@ class _WakeController:
                 speaker_id=self._speaker_id,
                 stop=stop,
                 debug=self._debug,
+                fire_buffer=self._fire_buffer,
             )
         except Exception as exc:  # never let a mic/model failure kill the thread silently
             log.error("wake loop error: %s", exc)
@@ -1920,13 +1933,21 @@ def _run_wake_test_server(cfg: Config, word: str) -> None:
     # OR-combined: openWakeWord, then (custom word only) the open-vocabulary sherpa-KWS.
     # ``detector`` names which fired ("oww"|"kws"); official words stay oWW-only.
     confidence, fired, detector, score_trace = score_wake_clip_combined(clip16k, 16000, word, cfg)
-    # Persist the outcome so per-word reliability is data-driven from REAL tests.
+    wav_path = _save_wake_test_wav(clip16k, word, "server")
+    saved_path, hash8, wav_url = audio.save_recording(
+        clip16k, 16000, kind="wake", source="server", word=word
+    )
+    # Persist the outcome so per-word reliability is data-driven from REAL tests, LINKED to the
+    # saved clip (hash/path) so a logged miss/false-fire is actionable by the relabel loop.
     from .config import record_wake_outcome
 
-    record_wake_outcome(word, confidence=confidence, fired=fired, source="server")
-    wav_path = _save_wake_test_wav(clip16k, word, "server")
-    _, hash8, wav_url = audio.save_recording(
-        clip16k, 16000, kind="wake", source="server", word=word
+    record_wake_outcome(
+        word,
+        confidence=confidence,
+        fired=fired,
+        source="server",
+        clip_hash=hash8,
+        clip_path=saved_path,
     )
     stats = _wake_test_stats(
         clip16k,
@@ -1979,14 +2000,22 @@ def _run_wake_test_browser(
     rate = int(sample_rate) or cfg.sample_rate
     # OR-combined: openWakeWord, then (custom word only) the open-vocabulary sherpa-KWS.
     confidence, fired, detector, score_trace = score_wake_clip_combined(clip, rate, word, cfg)
-    # Persist the outcome so per-word reliability is data-driven from REAL tests.
-    from .config import record_wake_outcome
-
-    record_wake_outcome(word, confidence=confidence, fired=fired, source="browser")
     clip16k = audio.resample_to(clip, rate, 16000)
     wav_path = _save_wake_test_wav(clip16k, word, "browser")
-    _, hash8, wav_url = audio.save_recording(
+    saved_path, hash8, wav_url = audio.save_recording(
         clip16k, 16000, kind="wake", source="browser", word=word
+    )
+    # Persist the outcome so per-word reliability is data-driven from REAL tests, LINKED to the
+    # saved clip (hash/path) so a logged miss/false-fire is actionable by the relabel loop.
+    from .config import record_wake_outcome
+
+    record_wake_outcome(
+        word,
+        confidence=confidence,
+        fired=fired,
+        source="browser",
+        clip_hash=hash8,
+        clip_path=saved_path,
     )
     stats = _wake_test_stats(
         clip16k, processing=flags, hash8=hash8, wav_url=wav_url, score_trace=score_trace
@@ -2065,15 +2094,25 @@ def _load_positive_clips(word: str) -> list[np.ndarray]:
     return clips
 
 
-def _load_negative_clips(cfg: Config) -> tuple[list[np.ndarray], str]:
+def _load_negative_clips(cfg: Config, word: str | None = None) -> tuple[list[np.ndarray], str]:
     """Every WAV in the negative corpus as 16 kHz float32 + the resolved dir.
 
     Reads :data:`Config.negative_corpus_dir` (env ``WAKE_NEG_CORPUS``) flat via
-    :func:`audio.list_wavs` / :func:`audio.read_wav_float`. Returns ``(clips, dir)``;
-    an empty list signals the caller to emit the "drop WAVs into <dir>" message.
+    :func:`audio.list_wavs` / :func:`audio.read_wav_float`. When ``word`` is given, the
+    per-word active-learning NEGATIVES dir ``debug/recordings/wake_neg/<word>/`` (clips the
+    user marked "wasn't me" / captured live false fires, Mycroft Precise's closed-loop idea —
+    repo #5) is UNIONed in via :func:`my_stt_tts.active_learning.load_negative_clips_union`, so
+    the eval toolkit + the rebuild gate see the user's own negatives. Returns ``(clips, dir)``;
+    an empty list signals the caller to emit the "drop WAVs into <dir>" message. ``dir`` is the
+    primary ``negative_corpus_dir`` (the drop-in path the message names).
     """
+    if word is not None:
+        from . import active_learning
+
+        clips, _dirs = active_learning.load_negative_clips_union(word, cfg)
+        return clips, cfg.negative_corpus_dir
     neg_dir = cfg.negative_corpus_dir
-    clips: list[np.ndarray] = []
+    clips = []
     for path in audio.list_wavs(neg_dir):
         try:
             clip, _rate = audio.read_wav_float(path, target_rate=16000)
@@ -2264,7 +2303,7 @@ def _run_score_histogram(cfg: Config, word: str) -> None:
         bus.state("idle")
         return
     pos_clips = _load_positive_clips(word)
-    neg_clips, neg_dir = _load_negative_clips(cfg)
+    neg_clips, neg_dir = _load_negative_clips(cfg, word)
     if not pos_clips:
         bus.score_histogram_result(
             word=word,
@@ -2276,11 +2315,20 @@ def _run_score_histogram(cfg: Config, word: str) -> None:
         )
         bus.state("idle")
         return
+    from .calibration import calibrator_for
+
+    calibrator = calibrator_for(word, enabled=getattr(cfg, "wake_calibration", False))
     pos_scores, _ = score_clip_set(
-        pos_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+        pos_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, calibrator=calibrator
     )
     neg_scores, _ = (
-        score_clip_set(neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases)
+        score_clip_set(
+            neg_clips,
+            word,
+            threshold=cfg.wake_threshold,
+            phases=cfg.wake_phases,
+            calibrator=calibrator,
+        )
         if neg_clips
         else ([], [])
     )
@@ -2322,7 +2370,7 @@ def _run_fa_eval(cfg: Config, word: str) -> None:
         )
         bus.state("idle")
         return
-    neg_clips, neg_dir = _load_negative_clips(cfg)
+    neg_clips, neg_dir = _load_negative_clips(cfg, word)
     if not neg_clips:
         bus.fa_eval_result(
             word=word,
@@ -2336,14 +2384,23 @@ def _run_fa_eval(cfg: Config, word: str) -> None:
         )
         bus.state("idle")
         return
+    from .calibration import calibrator_for
+
+    calibrator = calibrator_for(word, enabled=getattr(cfg, "wake_calibration", False))
     pos_clips = _load_positive_clips(word)
     _, pos_traces = (
-        score_clip_set(pos_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases)
+        score_clip_set(
+            pos_clips,
+            word,
+            threshold=cfg.wake_threshold,
+            phases=cfg.wake_phases,
+            calibrator=calibrator,
+        )
         if pos_clips
         else ([], [])
     )
     _, neg_traces = score_clip_set(
-        neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+        neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases, calibrator=calibrator
     )
     result = fa_eval(
         pos_traces,
@@ -2512,7 +2569,7 @@ def _run_train_verifier(cfg: Config, word: str) -> None:
     from .wake_verifier import train_verifier
 
     pos_clips = _load_positive_clips(word)
-    neg_clips, _neg_dir = _load_negative_clips(cfg)
+    neg_clips, _neg_dir = _load_negative_clips(cfg, word)
     result = train_verifier(pos_clips, neg_clips, word)
     bus.log(("✓ " if result["trained"] else "✗ ") + result["message"])
     bus.verifier_result(
@@ -2523,6 +2580,54 @@ def _run_train_verifier(cfg: Config, word: str) -> None:
         n_neg=int(result["n_neg"]),
         message=str(result["message"]),
     )
+    bus.state("idle")
+
+
+def _run_relabel(cfg: Config, word: str, hash8: str, action: str) -> None:
+    """Relabel a saved clip (mark_false_fire / mark_miss) + eval-gated rebuild → relabel_result.
+
+    The active-learning closed loop (Mycroft Precise's idea, repo #5): move the clip to the
+    per-word NEGATIVES (``mark_false_fire``) or POSITIVES (``mark_miss``) dir, then rebuild the
+    cheap CPU detector (few-shot refs + verifier + calibration) and KEEP it only if the eval
+    gate (d-prime separation + miss@target-FA) does not regress, else ROLL BACK. Emits a
+    ``relabel_result`` the GUI renders as an accepted / rolled-back card. Never raises.
+    """
+    from . import active_learning
+
+    result = active_learning.relabel_clip(word, hash8, action, cfg)
+    bus.log(("✓ " if result.accepted else "✗ ") + result.message)
+    active_learning.emit_relabel_result(result)
+    bus.state("idle")
+
+
+def _run_capture_last_fire(cfg: Config, word: str, controller: Any) -> None:
+    """Capture the last live wake fire's audio as a NEGATIVE + eval-gated rebuild → relabel_result.
+
+    The ``capture_last_fire`` action (repo #5): pull the most-recent fire's audio window from
+    the wake loop's ring buffer (owned by ``controller``), save it under
+    ``debug/recordings/wake_neg/<word>/``, and run the SAME eval-gated rebuild as
+    ``mark_false_fire``. When no fire has happened yet (or no controller) it reports
+    ``rebuilt=False`` with a clear message. Never raises.
+    """
+    from . import active_learning
+
+    clip = controller.last_fire_audio() if controller is not None else None
+    if clip is None:
+        result = active_learning.RelabelResult(
+            word=word,
+            action="capture_last_fire",
+            rebuilt=False,
+            accepted=False,
+            sep_before=0.0,
+            sep_after=0.0,
+            fa_before=1.0,
+            fa_after=1.0,
+            message=f"{word}: no recent live wake fire to capture (start the wake loop first)",
+        )
+    else:
+        result = active_learning.capture_last_fire(word, clip, cfg.sample_rate, cfg)
+    bus.log(("✓ " if result.accepted else "✗ ") + result.message)
+    active_learning.emit_relabel_result(result)
     bus.state("idle")
 
 
@@ -2786,6 +2891,27 @@ def _run_browser(
             # from the saved positives (+ negatives). scikit-learn is the optional `debug` extra.
             word = str(data.get("word") or cfg.wake_phrase)
             threading.Thread(target=lambda: _run_train_verifier(cfg, word), daemon=True).start()
+        elif name in {"mark_false_fire", "mark_miss"}:
+            # Active-learning closed loop (Mycroft Precise's idea, repo #5): relabel a saved
+            # clip as a NEGATIVE (mark_false_fire) or POSITIVE (mark_miss), then eval-gated
+            # rebuild the cheap CPU detector (kept only if d-prime/FA don't regress, else
+            # rolled back). Worker thread; emits relabel_result.
+            word = str(data.get("word") or cfg.wake_phrase)
+            relabel_hash = str(data.get("hash") or "")
+            action_name = str(name)
+
+            def _relabel(a: str = action_name, w: str = word, h: str = relabel_hash) -> None:
+                _run_relabel(cfg, w, h, a)
+
+            threading.Thread(target=_relabel, daemon=True).start()
+        elif name == "capture_last_fire":
+            # Active-learning (repo #5): save the last LIVE wake fire's audio (from the wake
+            # loop's ring buffer) as a NEGATIVE, then behave like mark_false_fire (eval-gated
+            # rebuild). Needs the wake loop to have fired at least once. Worker thread.
+            word = str(data.get("word") or cfg.wake_phrase)
+            threading.Thread(
+                target=lambda: _run_capture_last_fire(cfg, word, controller), daemon=True
+            ).start()
         elif name == "spectrogram":
             # Eval toolkit (Task 4): log-mel spectrogram + wake score-trace of a saved clip
             # (by hash, or the newest for the word) — the visual capture inspector.

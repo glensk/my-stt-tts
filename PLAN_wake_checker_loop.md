@@ -43,11 +43,10 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       ports `benchmark.py`), and a `--benchmark` CLI. Event-grouped FA counting kept (NOT regressed to
       per-frame). Corpus recipe (LibriSpeech test-clean negatives, MUSAN/DEMAND noise) documented; no
       audio bundled. See round log below.
-- [~] 5. **Mycroft Precise** — JUDGED (2-panel), implementation CUT OFF by session limit (resets
-      2026-06-21 16:30 Europe/Berlin) — branches had 0 commits, removed; **RESUME by re-launching the
-      backend+GUI pair below.** Findings: trigger logic is OURS-equal/better (our mean-over-window+
-      refractory keeps the analog score Precise binarizes away — do NOT port `trigger_level`/GRU). TWO
-      genuine gaps to BUILD:
+- [x] 5. **Mycroft Precise** — ✅ **BUILT (both portable wins ported; GRU NOT ported)** (branch
+      `precise-ideas`). Findings: trigger logic is OURS-equal/better (our mean-over-window+
+      refractory keeps the analog score Precise binarizes away — did NOT port `trigger_level`/GRU). TWO
+      genuine gaps, both now BUILT (see round log below):
       (A) **Output calibration** (Precise `ThresholdDecoder`): per-word map of raw score → calibrated
       [0,1] (logit-normal / `Φ((logit(raw)−μ)/σ)` fit from saved positive-clip stats) applied in
       `WakeWord.detect` BEFORE the moving-average AND identically in `score_wake_clip` (preserve
@@ -441,3 +440,54 @@ kws_detector wake_word_info stubs). CORE-ONLY verified (`uv sync`; ruff + mypy c
 the established lazy-import / too-many-locals patterns, score +0.03; core pytest **1010 passed /
 13 skipped**, was 973 baseline). Full suite with `--extra all`: **1020 passed / 3 skipped**. NEVER
 touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/`wakewords/maziko.onnx`.
+
+### Repo 5 — Mycroft Precise · Round 1 — BUILT (2026-06-21, branch `precise-ideas`)
+
+**Judged finding:** trigger logic is OURS-equal/better (our mean-over-window + refractory keeps the
+analog score Precise binarizes away). Did **NOT** port `trigger_level`/the GRU. Ported the TWO
+portable ideas onto our open stack (Python only; GUI agent consumes the contract in parallel):
+
+**(A) Output calibration (Precise `ThresholdDecoder`)** — new `calibration.py`: a per-word monotone
+map `calibrated(raw) = Φ((logit(raw) − μ)/σ)` fit from the saved positive clips' max-score stats
+(reuses `score_clip_set`). `μ` is centered ONE σ below the positive logit mean, so calibrated **0.5
+= "as confident as your weakest genuine wake"** — model-independent. `Calibrator.{fit,apply,save,
+load,identity}` + `calibrator_for(word, enabled)` + `fit_and_save`. Applied to the per-frame
+MAX-over-phases score in `WakeWord.detect` **BEFORE** the moving-average deque, AND **identically**
+in `score_wake_clip` (the calibrator is threaded through `score_wake_clip`/`score_clip_set`/
+`score_wake_clip_combined` and applied INSIDE the same `detect` path → the trace IS the calibrated
+score → **live == eval**, proven by `test_calibration_live_equals_eval`). **Default OFF / identity**
+unless `wake_calibration` ON *and* a fit was persisted (≥5 positive samples) → byte-identical
+otherwise. Config `wake_calibration` (env `WAKE_CALIBRATION`, default false) + settings_dict /
+apply_settings / settings_text / `.env.example`; params persisted to gitignored
+`models/wake_calibration/<word>.json`; per-word state in `wake_word_info[w].calibration`.
+
+**(B) Active-learning closed loop** — new `active_learning.py` (ports the LOOP, keeps our cheap CPU
+rebuilders). **Negatives capture:** `save_recording(kind="wake_neg")` → `debug/recordings/wake_neg/
+<word>/`; `_load_negative_clips(cfg, word)` UNIONS it with `negative_corpus_dir` (eval toolkit +
+the gate consume the user's own negatives). **Ring buffer:** `audio.WakeFireBuffer` retains the last
+fire's audio window in the live loop (`listen_for_wake(fire_buffer=…)` feeds every scored frame +
+snapshots on fire), owned by `_WakeController` → `capture_last_fire`. **Relabel actions**
+(`mark_false_fire`/`mark_miss`/`capture_last_fire`) move the clip to `wake_neg/` or `wake/` then
+rebuild via `enroll_word` (refs, capped `MAX_REFS=40`) + `train_verifier` + re-fit the calibrator —
+near-instant CPU. **EVAL-GATED rebuild (safety interlock):** snapshot the model artifacts → measure
+`separation` (d-prime) + `fa_eval` miss@target-FA BEFORE → rebuild → measure AFTER → KEEP only if
+`gate_improves` (d-prime not down, miss not up, ±1e-3 tol), else **ROLL BACK** (restore the artifact
+bytes verbatim — golden enrollment is the floor). `record_wake_outcome` now stores the clip
+`hash`/`clip_path` so a logged miss/false-fire is actionable. Event
+`relabel_result{word,action,rebuilt,accepted,sep_before/after,fa_before/after,message,hash}`.
+
+**SAFETY:** a mislabeled clip can't poison refs — gated on eval-not-regressing; the move is
+reversible (clip stays on disk under its new label; a rolled-back rebuild leaves the model
+byte-identical); golden enrollment immutable (rollback restores it); refs capped.
+
+**Tests/lint** — `tests/test_wake_precise.py` (+23): calibration map (monotone / bounded / identity
+when off+insufficient / scalar==array / persist round-trip / `calibrator_for` switch) + applied in
+`detect` + identity byte-identical + **live==eval** + the `wake_calibration` knob; `save_recording`
+wake_neg folder, `_load_negative_clips` union, `record_wake_outcome` hash/path, `WakeFireBuffer`
+retain+snapshot, the eval-gate ACCEPTS an improving rebuild and ROLLS BACK a regressing one,
+snapshot/restore byte-for-byte, `mark_false_fire`/`mark_miss` move to the right dir, missing-hash,
+`capture_last_fire` saves+relabels, `listen_for_wake` feeds the ring buffer on fire, `relabel_result`
+shape. openWakeWord/scikit-learn mocked; clips/disk in tmp. CORE-ONLY verified (ruff + mypy clean;
+pylint only the established lazy-import / broad-except / too-many-* patterns; core pytest **1033
+passed / 13 skipped**, was 1010 baseline). Full suite with `--extra all`: **1043 passed / 3 skipped**.
+NEVER touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/`wakewords/maziko.onnx`.

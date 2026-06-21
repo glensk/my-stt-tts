@@ -728,7 +728,11 @@ def save_recording(
 
     **Wake clips are kept as training data** in a PER-WORD subfolder
     ``debug/recordings/wake/<word>/<file>`` (ALL of them — every test is a labelled
-    sample); mic-check clips stay flat in ``debug/recordings/``. Returns
+    sample); mic-check clips stay flat in ``debug/recordings/``. ``kind="wake_neg"`` is the
+    active-learning NEGATIVE label (Mycroft Precise's closed-loop idea, repo #5): a clip
+    the user marked "wasn't me" / a captured live false fire goes to a PER-WORD subfolder
+    ``debug/recordings/wake_neg/<word>/<file>`` so :func:`_load_negative_clips` can UNION it
+    into the word's negative corpus and the cheap CPU rebuilders re-fit against it. Returns
     ``(path, hash8, wav_url)`` where ``wav_url`` is the ``/recordings/<rel>`` link
     (``/recordings/wake/<word>/<file>`` for a wake clip). Defensive — a disk error
     yields an empty ``path`` (the hash/url are still computed) so a diagnostic never
@@ -742,9 +746,10 @@ def save_recording(
     hash8 = _clip_hash8(clip16k)
     ts = _time.strftime("%Y%m%d-%H%M%S", _time.localtime())
     filename = "-".join([ts, source, hash8]) + ".wav"
-    if kind == "wake":
-        # Per-word training folder: debug/recordings/wake/<word>/<file>.
-        rel = os.path.join("wake", _sanitize_word(word or "unknown"), filename)
+    if kind in ("wake", "wake_neg"):
+        # Per-word training folder: debug/recordings/<kind>/<word>/<file>. "wake" is the
+        # positive label; "wake_neg" is the active-learning negative label (repo #5).
+        rel = os.path.join(kind, _sanitize_word(word or "unknown"), filename)
     else:
         rel = filename
     wav_url = "/recordings/" + rel.replace(os.sep, "/")
@@ -1545,6 +1550,47 @@ class WakeDebugRecorder:
             return f"(write failed: {exc})"
 
 
+class WakeFireBuffer:
+    """A rolling buffer of the most recent live-wake audio, snapshotted on each fire.
+
+    The active-learning ``capture_last_fire`` source (Mycroft Precise's closed-loop idea —
+    repo #5): the always-listen loop feeds every scored frame here, keeping only the last
+    ``window_seconds`` of audio. When the wake word FIRES, :meth:`mark_fire` snapshots that
+    window so the GUI can later save it as a NEGATIVE (a captured false fire) — exactly the
+    audio that triggered the (unwanted) activation. Thread-safe: the live loop feeds it from
+    its capture thread while the GUI reads :attr:`last_fire` from an action thread.
+    """
+
+    def __init__(self, sample_rate: int = 16000, window_seconds: float = 2.0) -> None:
+        self.sample_rate = int(sample_rate)
+        self._max = max(1, int(window_seconds * self.sample_rate))
+        self._buffer = np.zeros(0, dtype=np.float32)
+        self._last_fire: np.ndarray | None = None
+        self._lock = threading.Lock()
+
+    def feed(self, frame: np.ndarray) -> None:
+        """Append a scored frame, trimming to the rolling window (the EXACT model-fed audio)."""
+        arr = np.asarray(frame, dtype=np.float32).ravel()
+        with self._lock:
+            self._buffer = np.concatenate([self._buffer, arr])[-self._max :]
+
+    def mark_fire(self) -> None:
+        """Snapshot the current rolling window as the most-recent fire's audio."""
+        with self._lock:
+            self._last_fire = self._buffer.copy()
+
+    @property
+    def last_fire(self) -> np.ndarray | None:
+        """A copy of the last fire's audio window, or ``None`` if nothing has fired yet."""
+        with self._lock:
+            return None if self._last_fire is None else self._last_fire.copy()
+
+    def reset(self) -> None:
+        """Clear the rolling buffer (between listen sessions); keeps the last-fire snapshot."""
+        with self._lock:
+            self._buffer = np.zeros(0, dtype=np.float32)
+
+
 def listen_for_wake(
     wake: Any,
     sample_rate: int,
@@ -1555,6 +1601,7 @@ def listen_for_wake(
     stop: threading.Event | None = None,
     on_debug: Any = None,
     recorder: WakeDebugRecorder | None = None,
+    fire_buffer: WakeFireBuffer | None = None,
 ) -> bool:
     """Block until ``wake.detect(frame)`` fires on an 80 ms (1280-sample) frame.
 
@@ -1573,6 +1620,11 @@ def listen_for_wake(
     collapses the score to ~0.001; lifting the gain restores the energy the model
     needs. Applied to the EXACT frame the model scores (the same frame the debug
     recorder taps), so the saved WAV reflects what the model actually sees.
+
+    ``fire_buffer`` (optional :class:`WakeFireBuffer`) retains a rolling window of the EXACT
+    scored frames and snapshots it on a fire, so the active-learning ``capture_last_fire``
+    action (repo #5) can save the audio that triggered an unwanted activation as a negative.
+    ``None`` keeps the classic behaviour (no retention).
     """
     sd = _sd()
     device_rate = _supported_capture_rate(sd, sample_rate)
@@ -1582,6 +1634,8 @@ def listen_for_wake(
         frames_q.put(indata[:, 0].copy())
 
     wake.reset()
+    if fire_buffer is not None:
+        fire_buffer.reset()
     pending = np.zeros(0, dtype=np.float32)
     with sd.InputStream(
         samplerate=device_rate,
@@ -1610,6 +1664,10 @@ def listen_for_wake(
                 # the wake model truly sees, so the saved WAV is what to inspect.
                 if recorder is not None and not recorder.done:
                     recorder.feed(scored_frame, score)
+                # Retain the EXACT scored frame in the active-learning ring buffer so a
+                # captured false fire (capture_last_fire) saves the audio that triggered it.
+                if fire_buffer is not None:
+                    fire_buffer.feed(scored_frame)
                 if on_debug is not None:
                     on_debug(
                         "wake_score",
@@ -1618,4 +1676,6 @@ def listen_for_wake(
                         model=getattr(wake, "model_name", ""),
                     )
                 if fired:
+                    if fire_buffer is not None:
+                        fire_buffer.mark_fire()  # snapshot the window that just fired
                     return True

@@ -947,6 +947,56 @@ class EventBus:
             }
         )
 
+    def relabel_result(
+        self,
+        *,
+        word: str,
+        action: str,
+        rebuilt: bool,
+        accepted: bool,
+        sep_before: float,
+        sep_after: float,
+        fa_before: float,
+        fa_after: float,
+        message: str,
+        hash: str = "",  # noqa: A002 — wire field name per the shared GUI contract
+    ) -> None:
+        """Publish the outcome of an active-learning RELABEL (GUI ``mark_false_fire`` /
+        ``mark_miss`` / ``capture_last_fire``); DATA priority.
+
+        The closed-loop result card (Mycroft Precise's active-learning idea, repo #5): the
+        user marked a clip "wasn't me" (a false fire → negative) or "missed me" (a true wake
+        the detector dropped → positive), or captured the last live fire as a negative. The
+        clip is moved to the right per-word label dir and the cheap CPU detector (few-shot
+        refs + verifier + calibration) is REBUILT — but only KEPT if the rebuild does not
+        regress the eval gate, else ROLLED BACK (the user's golden enrollment is the floor).
+
+        * ``action`` — ``"mark_false_fire"`` | ``"mark_miss"`` | ``"capture_last_fire"``.
+        * ``rebuilt`` — whether a rebuild was actually attempted (False = the clip could not
+          be found / moved, or no detector to rebuild).
+        * ``accepted`` — whether the rebuild was KEPT (eval did not regress) or ROLLED BACK.
+        * ``sep_before`` / ``sep_after`` — the positives-vs-negatives d-prime
+          (:func:`my_stt_tts.wake.separation`) before / after the rebuild.
+        * ``fa_before`` / ``fa_after`` — the miss-rate at the target false-accepts/hour
+          (:func:`my_stt_tts.wake.fa_eval`'s ``miss_at_target_fa``) before / after.
+        * ``message`` — the human one-liner the UI shows; ``hash`` is the clip's content id.
+        """
+        self.publish(
+            {
+                "type": "relabel_result",
+                "word": word,
+                "action": action,
+                "rebuilt": bool(rebuilt),
+                "accepted": bool(accepted),
+                "sep_before": round(float(sep_before), 4),
+                "sep_after": round(float(sep_after), 4),
+                "fa_before": round(float(fa_before), 4),
+                "fa_after": round(float(fa_after), 4),
+                "message": message,
+                "hash": hash,
+            }
+        )
+
     def spectrogram_result(
         self,
         *,
