@@ -61,6 +61,16 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       `relabel_result{action,rebuilt,accepted,sep_before/after,fa_before/after,message}`. GUI: "✗ Wasn't
       me / ✓ Missed me / capture" buttons + the accepted/rolled-back result card + a calibration toggle.
 
+## 🏁 LOOP COMPLETE (2026-06-21)
+
+All 5 research-ranked repos processed; OUR repo won every closing re-judge. Each repo's ENGINE lost
+to ours or was unadoptable (closed/account-gated/dead-stack); we ported only its genuinely-better
+IDEAS, each EMPIRICALLY GATED (measure → build only if it helps → safe defaults), so nothing regressed
+the working models. Final state: `main` @ `4dbf9c9`, CI green, 1033 core / 1043 all-extras tests.
+Net new detection capability shipped: zero-train open-vocab KWS, few-shot EnrolledWake (the user's own
+voice — maziko 1/6→6/6), live moving-average+refractory, model-independent `wake_sensitivity` +
+calibration, noise×SNR FA/hour benchmark, and an eval-gated active-learning relabel loop.
+
 ## Our detection baseline
 
 openWakeWord ONNX · phase-diverse (8 staggered, max) · int16 · threshold + `wake_gain` · official
