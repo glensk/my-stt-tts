@@ -306,6 +306,13 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .check-meta .kv{display:inline-flex; align-items:center; gap:5px; padding:2px 8px;
   border-radius:999px; border:1px solid var(--line2); background:#060c12; color:var(--ink-dim)}
 .check-meta .kv b{color:var(--cyan); font-weight:600}
+/* clipping chip turns red when the clip pinned at full scale */
+.check-meta .kv.kv-bad{border-color:var(--red); color:var(--red)}
+.check-meta .kv.kv-bad b{color:var(--red)}
+/* per-field ⓘ sits snug inside a chip/badge/stat label (smaller dot, tight margin) */
+.kv .info, .stat-chips .kv .info, .proc-badge .pf .info, .hash-tag .info{margin-left:3px}
+.kv .info-dot, .stat-chips .kv .info-dot, .proc-badge .pf .info-dot, .hash-tag .info-dot{
+  width:12px; height:12px; font-size:8px}
 /* recommended-level guidance band under a meter (green target zone) */
 .level-guide{position:relative; flex:1 1 120px; min-width:120px}
 .level-guide .mic-meter{flex:none; width:100%}
@@ -493,6 +500,21 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
 .stat-chips .kv{display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px;
   border:1px solid var(--line2); background:#060c12; color:var(--ink-dim)}
 .stat-chips .kv b{color:var(--cyan); font-weight:600}
+/* ---------- firing verdict banner (task 4) ----------
+   The headline pass/fail every result row surfaces from the backend's reason/detail:
+   green "✓ would fire" · red "✗ wake word not detected" · orange "⚠ level too low".
+   Bold + coloured so it's the first thing read; the detail is the quieter second line. */
+.verdict{display:flex; flex-direction:column; gap:2px; padding:7px 11px; border-radius:8px;
+  border:1px solid var(--line2); background:#060c12; font-size:11px; letter-spacing:.3px; width:100%}
+.verdict .vd-head{display:flex; align-items:center; gap:7px; font-weight:700; letter-spacing:.6px}
+.verdict .vd-head .vd-dot{width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--ink-faint)}
+.verdict .vd-detail{font-size:10px; color:var(--ink-dim); letter-spacing:.2px; line-height:1.5}
+.verdict.fired{border-color:var(--green); box-shadow:0 0 16px -7px var(--green)}
+.verdict.fired .vd-head{color:var(--green)} .verdict.fired .vd-dot{background:var(--green); box-shadow:var(--glow) var(--green)}
+.verdict.low{border-color:var(--amber); box-shadow:0 0 16px -7px var(--amber)}
+.verdict.low .vd-head{color:var(--amber)} .verdict.low .vd-dot{background:var(--amber); box-shadow:var(--glow) var(--amber)}
+.verdict.miss{border-color:var(--red); box-shadow:0 0 16px -7px var(--red)}
+.verdict.miss .vd-head{color:var(--red)} .verdict.miss .vd-dot{background:var(--red); box-shadow:var(--glow) var(--red)}
 /* 🔍 score-this-clip button — same pill family as ▶ play-last, in violet */
 .score-clip{display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
   border:1px solid var(--violet); background:rgba(157,123,255,.07); color:var(--violet);
@@ -585,12 +607,13 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
   -webkit-user-select:none; padding:0}
 .info-dot:hover, .info.open .info-dot{color:var(--cyan); border-color:var(--cyan);
   box-shadow:0 0 10px -3px var(--cyan)}
-/* Popover anchoring. Default (CSS hover) is absolute under the dot. But an absolute
-   popover is CLIPPED by any overflow:hidden/auto ancestor (e.g. .card, .controls,
-   .checks-body) and trapped under sibling stacking contexts. To escape that, the
-   JS positioner switches the popover to position:fixed (`.info.fixed`) and writes
-   --pop-x/--pop-y from the dot's viewport rect, so it floats above everything and
-   can open upward when near the bottom. Hover keeps the lightweight absolute path. */
+/* Popover anchoring. An ABSOLUTE popover is CLIPPED by any overflow:hidden/auto
+   ancestor (e.g. .card, .controls, .checks-body) and trapped under sibling stacking
+   contexts — that's what cut off the PUSH-TO-TALK tooltip. So EVERY popover (hover
+   AND click) is JS-positioned with position:fixed (`.info.fixed`) off the dot's
+   viewport rect: it floats above everything, is clamped on-screen, and opens upward
+   near the viewport bottom. The base style below is just the look; .fixed does the
+   placement. (A no-JS absolute fallback remains for environments without the wiring.) */
 .info-pop{position:absolute; z-index:9000; top:calc(100% + 7px); left:50%; transform:translateX(-50%);
   width:230px; max-width:62vw; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
   background:linear-gradient(180deg,#0c1622,#070d14); color:var(--ink); font-size:11px;
@@ -601,11 +624,13 @@ details[open].checks-card>.checks-head .chev{transform:rotate(90deg)}
   border:6px solid transparent; border-bottom-color:var(--line2)}
 .info-pop code{font-size:10px; padding:1px 4px; border:1px solid var(--line2); border-radius:4px;
   background:#060c12; color:var(--cyan)}
-.info:hover .info-pop, .info.open .info-pop{opacity:1; visibility:visible}
+/* Visible when click-opened (.open) OR hovered/focused (.hovering, set by JS so the
+   fixed positioner can run first — a pure :hover would show the clipped absolute one). */
+.info.open .info-pop, .info.hovering .info-pop{opacity:1; visibility:visible}
 /* keep a right-edge popover on-screen (absolute/hover fallback) */
 .info.edge .info-pop{left:auto; right:0; transform:none}
 .info.edge .info-pop::before{left:auto; right:9px; transform:none}
-/* FIXED (JS-positioned, escapes all clipping) — used when an ⓘ is opened by click.
+/* FIXED (JS-positioned, escapes all clipping) — used for hover AND click.
    --pop-x is the dot centre; the popover is centred on it and clamped on-screen by
    the JS. When `.up` it opens above the dot (near the viewport bottom). */
 .info.fixed .info-pop{position:fixed; z-index:9999; top:var(--pop-y); left:var(--pop-x);
@@ -689,6 +714,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
 .music-card.paused .music-title{color:var(--ink-dim)}
 .music-card.paused .music-title::after{content:" · paused"; color:var(--amber); font-weight:400; letter-spacing:1px}
 .music-btns{display:flex; gap:8px; flex-wrap:wrap}
+/* single Pause/Play toggle — the icon swaps between ⏸ and ▶ with the state */
+.music-toggle-icon{display:inline-flex; align-items:center}
+.music-toggle-icon svg{width:14px; height:14px}
+.music-card.paused #musicToggleBtn{border-color:var(--mag-dim); color:var(--mag)}
 /* responsive 16:9 video frame (hybrid + local only) */
 .music-video{position:relative; width:100%; border-radius:8px; overflow:hidden;
   border:1px solid var(--line2); background:#000}
@@ -879,47 +908,10 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
             <div class="check-extras" id="micServerExtras"></div>
           </div>
 
-          <!-- CHECK 3 — RECORD & PLAY · BROWSER (fully client-side: getUserMedia →
-               record ~3s → replay in the browser). No server round-trip. -->
-          <div class="check" id="checkBrowserReplay">
-            <div class="check-title"><span class="num" data-n="3" aria-hidden="true"></span>Record &amp; play · browser
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About browser record and play"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Fully in THIS browser: records ~3&nbsp;s from the browser mic (the one Live&nbsp;Audio uses), then plays it straight back so you hear your own voice. No server involved — verifies your browser mic&nbsp;→&nbsp;speakers.</span></span>
-              <span class="check-spk" id="micBrowserReplaySpk">● recording…</span>
-            </div>
-            <div class="check-row">
-              <button class="btn" id="micBrowserReplayBtn" type="button"
-                      title="Record ~3s from the BROWSER mic, then play it back here in the browser">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
-                ⏺ Record &amp; play · browser
-              </button>
-            </div>
-            <div class="mic-result" id="micBrowserReplayResult" role="status" aria-live="assertive" hidden>
-              <span class="mic-dot" aria-hidden="true"></span>
-              <span class="mic-msg" id="micBrowserReplayMsg"></span>
-            </div>
-            <div class="check-meta" id="micBrowserReplayMeta"></div>
-          </div>
-
-          <!-- CHECK 4 — RECORD & PLAY · SERVER (server records ~3s then plays it back) -->
-          <div class="check" id="checkReplay">
-            <div class="check-title"><span class="num" data-n="4" aria-hidden="true"></span>Record &amp; play · server
-              <span class="info"><span class="info-dot" tabindex="0" role="button" aria-label="About server record and play"
-                    aria-expanded="false">ⓘ</span><span class="info-pop" role="tooltip">Records ~3&nbsp;s from the SERVER mic, then plays it straight back through the server's speaker so you can hear your own voice — the surest end-to-end server mic&nbsp;→&nbsp;speaker check.</span></span>
-              <span class="check-spk" id="micReplaySpk">● recording…</span>
-            </div>
-            <div class="check-row">
-              <button class="btn" id="micReplayBtn" type="button"
-                      title="Record ~3s from the SERVER mic, then play it back through the server's speaker">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/></svg>
-                ⏺ Record &amp; play · server
-              </button>
-            </div>
-            <div class="mic-result" id="micReplayResult" role="status" aria-live="assertive" hidden>
-              <span class="mic-dot" aria-hidden="true"></span>
-              <span class="mic-msg" id="micReplayMsg"></span>
-            </div>
-          </div>
+          <!-- RECORD & PLAY · SERVER / · BROWSER were DELETED here: ▶ Play-last now
+               lives on EVERY mic test row (both TEST BROWSER MIC + TEST SERVER MIC
+               render the unified result row with ▶ Play last), so a separate
+               record-and-play check is redundant. -->
 
           <!-- ====== WAKE-WORD RECALL TESTS ======================================
                Record ~2s and score how confidently the SELECTED wake phrase would
@@ -1024,13 +1016,14 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%; ba
           <div class="music-row">
             <div class="music-title" id="musicTitle" role="status" aria-live="polite">—</div>
             <div class="music-btns">
-              <button class="btn" id="musicPauseBtn" type="button" title="Pause playback">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
-                <span id="musicPauseLabel">⏸ Pause</span>
-              </button>
-              <button class="btn" id="musicResumeBtn" type="button" title="Resume playback" hidden>
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4l13 8-13 8V4Z" fill="currentColor"/></svg>
-                ▶ Resume
+              <!-- ONE toggle: ⏸ Pause while playing, ▶ Play while paused. Click POSTs
+                   music_pause or music_resume by the CURRENT state; the `music` event's
+                   paused/resumed status reconciles the look (setMusicPaused). -->
+              <button class="btn" id="musicToggleBtn" type="button" title="Pause playback" aria-pressed="false">
+                <span class="music-toggle-icon" id="musicToggleIcon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
+                </span>
+                <span id="musicToggleLabel">⏸ Pause</span>
               </button>
               <button class="btn danger" id="musicStopBtn" type="button" title="Stop playback">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
@@ -2103,21 +2096,47 @@ function toggleInfo(info){
   const dot = info.querySelector(".info-dot");
   if(dot) dot.setAttribute("aria-expanded", String(open));
   if(open){ positionInfo(info); }
-  else{ info.classList.remove("fixed","edge","up"); }
+  else{ info.classList.remove("fixed","edge","up","hovering"); }
 }
-document.querySelectorAll(".info .info-dot").forEach(dot=>{
-  const info = dot.closest(".info");
-  dot.addEventListener("click", e=>{ e.preventDefault(); e.stopPropagation(); toggleInfo(info); });
-  dot.addEventListener("keydown", e=>{
-    if(e.key==="Enter" || e.key===" "){ e.preventDefault(); toggleInfo(info); }
-    else if(e.key==="Escape"){ closeInfos(null); }
-  });
-});
+// HOVER / FOCUS path — also JS-positioned with position:fixed so it escapes
+// overflow:hidden ancestors exactly like the click path (this is what fixed the
+// clipped PUSH-TO-TALK tooltip). A click-opened popover is left alone.
+function hoverInfo(info){
+  if(info.classList.contains("open")) return;     // click-open owns it
+  info.classList.add("hovering");
+  positionInfo(info);                              // sets .fixed + --pop-x/--pop-y, clamps on-screen
+}
+function unhoverInfo(info){
+  if(info.classList.contains("open")) return;
+  info.classList.remove("hovering","fixed","edge","up");
+}
+// Bind hover/focus once per .info wrapper (covers EVERY ⓘ — controls row included).
+function bindInfo(info){
+  if(!info || info.dataset.infoBound) return;
+  info.dataset.infoBound = "1";
+  const dot = info.querySelector(".info-dot");
+  if(dot){
+    dot.addEventListener("click", e=>{ e.preventDefault(); e.stopPropagation(); toggleInfo(info); });
+    dot.addEventListener("keydown", e=>{
+      if(e.key==="Enter" || e.key===" "){ e.preventDefault(); toggleInfo(info); }
+      else if(e.key==="Escape"){ closeInfos(null); }
+    });
+    dot.addEventListener("focus", ()=> hoverInfo(info));
+    dot.addEventListener("blur",  ()=> unhoverInfo(info));
+  }
+  info.addEventListener("mouseenter", ()=> hoverInfo(info));
+  info.addEventListener("mouseleave", ()=> unhoverInfo(info));
+}
+document.querySelectorAll(".info").forEach(bindInfo);
 document.addEventListener("click", e=>{ if(!e.target.closest(".info")) closeInfos(null); });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeInfos(null); });
-// A fixed popover is anchored to a viewport rect → reposition (or close) on scroll/resize.
-addEventListener("scroll", ()=>{ const o = document.querySelector(".info.open"); if(o) positionInfo(o); }, true);
-addEventListener("resize", ()=>{ const o = document.querySelector(".info.open"); if(o) positionInfo(o); });
+// A fixed popover is anchored to a viewport rect → reposition any open/hovered one on
+// scroll/resize so it stays glued to its dot (and on-screen).
+function repositionOpenInfos(){
+  document.querySelectorAll(".info.open, .info.hovering").forEach(positionInfo);
+}
+addEventListener("scroll", repositionOpenInfos, true);
+addEventListener("resize", repositionOpenInfos);
 
 // Brain preset → POST {brain_preset: <value>}. Track the explicit pick so a later
 // populate()/settings refresh keeps showing it (the backend reports no current
@@ -2317,11 +2336,22 @@ function hideMusic(){
   currentMusicVideoId = "";
   setMusicVideo("");
 }
+// The current paused state is the single source of truth for the toggle button:
+// playing → "⏸ Pause" (a click pauses), paused → "▶ Play" (a click resumes).
+let musicPaused = false;
+const PLAY_SVG  = '<svg viewBox="0 0 24 24" fill="none"><path d="M7 4l13 8-13 8V4Z" fill="currentColor"/></svg>';
+const PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="none"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>';
 function setMusicPaused(paused){
-  musicCard.classList.toggle("paused", !!paused);
-  const pauseBtn = $("#musicPauseBtn"), resumeBtn = $("#musicResumeBtn");
-  if(pauseBtn) pauseBtn.hidden = !!paused;     // show Resume while paused, Pause while playing
-  if(resumeBtn) resumeBtn.hidden = !paused;
+  musicPaused = !!paused;
+  musicCard.classList.toggle("paused", musicPaused);
+  // ONE toggle button — reflect the state (icon + label + title + aria).
+  const btn = $("#musicToggleBtn"), icon = $("#musicToggleIcon"), lbl = $("#musicToggleLabel");
+  if(icon) icon.innerHTML = musicPaused ? PLAY_SVG : PAUSE_SVG;
+  if(lbl)  lbl.textContent = musicPaused ? "▶ Play" : "⏸ Pause";
+  if(btn){
+    btn.title = musicPaused ? "Resume playback" : "Pause playback";
+    btn.setAttribute("aria-pressed", String(musicPaused));   // pressed = paused
+  }
 }
 // Consume a `music` event: playing/resumed → show; paused → reflect; stopped → hide.
 function handleMusic(d){
@@ -2345,8 +2375,13 @@ function refreshMusicVideoForMode(){
   setMusicVideo(currentMusicVideoId);
 }
 $("#musicStopBtn").addEventListener("click", ()=>{ postAction("music_stop"); });
-$("#musicPauseBtn").addEventListener("click", ()=>{ setMusicPaused(true); postAction("music_pause"); });
-$("#musicResumeBtn").addEventListener("click", ()=>{ setMusicPaused(false); postAction("music_resume"); });
+// Single Pause/Play toggle: POST by the CURRENT state, flip optimistically; the
+// `music` event (paused/resumed) reconciles via setMusicPaused.
+$("#musicToggleBtn").addEventListener("click", ()=>{
+  const willPause = !musicPaused;
+  setMusicPaused(willPause);
+  postAction(willPause ? "music_pause" : "music_resume");
+});
 
 /* ============================================================
    MIC & AUDIO CHECKS  — shared helpers
@@ -2429,6 +2464,67 @@ function applyMicPermission(perm){
    and a ▶ play-last button (replays the clip via wav_url OR kept browser PCM).
    ============================================================ */
 const CHECK_MS = 2000;                 // every check records 2.0 s (uniform)
+
+/* ---------- per-field ⓘ tooltips (task 2) ----------------------------------
+   ONE shared helper keyed by field name. Each entry has `what` (what it is + why
+   it matters) and an OPTIONAL `ranges` (the good/orange/bad guidance). The ⓘ next
+   to a chip/stat/badge label reuses the SAME .info popover styling + JS path as the
+   settings tooltips (so the fixed positioner escapes overflow clipping here too).
+   `fieldInfo(name)` returns a ready-to-append <span class="info"> element, already
+   bound for hover/click. -------------------------------------------------------- */
+const FIELD_INFO = {
+  // mic-check chips
+  clipping:    {what:"Whether the captured audio hit the codec ceiling — samples pinned at the maximum, which destroys the waveform the wake model sees.",
+                ranges:"≥99% peak = clipping (bad — back off gain / move away); below that = headroom."},
+  peak:        {what:"Loudest sample in the clip, as % of full scale. The single best 'is my mic hot enough' number for the wake word.",
+                ranges:"0–20% red: too quiet for the wake model · 20–33% orange · 33–100% green; ≥99% = clipping."},
+  "sample-rate":{what:"Samples per second the audio was captured at. The wake model runs at 16 kHz; the browser usually captures 48 kHz and downsamples.",
+                ranges:"16 kHz feeds the model directly; 44.1/48 kHz is fine (downsampled). Below 16 kHz loses detail the model needs."},
+  // processing badge
+  AGC:         {what:"Auto Gain Control — the OS/browser auto-rides the input level. Convenient for calls, but it mangles wake audio: it pumps quiet gaps up and squashes the onset the model keys on.",
+                ranges:"OFF preferred for wake — ON distorts the level the model was trained on."},
+  NS:          {what:"Noise Suppression — strips steady background noise. Like AGC it reshapes the spectrum and can erode the wake word's acoustics.",
+                ranges:"OFF preferred for wake — ON mangles the audio the model expects."},
+  EC:          {what:"Echo Cancellation — removes the speaker's own playback from the mic. Fine for duplex calls, but it too alters the captured waveform.",
+                ranges:"OFF preferred for wake — ON can subtract parts of your voice."},
+  gain:        {what:"Software input gain — a multiplier applied to the mic audio before it's measured/scored. The usual cure for a dead wake word is more gain on a quiet mic.",
+                ranges:"1.0× = unchanged. Raise it for a quiet mic; too high pushes peak to clipping."},
+  hash:        {what:"Content hash of THIS recording — it is the saved clip's filename on the server, so you can find the exact audio for debugging.",
+                ranges:"Just an identifier — match it against the server's /recordings to pull this clip."},
+  // stat chips
+  "true-peak": {what:"True-peak in dBTP (dB true peak) — the real analogue peak between samples, which can exceed the sample peak.",
+                ranges:">0 dBTP = inter-sample clipping (bad). Aim for a few dB below 0; e.g. −3 dBTP is healthy."},
+  crest:       {what:"Crest factor (dB) = peak ÷ RMS — how 'peaky' vs flat the audio is. Speech is naturally peaky; a flat number means it was squashed.",
+                ranges:"12–20 dB = clean speech · <6 dB = clipped / over-compressed (AGC) · very high = mostly silence."},
+  "DC offset": {what:"A constant bias in the signal (it should swing symmetrically around zero). A nonzero bias points at a hardware/driver fault.",
+                ranges:"≈0 good · >0.001 flags a DC bias worth investigating."},
+  SNR:         {what:"Signal-to-noise ratio (dB) — how far your voice sits above the room/mic noise floor. Low SNR is the quiet-environment killer for wake.",
+                ranges:">15 dB good · 8–15 dB marginal · <8 dB noisy (move closer / quieter room)."},
+  LUFS:        {what:"Integrated loudness (LUFS) — perceived loudness of the clip. Higher = louder. Useful to compare clips, not a hard pass/fail.",
+                ranges:"Higher = louder. Typical speech lands around −20 LUFS; far lower = very quiet capture."},
+};
+// Build a bound <span class="info">ⓘ + popover</span> for a named field.
+function fieldInfo(name){
+  const def = FIELD_INFO[name]; if(!def) return null;
+  const wrap = document.createElement("span"); wrap.className = "info";
+  const dot = document.createElement("span");
+  dot.className = "info-dot"; dot.tabIndex = 0; dot.setAttribute("role","button");
+  dot.setAttribute("aria-label","About "+name); dot.setAttribute("aria-expanded","false");
+  dot.textContent = "ⓘ";
+  const pop = document.createElement("span");
+  pop.className = "info-pop"; pop.setAttribute("role","tooltip");
+  pop.innerHTML = "<b>"+esc(name)+"</b> — " + esc(def.what)
+                + (def.ranges ? "<br><span style=\"color:var(--ink-dim)\">"+esc(def.ranges)+"</span>" : "");
+  wrap.appendChild(dot); wrap.appendChild(pop);
+  bindInfo(wrap);                        // hover/click → fixed-positioned, no clipping
+  return wrap;
+}
+// Append the field's ⓘ into a label container right after its text (chips/stats/badge).
+function withFieldInfo(el, name){
+  const info = fieldInfo(name);
+  if(info) el.appendChild(info);
+  return el;
+}
 
 // Current mic_gain (float ≥0); SERVER checks (raw + quiet) multiply by this.
 function micGain(){
@@ -2593,6 +2689,7 @@ function buildStatChips(d){
     const kv = document.createElement("span"); kv.className = "kv";
     kv.appendChild(document.createTextNode(k+" "));
     const b = document.createElement("b"); b.textContent = v; kv.appendChild(b);
+    withFieldInfo(kv, k);                              // ⓘ SNR · true-peak · crest · DC offset · LUFS
     wrap.appendChild(kv);
   });
   return wrap.children.length ? wrap : null;
@@ -2729,11 +2826,19 @@ function demoGainSweep(word, hash){
   });
   return {type:"wake_gain_sweep_result", word: word||"maziko", hash: hash||null, points: points};
 }
-// Demo score-this-clip result.
+// Demo score-this-clip result — carries the SHARED CONTRACT reason/detail so the
+// firing-verdict banner refines offline.
 function demoScoreClip(word, hash){
-  const conf = (word === "maziko") ? 0.83 : 0.41;
+  const fires = (word === "maziko" || word === "hey buddy");
+  // 0.30 for a weak word sits clearly UNDER the default 0.40 threshold so the red
+  // "✗ not detected" verdict path is demonstrable offline (0.41 would marginally fire).
+  const conf = fires ? 0.83 : 0.30;
+  const fired = conf >= wakeThreshold();
   return {type:"score_clip_result", word: word||"maziko", hash: hash||null,
-    confidence: conf, fired: conf >= wakeThreshold(), int16_peak: 18250,
+    confidence: conf, fired: fired, int16_peak: 18250,
+    reason: fired ? "fired" : "not_detected",
+    detail: fired ? "Re-scored the saved clip at "+Math.round(conf*100)+"% — ≥ threshold, would fire."
+                  : "Re-scored the saved clip at "+Math.round(conf*100)+"% — under the firing threshold.",
     message: "scored saved clip @16 kHz (demo)"};
 }
 
@@ -2784,7 +2889,19 @@ function showGainSweepResult(d){
 // score_clip_result event shows confidence / fired. Offline → demo result.
 const scoreClipOut = {};                   // clipKey → output span
 const scoreClipByHash = {};                // hash(8) → clipKey — resolves the real round-trip
-function buildScoreClip(word, hash, clipKey){
+const verdictRowByKey = {};                // clipKey → {row, host, word} — the firing-verdict banner, refined by score_clip_result
+// Fire a score_clip for (word, hash) → the row at clipKey. Used by the button AND by
+// the auto-run on every recording completion (task 4: don't require a manual click).
+function runScoreClip(word, hash8, clipKey, btn, out){
+  if(btn) btn.classList.add("busy");
+  if(out) out.textContent = "";
+  if(DEMO){
+    setTimeout(()=>{ const r = demoScoreClip(word, hash8); r._clipKey = clipKey; showScoreClipResult(r); }, 500);
+  }else{
+    postAction({action:"score_clip", word: word||"", hash: hash8||null, _clipKey: clipKey});
+  }
+}
+function buildScoreClip(word, hash, clipKey, autoRun){
   const wrap = document.createElement("span"); wrap.style.display = "inline-flex";
   wrap.style.alignItems = "center"; wrap.style.gap = "7px";
   const btn = document.createElement("button");
@@ -2795,15 +2912,39 @@ function buildScoreClip(word, hash, clipKey){
   const hash8 = String(hash||"").slice(0,8);
   scoreClipOut[clipKey] = out;
   if(hash8) scoreClipByHash[hash8] = clipKey;          // so the result event finds this row by hash
-  btn.addEventListener("click", ()=>{
-    btn.classList.add("busy"); out.textContent = "";
-    if(DEMO){
-      setTimeout(()=>{ const r = demoScoreClip(word, hash8); r._clipKey = clipKey; showScoreClipResult(r); }, 500);
-    }else{
-      postAction({action:"score_clip", word: word||"", hash: hash8||null, _clipKey: clipKey});
-    }
-  });
+  btn.addEventListener("click", ()=> runScoreClip(word, hash8, clipKey, btn, out));
   wrap.appendChild(btn); wrap.appendChild(out);
+  // Task 4: auto-run when a recording completes so the firing verdict + reason always
+  // shows without a manual click. (The button stays for an explicit re-score.)
+  if(autoRun){ runScoreClip(word, hash8, clipKey, btn, out); }
+  return wrap;
+}
+// ---------- firing-verdict banner (task 4) ----------
+// SHARED CONTRACT: results carry reason ∈ "fired"|"level_too_low"|"not_detected" + a
+// human `detail`. Render a prominent, state-coloured banner that names the word so the
+// firing verdict is the first thing read on every result. Falls back to fired/conf when
+// the backend omits reason (older events).
+function reasonToVerdict(reason, fired){
+  const r = String(reason||"").toLowerCase();
+  if(r === "fired") return "fired";
+  if(r === "level_too_low" || r === "low") return "low";
+  if(r === "not_detected" || r === "miss") return "miss";
+  return fired ? "fired" : "miss";          // no reason → derive from fired
+}
+function buildVerdict(reason, detail, word, fired){
+  // Nothing to show if the backend gave us neither a reason nor a usable fired flag.
+  if(reason == null && fired == null) return null;
+  const v = reasonToVerdict(reason, fired);
+  const w = word ? "“"+word+"”" : "the wake word";
+  const head = v === "fired" ? "✓ would fire — "+w+" detected"
+             : v === "low"   ? "⚠ level too low — move closer ("+w+")"
+             :                 "✗ wake word not detected — "+w;
+  const wrap = document.createElement("div"); wrap.className = "verdict " + v;
+  const h = document.createElement("div"); h.className = "vd-head";
+  const dot = document.createElement("span"); dot.className = "vd-dot"; dot.setAttribute("aria-hidden","true");
+  h.appendChild(dot); h.appendChild(document.createTextNode(head));
+  wrap.appendChild(h);
+  if(detail){ const dl = document.createElement("div"); dl.className = "vd-detail"; dl.textContent = String(detail); wrap.appendChild(dl); }
   return wrap;
 }
 // Consume a score_clip_result → write confidence / fired into the row's output span.
@@ -2816,6 +2957,10 @@ function showScoreClipResult(d){
     const k = Object.keys(scoreClipOut).find(key=> key.indexOf((d.word||"")) >= 0);
     out = k ? scoreClipOut[k] : null;
   }
+  // Resolve which row (clipKey) this result belongs to — for the verdict refinement.
+  let clipKey = d._clipKey
+    || (hash8 && scoreClipByHash[hash8])
+    || Object.keys(scoreClipOut).find(key=> scoreClipOut[key] === out);
   // Clear any busy button next to the matched output.
   if(out){ const b = out.parentNode && out.parentNode.querySelector(".score-clip"); if(b) b.classList.remove("busy"); }
   if(!out) return;
@@ -2825,6 +2970,16 @@ function showScoreClipResult(d){
   out.innerHTML = (d.fired ? "⚡ " : "· ") + "score <b>"+pct+"%</b> — "
                 + (d.fired ? "would fire" : "would not fire")
                 + (typeof d.int16_peak === "number" ? " · pk "+Math.round(d.int16_peak) : "");
+  // ★ Task 4 — refine the row's firing-verdict banner from the score result's
+  // reason/detail (SHARED CONTRACT: score_clip_result also carries reason + detail).
+  if(clipKey && verdictRowByKey[clipKey]){
+    const rec = verdictRowByKey[clipKey];
+    const reason = d.reason || (d.fired ? "fired" : "not_detected");
+    const detail = d.detail || "Re-scored the saved clip: "+pct+"% "
+                 + (d.fired ? "≥ threshold — would fire." : "— under the firing threshold.");
+    const vd = buildVerdict(reason, detail, d.word || rec.word, !!d.fired);
+    if(vd){ rec.row.innerHTML = ""; rec.row.appendChild(vd); if(!rec.row.parentNode) rec.host.insertBefore(rec.row, rec.host.firstChild); }
+  }
   log((d.fired?"⚡ ":"· ")+"score clip ["+(d.word||"")+"]: "+pct+"% "
         + (d.fired?"(fired)":"(no fire)"), d.fired ? "evt" : "info");
 }
@@ -2835,7 +2990,8 @@ function showScoreClipResult(d){
 //     wav_url, pcm:Float32Array|null, sr, clipKey,
 //     // wake-debug additions (all optional):
 //     wake (bool — show Find-gain + the gain-sweep chart host), word, scoreTrace[],
-//     scoreClip (bool — show 🔍 Score-this-clip), result:d (raw event → gauge+stats) }
+//     scoreClip (bool — show 🔍 Score-this-clip; auto-runs on completion), result:d,
+//     reason ("fired"|"level_too_low"|"not_detected"), detail (human string), fired (bool) }
 function renderResultExtras(extrasId, opts){
   const host = $("#"+extrasId); if(!host) return;
   host.innerHTML = "";
@@ -2844,17 +3000,30 @@ function renderResultExtras(extrasId, opts){
   const peakPct = (typeof o.peakPct === "number") ? o.peakPct : null;
   const lvlCls = "lvl-" + (peakPct==null ? "ok" : levelClass(peakPct));
 
-  // --- row 1: chips (duration · peak% · sample-rate) — shared across all checks ---
+  // --- firing verdict banner (task 4) — the HEADLINE pass/fail, surfaced FIRST from
+  // the backend's reason/detail (green ✓ would fire · orange ⚠ too low · red ✗ not
+  // detected), naming the word. Always shown when a reason/fired is known. The banner
+  // is registered by clipKey so the auto-run score_clip_result can refine it in place. ---
+  const vrow = document.createElement("div"); vrow.className = "row"; vrow.dataset.verdictRow = "1";
+  const verdict = buildVerdict(o.reason, o.detail, o.word, o.fired);
+  if(verdict){ vrow.appendChild(verdict); host.appendChild(vrow); }
+  verdictRowByKey[o.clipKey || extrasId] = {row: vrow, host: host, word: o.word || ""};
+
+  // --- row 1: chips (duration · peak% · sample-rate · clipping) — shared across all checks ---
+  // `info` flags which chips carry a per-field ⓘ (task 2). `state` drives a clip/quiet colour.
   const chips = document.createElement("div"); chips.className = "row";
   const meta = document.createElement("span"); meta.className = "check-meta";
-  [["duration", (typeof o.dur==="number") ? (Math.round(o.dur*100)/100)+" s" : null],
-   ["peak", peakPct!=null ? peakPct+"%" : null],
-   ["sample-rate", o.sampleRate ? (Math.round(o.sampleRate/100)/10)+" kHz" : null]
-  ].forEach(([k,v])=>{
+  const clipping = (peakPct != null) && (peakPct >= 99);
+  [["duration",   (typeof o.dur==="number") ? (Math.round(o.dur*100)/100)+" s" : null, null],
+   ["peak",       peakPct!=null ? peakPct+"%" : null, "peak"],
+   ["sample-rate",o.sampleRate ? (Math.round(o.sampleRate/100)/10)+" kHz" : null, "sample-rate"],
+   ["clipping",   peakPct!=null ? (clipping?"yes":"no") : null, "clipping"]
+  ].forEach(([k,v,info])=>{
     if(v==null) return;
-    const kv = document.createElement("span"); kv.className = "kv";
+    const kv = document.createElement("span"); kv.className = "kv" + (info==="clipping" && clipping ? " kv-bad" : "");
     kv.appendChild(document.createTextNode(k+" "));
     const b = document.createElement("b"); b.textContent = String(v); kv.appendChild(b);
+    if(info) withFieldInfo(kv, info);                  // ⓘ peak · sample-rate · clipping
     meta.appendChild(kv);
   });
   if(meta.children.length) chips.appendChild(meta);
@@ -2868,6 +3037,7 @@ function renderResultExtras(extrasId, opts){
     if(v === true){ f.className = "pf on"; f.innerHTML = label+" <b>✓</b>"; }
     else if(v === false){ f.className = "pf off"; f.innerHTML = label+" <b>✕</b>"; }
     else { f.className = "pf off"; f.innerHTML = label+" <b>·</b>"; }   // null/unknown → raw "·"
+    withFieldInfo(f, label);                          // ⓘ AGC · NS · EC
     return f;
   }
   const anyProc = (p.agc===true || p.ns===true || p.ec===true);
@@ -2885,13 +3055,14 @@ function renderResultExtras(extrasId, opts){
   const gain = (typeof p.gain === "number") ? p.gain : micGain();
   const sg=document.createElement("span"); sg.className="sep"; sg.textContent="·"; badge.appendChild(sg);
   const gf=document.createElement("span"); gf.className="pf gain";
-  gf.innerHTML = "gain <b>"+gain.toFixed(1)+"×</b>"; badge.appendChild(gf);
+  gf.innerHTML = "gain <b>"+gain.toFixed(1)+"×</b>"; withFieldInfo(gf, "gain"); badge.appendChild(gf);
   chips.appendChild(badge);
 
-  // --- short hash tag ---
+  // --- short hash tag (+ ⓘ: it's the saved clip's filename) ---
   const hash = o.hash || shortHash(extrasId + "|" + (o.wav_url||"") + "|" + (peakPct||0) + "|" + Date.now());
   const ht = document.createElement("span"); ht.className = "hash-tag";
   const hb = document.createElement("b"); hb.textContent = String(hash).slice(0,8); ht.appendChild(hb);
+  withFieldInfo(ht, "hash");
   chips.appendChild(ht);
   host.appendChild(chips);
 
@@ -2921,8 +3092,10 @@ function renderResultExtras(extrasId, opts){
   const key = o.clipKey || extrasId;
   lastClip[key] = { wav_url: o.wav_url || null, pcm: o.pcm || null, sr: o.sr || o.sampleRate || 16000 };
   row2.appendChild(buildPlayLast(key));
-  // --- 🔍 Score-this-clip (task 4) — re-score the saved recording (capture-vs-model). ---
-  if(o.scoreClip){ row2.appendChild(buildScoreClip(o.word || "", hash, key)); }
+  // --- 🔍 Score-this-clip (task 4) — re-score the saved recording (capture-vs-model).
+  // Auto-runs on completion (autoRun:true) so the firing verdict + reason always shows
+  // without a manual click; the button stays for an explicit re-score. ---
+  if(o.scoreClip){ row2.appendChild(buildScoreClip(o.word || "", hash, key, true)); }
   host.appendChild(row2);
 
   // --- extra stat chips (task 6): SNR · true-peak · crest · DC offset (+ LUFS). ---
@@ -3069,6 +3242,14 @@ function showMicResult(d, opts){
   setMicResult(cls, msg, level);
   setCheckBusy("#checkServer", false);
   markCheckDone("#checkServer", ok);
+  // Seed a firing verdict from the level (task 4); the auto-run Score-this-clip then
+  // refines it with the model's true fired/not-detected verdict. A too-low level is
+  // surfaced immediately as "level too low"; otherwise we await the score result.
+  const word = (settings && settings.wake_phrase) || "";
+  const micReason = d.reason || (hasLevel && cls !== "ok" ? "level_too_low" : null);
+  const micDetail = d.detail || (micReason === "level_too_low"
+    ? "Mic level "+level+"% is below the wake model's usable range — move closer / raise gain."
+    : (ok ? "Mic captured cleanly — scoring whether “"+word+"” would fire…" : null));
   // Uniform extras row — duration · peak% · sample-rate + processing badge + graph + hash + ▶.
   renderResultExtras("micServerExtras", {
     dur: (typeof d.duration_s==="number") ? d.duration_s : d.duration,
@@ -3082,8 +3263,9 @@ function showMicResult(d, opts){
     sr: d.sample_rate,
     clipKey: "micServerExtras",
     result: d,                             // wake-debug: level-vs-model gauge + stat chips
-    scoreClip: true,                       // 🔍 re-score this saved clip against the wake model
-    word: (settings && settings.wake_phrase) || "",
+    scoreClip: true,                       // 🔍 re-score this saved clip against the wake model (auto-runs)
+    word: word,
+    reason: micReason, detail: micDetail,  // ★ seed the firing verdict; score_clip refines it
   });
   // Keep the device/permission detail line (server-specific extras).
   setCheckMeta("#micServerMeta", [
@@ -3108,61 +3290,9 @@ $("#micTestBtn").addEventListener("click", ()=>{
   postAction({action:"mic_check", source:"server"});
 });
 
-/* ============================================================
-   CHECK 3 — RECORD & REPLAY  (server records ~3s then plays it back).
-   POSTs {action:"mic_record_replay"}; the backend drives the recording →
-   playing → done states, surfaced via `state` events + a final `mic_result`.
-   We show the rolling status from the bus; the chip greens on the OK verdict.
-   ============================================================ */
-const micReplayResult = $("#micReplayResult"), micReplayMsg = $("#micReplayMsg");
-function setReplayResult(cls, msg){
-  micReplayResult.hidden = false;
-  micReplayResult.classList.remove("ok","bad","testing");
-  if(cls) micReplayResult.classList.add(cls);
-  micReplayMsg.textContent = msg;
-}
-let micReplayBusy = false;
-// Intermediate phase events drive the "recording… → playing back… → ✓" states.
-// `phase` is the machine tag the backend sends ("recording"/"playing"/"done");
-// `message` (when present) overrides the default copy.
-function handleReplayPhase(d){
-  const phase = (d.phase||"").toLowerCase();
-  if(phase === "recording"){
-    micReplayBusy = true;
-    setReplayResult("testing", d.message || "● Recording ~3s — say “Hello”…");
-    setCheckBusy("#checkReplay", true);
-    const spk = $("#micReplaySpk"); if(spk) spk.textContent = "● recording…";
-  }else if(phase === "playing" || phase === "playback"){
-    micReplayBusy = true;
-    setReplayResult("testing", d.message || "▶ Playing it back — listen…");
-    const spk = $("#micReplaySpk"); if(spk) spk.textContent = "▶ playing back…";
-  }else if(phase === "done" || phase === "ok"){
-    finishReplay({ok: d.ok!==false, message: d.message});
-  }else if(phase === "error" || phase === "failed"){
-    finishReplay({ok:false, message: d.message});
-  }
-}
-function finishReplay(d){
-  const ok = d.ok !== false;
-  setReplayResult(ok ? "ok" : "bad", (ok?"✓ ":"✗ ") + (d.message || (ok
-    ? "Recorded and played back — mic → speaker works."
-    : "Record & replay failed.")));
-  setCheckBusy("#checkReplay", false);
-  markCheckDone("#checkReplay", ok);
-  micReplayBusy = false;
-  const spk = $("#micReplaySpk"); if(spk) spk.textContent = "● recording…";
-  if(ok) confirmMicWorking();
-  log((ok?"✓ ":"✗ ") + "record & replay: " + (d.message||""), ok ? "evt" : "error");
-}
-$("#micReplayBtn").addEventListener("click", ()=>{
-  if(micReplayBusy) return;
-  micReplayBusy = true;
-  setReplayResult("testing", "● Recording ~3s — say “Hello”…");
-  setCheckBusy("#checkReplay", true);
-  markCheckDone("#checkReplay", false);
-  const spk = $("#micReplaySpk"); if(spk) spk.textContent = "● recording…";
-  postAction("mic_record_replay");
-});
+/* RECORD & PLAY · SERVER was DELETED — its only unique feature (replay) is now the
+   ▶ Play-last button on the unified TEST SERVER MIC row. The server still saves the
+   clip (wav_url) so ▶ Play-last can fetch + replay it. */
 
 /* ============================================================
    CHECK 1 — BROWSER MIC  (getUserMedia for the *browser* mic Live Audio uses).
@@ -3343,6 +3473,13 @@ function finishBrowserMic(chunks, srcRate, cleanup){
 
   // Uniform extras row — chips + processing badge + graph + hash + ▶ play-last.
   const proc = browserMicProc || {gain: gain};
+  // Seed the firing verdict from the level (task 4); the auto-run Score-this-clip
+  // (server round-trip, or demo) refines it with the model's true fired/not verdict.
+  const bWord = (settings && settings.wake_phrase) || "";
+  const bReason = !heard ? "not_detected" : (cls !== "ok" ? "level_too_low" : null);
+  const bDetail = !heard ? "No audio detected — the browser mic was silent."
+                : cls !== "ok" ? "Browser mic level "+pct+"% is below the wake model's usable range — move closer / raise gain."
+                : "Captured cleanly — scoring whether “"+bWord+"” would fire…";
   renderResultExtras("micBrowserExtras", {
     dur: dur,
     peakPct: pct,
@@ -3353,8 +3490,9 @@ function finishBrowserMic(chunks, srcRate, cleanup){
     sr: srcRate,
     clipKey: "micBrowserExtras",
     result: localStats(gained, peak),  // wake-debug: level-vs-model gauge + stat chips (derived locally)
-    scoreClip: true,                   // 🔍 re-score this saved clip against the wake model
-    word: (settings && settings.wake_phrase) || "",
+    scoreClip: true,                   // 🔍 re-score this saved clip against the wake model (auto-runs)
+    word: bWord,
+    reason: bReason, detail: bDetail,  // ★ seed the firing verdict; score_clip refines it
   });
   log((cls==="ok"?"✓ ":"⚠ ") + "mic check [browser]: peak "+pct+"% · AGC "+(proc.agc?"on":"off")
         +" NS "+(proc.ns?"on":"off")+" EC "+(proc.ec?"on":"off")+" gain "+gain+"×",
@@ -3367,168 +3505,8 @@ function finishBrowserMic(chunks, srcRate, cleanup){
   }
 }
 
-/* ============================================================
-   CHECK 3 — RECORD & PLAY · BROWSER  (fully client-side, no server)
-   getUserMedia → capture ~3s of PCM via Web Audio → replay it in the browser.
-   Primary path is a Web-Audio capture + AudioBufferSourceNode replay (no codec
-   negotiation, no blob URL → always CSP-safe). If MediaRecorder is available it's
-   used to ALSO build a blob <audio> for a nicer replay; on any blob/playback
-   failure we fall back to the Web-Audio buffer-source replay. Shares the same
-   3-state UX as the server replay: recording… → playing back… → green ✓, and
-   reports duration + peak level. */
-const REC_SECONDS = 3;
-const micBrowserReplayBtn = $("#micBrowserReplayBtn");
-const micBrowserReplayResult = $("#micBrowserReplayResult"), micBrowserReplayMsg = $("#micBrowserReplayMsg");
-let micBrowserReplayBusy = false;
-function setBrowserReplayResult(cls, msg){
-  micBrowserReplayResult.hidden = false;
-  micBrowserReplayResult.classList.remove("ok","bad","testing");
-  if(cls) micBrowserReplayResult.classList.add(cls);
-  micBrowserReplayMsg.textContent = msg;
-}
-function browserReplaySpk(text){ const s = $("#micBrowserReplaySpk"); if(s) s.textContent = text; }
-function finishBrowserReplay(ok, msg, meta){
-  setBrowserReplayResult(ok ? "ok" : "bad", (ok?"✓ ":"✗ ") + msg);
-  setCheckBusy("#checkBrowserReplay", false);
-  markCheckDone("#checkBrowserReplay", ok);
-  if(meta) setCheckMeta("#micBrowserReplayMeta", meta);
-  micBrowserReplayBusy = false;
-  browserReplaySpk("● recording…");
-  if(ok) confirmMicWorking();
-  log((ok?"✓ ":"✗ ") + "record & play · browser: " + msg, ok ? "evt" : "error");
-}
-micBrowserReplayBtn.addEventListener("click", async ()=>{
-  if(micBrowserReplayBusy) return;
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    setBrowserReplayResult("bad", "✗ Browser mic unavailable (needs HTTPS / a supported browser).");
-    return;
-  }
-  micBrowserReplayBusy = true;
-  setBrowserReplayResult("testing", "Requesting browser mic permission — click Allow if prompted…");
-  setCheckBusy("#checkBrowserReplay", true);
-  markCheckDone("#checkBrowserReplay", false);
-
-  let stream = null, actx = null, proc = null, srcNode = null;
-  const chunks = [];                       // Float32Array PCM frames (mono)
-  let peak = 0, recRAF = 0;
-  let mediaRec = null; const blobParts = [];
-  function cleanupCapture(){
-    if(recRAF){ cancelAnimationFrame(recRAF); recRAF = 0; }
-    try{ if(proc){ proc.disconnect(); proc.onaudioprocess = null; } }catch(_e){}
-    try{ if(srcNode) srcNode.disconnect(); }catch(_e){}
-    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
-  }
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({audio:true});
-  }catch(e){
-    setCheckBusy("#checkBrowserReplay", false);
-    finishBrowserReplay(false, "Browser mic blocked — allow it in the site's permission prompt ("+(e&&e.name||"error")+").");
-    return;
-  }
-  actx = new (window.AudioContext||window.webkitAudioContext)();
-  const sr = actx.sampleRate || 48000;
-  srcNode = actx.createMediaStreamSource(stream);
-  // ScriptProcessorNode is deprecated but universally supported and needs no
-  // external worklet file (which a strict CSP would block). Buffer the mono PCM.
-  proc = actx.createScriptProcessor(4096, 1, 1);
-  proc.onaudioprocess = ev=>{
-    const inp = ev.inputBuffer.getChannelData(0);
-    const copy = new Float32Array(inp.length);
-    copy.set(inp);
-    chunks.push(copy);
-    for(let i=0;i<inp.length;i++){ const a = Math.abs(inp[i]); if(a>peak) peak = a; }
-  };
-  // Connect through a muted gain so the live mic isn't echoed to the speakers
-  // during recording (only the replay should be audible).
-  const mute = actx.createGain(); mute.gain.value = 0;
-  srcNode.connect(proc); proc.connect(mute); mute.connect(actx.destination);
-
-  // Optional nicer replay via MediaRecorder → blob; PCM capture above is the
-  // guaranteed fallback if blob playback is unavailable or blocked.
-  try{
-    if(window.MediaRecorder){
-      mediaRec = new MediaRecorder(stream);
-      mediaRec.ondataavailable = e=>{ if(e.data && e.data.size) blobParts.push(e.data); };
-      mediaRec.start();
-    }
-  }catch(_e){ mediaRec = null; }
-
-  // Recording countdown UI.
-  setCheckBusy("#checkBrowserReplay", true);
-  browserReplaySpk("● recording…");
-  let remain = REC_SECONDS;
-  setBrowserReplayResult("testing", "● Recording ~"+REC_SECONDS+"s — say “Hello”… ("+remain+")");
-  const countdown = setInterval(()=>{
-    remain--;
-    if(remain>0) setBrowserReplayResult("testing", "● Recording ~"+REC_SECONDS+"s — say “Hello”… ("+remain+")");
-  }, 1000);
-
-  await new Promise(r=> setTimeout(r, REC_SECONDS*1000));
-  clearInterval(countdown);
-  try{ if(mediaRec && mediaRec.state!=="inactive") mediaRec.stop(); }catch(_e){}
-  cleanupCapture();
-
-  // Stitch the captured PCM into one buffer; compute duration + peak level.
-  const total = chunks.reduce((n,c)=>n+c.length, 0);
-  const dur = total / sr;
-  const peakPct = Math.round(Math.min(1, peak) * 100);
-  if(total === 0 || peak < 0.002){
-    try{ if(actx) await actx.close(); }catch(_e){}
-    finishBrowserReplay(false, "No audio captured — the browser mic was silent. Check the input device + permission.",
-      [["duration", (Math.round(dur*100)/100)+" s"], ["peak", peakPct+"%"]]);
-    return;
-  }
-  const meta = [
-    ["duration", (Math.round(dur*100)/100)+" s"],
-    ["peak", peakPct+"%"],
-    ["sample-rate", (Math.round(sr/100)/10)+" kHz"],
-  ];
-
-  // ---- replay ----
-  browserReplaySpk("▶ playing back…");
-  setBrowserReplayResult("testing", "▶ Playing it back — listen… (peak "+peakPct+"%)");
-  const doneOk = ()=> finishBrowserReplay(true,
-    "Recorded "+(Math.round(dur*10)/10)+"s and played it back — browser mic → speakers works.", meta);
-
-  // Build the AudioBufferSourceNode replay from the captured PCM (the guaranteed,
-  // CSP-safe path). Used directly as fallback and after a blob-playback failure.
-  function webAudioReplay(){
-    try{
-      const ractx = new (window.AudioContext||window.webkitAudioContext)();
-      const abuf = ractx.createBuffer(1, total, sr);
-      const out = abuf.getChannelData(0);
-      let off = 0;
-      for(const c of chunks){ out.set(c, off); off += c.length; }
-      const node = ractx.createBufferSource();
-      node.buffer = abuf;
-      node.connect(ractx.destination);
-      node.onended = ()=>{ try{ ractx.close(); }catch(_e){} doneOk(); };
-      node.start();
-    }catch(e){
-      finishBrowserReplay(false, "Captured audio but replay failed in this browser ("+(e&&e.name||"error")+").", meta);
-    }
-  }
-
-  // Prefer a blob <audio> replay when MediaRecorder produced data; on ANY failure
-  // (CSP/codec/playback) fall back to the Web-Audio buffer-source replay.
-  if(mediaRec && blobParts.length){
-    try{
-      const blob = new Blob(blobParts, {type: blobParts[0].type || "audio/webm"});
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio();
-      let settled = false;
-      const cleanupBlob = ()=>{ try{ URL.revokeObjectURL(url); }catch(_e){} };
-      audio.onended = ()=>{ if(settled) return; settled = true; cleanupBlob(); doneOk(); };
-      audio.onerror = ()=>{ if(settled) return; settled = true; cleanupBlob(); webAudioReplay(); };
-      audio.src = url;
-      const p = audio.play();
-      if(p && p.catch) p.catch(()=>{ if(settled) return; settled = true; cleanupBlob(); webAudioReplay(); });
-    }catch(_e){ webAudioReplay(); }
-  }else{
-    webAudioReplay();
-  }
-  try{ if(actx) await actx.close(); }catch(_e){}
-});
+/* RECORD & PLAY · BROWSER was DELETED — replay is now the ▶ Play-last button on the
+   unified TEST BROWSER MIC row (kept PCM replays client-side, no server round-trip). */
 
 /* ============================================================
    WAKE-WORD RECALL TESTS  (maziko / nexus × browser / server)
@@ -3731,6 +3709,17 @@ function showWakeResult(d){
   const wakeResult = (source === "browser" && loc.pcm)
     ? Object.assign(localStats(loc.pcm), d)   // local stats as the floor, event overrides
     : d;
+  // SHARED CONTRACT: reason ∈ "fired"|"level_too_low"|"not_detected" + a human `detail`.
+  // Derive a sensible fallback when the backend omits them (older events): a too-quiet
+  // capture (expected_level low) → "level_too_low", else fired/not from the fired flag.
+  const reason = d.reason
+    || (d.fired ? "fired"
+       : ((wakeResult && wakeResult.expected_level === "low") || cls === "low") ? "level_too_low"
+       : "not_detected");
+  const detail = d.detail
+    || (reason === "fired" ? "Scored "+pct+"% ≥ threshold — the wake loop would trigger."
+       : reason === "level_too_low" ? "Mic level is below the wake model's usable range — move closer or raise gain."
+       : "Scored "+pct+"%, under the firing threshold — try a clearer/closer utterance.");
   renderResultExtras("wakeExtras-"+key, {
     dur: dur, peakPct: peak, sampleRate: sampleRate, levels: levels,
     processing: proc, hash: d.hash, wav_url: d.wav_url,
@@ -3743,6 +3732,7 @@ function showWakeResult(d){
     wake: true,                          // ★ show 🔎 Find-gain + the gain-sweep chart (task 2)
     word: word, source: source,          // (word, source) keys the gain-sweep + score-clip hosts
     scoreClip: true,                     // 🔍 re-score this saved clip against the wake model (task 4)
+    reason: reason, detail: detail, fired: !!d.fired,   // ★ firing verdict banner (task 4)
   });
   // Browser path can clip when getUserMedia's AGC has already normalized the signal
   // AND a >1× capture gain is then applied — peak slams to 100% and the wake model
@@ -3960,18 +3950,9 @@ function handleEvent(raw){
       // browser check and server-sourced results to the server check.
       showMicResult(d); break;
     case "mic_result":
-      // A record-&-replay run ends with a mic_result tagged verdict "replay"/"replayed"
-      // (or while the replay check is busy) → route it to the replay chip; otherwise
-      // it's the plain server "Test mic" verdict (legacy event name → uniform row).
-      if(micReplayBusy || d.verdict==="replay" || d.verdict==="replayed" || d.action==="mic_record_replay"){
-        finishReplay(d);
-      }else{
-        showMicResult(d);
-      }
-      break;
-    case "mic_record_replay":
-      // Intermediate phase updates from the backend: recording → playing → done.
-      handleReplayPhase(d); break;
+      // Legacy event name for the plain server "Test mic" verdict → the unified row.
+      // (Record-&-replay was removed; ▶ Play-last on the mic row replaces it.)
+      showMicResult(d); break;
     case "wake_test_result":
       // Scored wake-word recall (maziko/nexus × browser/server) → confidence + bar.
       showWakeResult(d); break;
@@ -4359,6 +4340,10 @@ function demoMicCheckResult(source){
     wav_url: "/recordings/mic_"+(source||"server")+"_demo.wav",
     device:"MacBook Pro Microphone", permission:"authorized",
     message:"Microphone OK — level "+Math.round(peak*100)+"% (demo)",
+    // SHARED CONTRACT firing reason/detail — seeds the verdict banner offline (the
+    // auto-run Score-this-clip then confirms "would fire").
+    reason: "fired",
+    detail: "Mic captured cleanly at "+Math.round(peak*100)+"% — scoring the wake word…",
     // SHARED CONTRACT level fields — drive the gauge + stat chips offline.
     int16_peak: Math.round(peak*32767), int16_rms: Math.round(peak*0.55*32767),
     expected_level: "ok", crest_db: 11.2, dc_offset: 0.0008, true_peak_db: -3.6,
@@ -4380,8 +4365,14 @@ function demoWakeResult(word, source){
   // reports "oww". Falls back to "kws" for an unknown typed phrase.
   const cfgDet = wakeDetectorOf(word);
   const detector = (cfgDet === "oww") ? "oww" : "kws";
-  return {type:"wake_test_result", word, source, confidence:conf, fired: conf >= 0.5,
+  const fired = conf >= 0.5;
+  return {type:"wake_test_result", word, source, confidence:conf, fired: fired,
     detector: detector,
+    // SHARED CONTRACT reason/detail — drives the firing-verdict banner offline.
+    reason: fired ? "fired" : (peak < 0.4 ? "level_too_low" : "not_detected"),
+    detail: fired ? "Scored "+Math.round(conf*100)+"% ≥ threshold — “"+word+"” would trigger the wake loop."
+          : peak < 0.4 ? "Mic level "+Math.round(peak*100)+"% is below the wake model's usable range — move closer."
+          : "Scored "+Math.round(conf*100)+"%, under the firing threshold — “"+word+"” would not fire.",
     peak: peak, level: Math.round(peak*100), duration_s: 2.0,
     sample_rate: WAKE_TEST_SR, levels: demoLevels(peak),
     processing: (source==="browser")
@@ -4423,14 +4414,9 @@ function demoAction(action, payload){
     clearTimeout(demoStreamTimer); demoStep=0; clearTimeout(demoTimer); demoTimer=setTimeout(runDemoStep,1200);
   }else if(action==="mic_check" || action==="mic_test"){
     // No real server in demo — emit a full server mic_check_result after ~2s so the
-    // uniform row (chips + processing badge + level graph + hash + ▶ play-last) renders.
+    // unified row (chips + processing badge + level graph + hash + ▶ play-last +
+    // Score-this-clip + reason/detail verdict) renders.
     setTimeout(()=> showMicResult(demoMicCheckResult("server")), 2000);
-  }else if(action==="mic_record_replay"){
-    // Simulate the recording → playing back → ✓ phase sequence.
-    setTimeout(()=> handleReplayPhase({phase:"recording"}), 200);
-    setTimeout(()=> handleReplayPhase({phase:"playing"}), 3200);
-    setTimeout(()=> handleReplayPhase({phase:"done", ok:true,
-      message:"Recorded 3.0s and played it back (demo)."}), 5200);
   }else if(action==="voice_test"){
     // No TTS engine in demo — log a sample line so the button still gives feedback.
     const vn = (settings.voices||[]).find(x=>x.id===settings.voice_en);
