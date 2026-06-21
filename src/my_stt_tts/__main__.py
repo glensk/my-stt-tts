@@ -180,6 +180,10 @@ class _AudioDebug:
         "wake_test": "clicked WAKE TEST",
         "wake_gain_sweep": "clicked WAKE GAIN SWEEP",
         "score_clip": "clicked SCORE CLIP",
+        "score_histogram": "clicked SCORE HISTOGRAM",
+        "fa_eval": "clicked FA EVAL",
+        "train_verifier": "clicked TRAIN VERIFIER",
+        "spectrogram": "clicked SPECTROGRAM",
         "turn": "submitted a turn",
     }
 
@@ -1991,7 +1995,6 @@ def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | No
     returned ``hash`` is the resolved 8-hex id parsed from the filename.
     """
     import glob
-    import wave
 
     rec_dir = audio.recordings_dir()
     h = str(hash8 or "").strip()
@@ -2012,17 +2015,52 @@ def _load_saved_wake_clip(word: str, hash8: str | None) -> tuple[np.ndarray | No
         return None, "", ""
     target = matches[0]
     try:
-        with wave.open(target, "rb") as wf:
-            rate = wf.getframerate()
-            raw = wf.readframes(wf.getnframes())
-        clip = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    except (OSError, wave.Error) as exc:  # unreadable WAV must not crash the worker
+        clip16k, _rate = audio.read_wav_float(target, target_rate=16000)
+    except Exception as exc:  # noqa: BLE001 — unreadable WAV must not crash the worker
         log.error("load saved wake clip read error: %s", exc)
         return None, "", ""
-    clip16k = audio.resample_to(clip, rate, 16000)
     base = os.path.basename(target)
     resolved_hash = base.rsplit("-", 1)[-1].removesuffix(".wav") if "-" in base else (h or "")
     return clip16k, resolved_hash, base
+
+
+def _load_positive_clips(word: str) -> list[np.ndarray]:
+    """Every SAVED positive clip for ``word`` as 16 kHz float32 (the eval positives).
+
+    Reads all WAVs in the per-word training folder ``debug/recordings/wake/<word>/``
+    via :func:`audio.read_wav_float`. An unreadable file is skipped (logged), so a
+    single corrupt clip never sinks the whole histogram / FA-eval. Returns ``[]`` when
+    the folder is missing or empty.
+    """
+    from .audio import _sanitize_word
+
+    word_dir = os.path.join(audio.recordings_dir(), "wake", _sanitize_word(word))
+    clips: list[np.ndarray] = []
+    for path in audio.list_wavs(word_dir):
+        try:
+            clip, _rate = audio.read_wav_float(path, target_rate=16000)
+            clips.append(clip)
+        except Exception as exc:  # noqa: BLE001 — one bad clip must not sink the set
+            log.warning("skipping unreadable positive clip %s: %s", path, exc)
+    return clips
+
+
+def _load_negative_clips(cfg: Config) -> tuple[list[np.ndarray], str]:
+    """Every WAV in the negative corpus as 16 kHz float32 + the resolved dir.
+
+    Reads :data:`Config.negative_corpus_dir` (env ``WAKE_NEG_CORPUS``) flat via
+    :func:`audio.list_wavs` / :func:`audio.read_wav_float`. Returns ``(clips, dir)``;
+    an empty list signals the caller to emit the "drop WAVs into <dir>" message.
+    """
+    neg_dir = cfg.negative_corpus_dir
+    clips: list[np.ndarray] = []
+    for path in audio.list_wavs(neg_dir):
+        try:
+            clip, _rate = audio.read_wav_float(path, target_rate=16000)
+            clips.append(clip)
+        except Exception as exc:  # noqa: BLE001 — one bad clip must not sink the set
+            log.warning("skipping unreadable negative clip %s: %s", path, exc)
+    return clips, neg_dir
 
 
 def _run_wake_gain_sweep(cfg: Config, word: str, hash8: str | None, gains: list[float]) -> None:
@@ -2148,6 +2186,208 @@ def _run_score_clip(cfg: Config, word: str, hash8: str | None) -> None:
         message=message,
         reason=reason,
         detail=detail,
+    )
+    bus.state("idle")
+
+
+# --------------------------------------------------------------------------- #
+# Wake EVALUATION toolkit actions: histogram / FA-eval / verifier / spectrogram #
+# --------------------------------------------------------------------------- #
+def _run_score_histogram(cfg: Config, word: str) -> None:
+    """Score the SAVED positives + the negative corpus for ``word`` (the eval histogram).
+
+    The GUI ``score_histogram`` action (Task 1): load every saved positive clip for
+    ``word`` AND the negative corpus, score each through the REAL phase-diverse path
+    (:func:`wake.score_clip_set`), and emit ``score_histogram_result`` with both
+    max-score arrays + the :func:`wake.separation` scalar. This is the recall-vs-level
+    proof the positives-only diagnostics never gave — pos and neg distributions side by
+    side. Never raises: a missing model / no positives / empty corpus each become a clear
+    message with empty arrays.
+    """
+    from .wake import score_clip_set, separation, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        bus.score_histogram_result(
+            word=word,
+            pos_scores=[],
+            neg_scores=[],
+            threshold=cfg.wake_threshold,
+            separation=0.0,
+            message=f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+        )
+        bus.state("idle")
+        return
+    pos_clips = _load_positive_clips(word)
+    neg_clips, neg_dir = _load_negative_clips(cfg)
+    if not pos_clips:
+        bus.score_histogram_result(
+            word=word,
+            pos_scores=[],
+            neg_scores=[],
+            threshold=cfg.wake_threshold,
+            separation=0.0,
+            message=f"{word}: no saved positive clips yet — run WAKE TEST a few times first",
+        )
+        bus.state("idle")
+        return
+    pos_scores, _ = score_clip_set(
+        pos_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
+    neg_scores, _ = (
+        score_clip_set(neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases)
+        if neg_clips
+        else ([], [])
+    )
+    sep = separation(pos_scores, neg_scores)
+    neg_note = (
+        f"{len(neg_scores)} negatives" if neg_scores else f"NO negatives (drop WAVs into {neg_dir})"
+    )
+    message = f"{word}: {len(pos_scores)} positives vs {neg_note} — separation {sep}"
+    bus.log("✓ " + message)
+    bus.score_histogram_result(
+        word=word,
+        pos_scores=pos_scores,
+        neg_scores=neg_scores,
+        threshold=cfg.wake_threshold,
+        separation=sep,
+        message=message,
+    )
+    bus.state("idle")
+
+
+def _run_fa_eval(cfg: Config, word: str) -> None:
+    """Sweep the threshold over positives + the timed negative corpus (FA/hour + ROC/DET).
+
+    The GUI ``fa_eval`` action (Task 2): score the saved positives and the negative
+    corpus to per-frame traces, then :func:`wake.fa_eval` sweeps the threshold counting
+    false-accept EVENTS (not frames) over the corpus → ``(threshold, fa_per_hour,
+    true_accept)`` points + the miss-rate at a target FA/hour. Emits ``fa_eval_result``.
+    An empty corpus emits a clear "drop WAVs into <dir>" message and DOES NOT crash.
+    """
+    from .wake import fa_eval, score_clip_set, wake_model_for
+
+    if not os.path.isfile(wake_model_for(word)):
+        bus.fa_eval_result(
+            word=word,
+            points=[],
+            miss_at_target_fa=1.0,
+            target_fa=0.5,
+            message=f"{word}: wake model unavailable — train it (see wakewords/WAKEWORD.md)",
+        )
+        bus.state("idle")
+        return
+    neg_clips, neg_dir = _load_negative_clips(cfg)
+    if not neg_clips:
+        bus.fa_eval_result(
+            word=word,
+            points=[],
+            miss_at_target_fa=1.0,
+            target_fa=0.5,
+            message=(
+                f"{word}: negative corpus empty — drop wake-word-free WAVs into {neg_dir} "
+                "(set WAKE_NEG_CORPUS to change the dir), then re-run"
+            ),
+        )
+        bus.state("idle")
+        return
+    pos_clips = _load_positive_clips(word)
+    _, pos_traces = (
+        score_clip_set(pos_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases)
+        if pos_clips
+        else ([], [])
+    )
+    _, neg_traces = score_clip_set(
+        neg_clips, word, threshold=cfg.wake_threshold, phases=cfg.wake_phases
+    )
+    result = fa_eval(pos_traces, neg_traces, target_fa=0.5)
+    message = (
+        f"{word}: {len(pos_traces)} positives vs {result['neg_seconds']}s of negatives — "
+        f"miss {result['miss_at_target_fa'] * 100:.0f}% at {result['target_fa']} FA/h"
+    )
+    bus.log("✓ " + message)
+    bus.fa_eval_result(
+        word=word,
+        points=result["points"],
+        miss_at_target_fa=result["miss_at_target_fa"],
+        target_fa=result["target_fa"],
+        neg_seconds=result["neg_seconds"],
+        message=message,
+    )
+    bus.state("idle")
+
+
+def _run_train_verifier(cfg: Config, word: str) -> None:
+    """Train an openWakeWord-style custom verifier for ``word`` (saved positives + negatives).
+
+    The GUI ``train_verifier`` action (Task 3): fit a logistic-regression head on the
+    shared oWW embedding from the saved positive clips (>=3) + the negative corpus and
+    persist it to a git-ignored path. Emits ``verifier_result``. scikit-learn lives in
+    the optional ``debug`` extra — when absent, the result is ``trained=False`` with a
+    clear install hint (never raises, core stays clean).
+    """
+    from .wake_verifier import train_verifier
+
+    pos_clips = _load_positive_clips(word)
+    neg_clips, _neg_dir = _load_negative_clips(cfg)
+    result = train_verifier(pos_clips, neg_clips, word)
+    bus.log(("✓ " if result["trained"] else "✗ ") + result["message"])
+    bus.verifier_result(
+        word=word,
+        trained=bool(result["trained"]),
+        path=str(result["path"]),
+        n_pos=int(result["n_pos"]),
+        n_neg=int(result["n_neg"]),
+        message=str(result["message"]),
+    )
+    bus.state("idle")
+
+
+def _run_spectrogram(cfg: Config, word: str, hash8: str | None) -> None:
+    """Compute a log-mel spectrogram + wake score-trace of a saved clip (the visual inspector).
+
+    The GUI ``spectrogram`` action (Task 4): load the saved clip by ``hash`` (or the
+    newest for ``word``), compute a downsampled log-mel grid (:func:`wake.log_mel_spectrogram`)
+    AND the per-frame wake ``score_trace`` (:func:`wake.score_wake_clip`), and emit
+    ``spectrogram_result``. Never raises — a missing clip is a clear message.
+    """
+    from .wake import log_mel_spectrogram, score_wake_clip, wake_model_for
+
+    clip16k, resolved_hash, base = _load_saved_wake_clip(word, hash8)
+    if clip16k is None:
+        which = f"hash {hash8}" if hash8 else f"newest '{word}' recording"
+        bus.log(f"spectrogram: no saved clip ({which})", "error")
+        bus.spectrogram_result(
+            hash=str(hash8 or ""),
+            mels=0,
+            frames=0,
+            grid=[],
+            score_trace=[],
+            message=f"no saved clip ({which})",
+        )
+        bus.state("idle")
+        return
+    spec = log_mel_spectrogram(clip16k, 16000)
+    score_trace: list[float] = []
+    if os.path.isfile(wake_model_for(word)):
+        _, _, score_trace = score_wake_clip(
+            clip16k,
+            16000,
+            word,
+            threshold=cfg.wake_threshold,
+            phases=cfg.wake_phases,
+            with_trace=True,
+        )
+    message = f"{word}: log-mel {spec['mels']}x{spec['frames']} on {base}"
+    bus.log("✓ " + message)
+    bus.spectrogram_result(
+        hash=resolved_hash,
+        mels=spec["mels"],
+        frames=spec["frames"],
+        grid=spec["grid"],
+        score_trace=score_trace,
+        freqs=spec.get("freqs"),
+        times=spec.get("times"),
+        message=message,
     )
     bus.state("idle")
 
@@ -2347,6 +2587,28 @@ def _run_browser(
             hash8 = data.get("hash")
             hash8 = str(hash8) if hash8 else None
             threading.Thread(target=lambda: _run_score_clip(cfg, word, hash8), daemon=True).start()
+        elif name == "score_histogram":
+            # Eval toolkit (Task 1): score the saved POSITIVES + the negative corpus and
+            # emit both max-score arrays + a separation scalar — the recall-vs-level proof.
+            word = str(data.get("word") or cfg.wake_phrase)
+            threading.Thread(target=lambda: _run_score_histogram(cfg, word), daemon=True).start()
+        elif name == "fa_eval":
+            # Eval toolkit (Task 2): sweep the threshold over positives + the TIMED negative
+            # corpus, counting FA EVENTS (not frames) -> FA/hour + ROC/DET points + miss@target.
+            word = str(data.get("word") or cfg.wake_phrase)
+            threading.Thread(target=lambda: _run_fa_eval(cfg, word), daemon=True).start()
+        elif name == "train_verifier":
+            # Eval toolkit (Task 3): train an openWakeWord-style logistic-regression verifier
+            # from the saved positives (+ negatives). scikit-learn is the optional `debug` extra.
+            word = str(data.get("word") or cfg.wake_phrase)
+            threading.Thread(target=lambda: _run_train_verifier(cfg, word), daemon=True).start()
+        elif name == "spectrogram":
+            # Eval toolkit (Task 4): log-mel spectrogram + wake score-trace of a saved clip
+            # (by hash, or the newest for the word) — the visual capture inspector.
+            word = str(data.get("word") or cfg.wake_phrase)
+            hash8 = data.get("hash")
+            hash8 = str(hash8) if hash8 else None
+            threading.Thread(target=lambda: _run_spectrogram(cfg, word, hash8), daemon=True).start()
         else:
             bus.log(f"unknown action '{name}'", "error")
 
