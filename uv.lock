@@ -1665,6 +1665,7 @@ aec = [
 all = [
     { name = "aiortc" },
     { name = "anthropic" },
+    { name = "joblib" },
     { name = "lingua-language-detector" },
     { name = "mlx-audio" },
     { name = "onnxruntime" },
@@ -1673,6 +1674,7 @@ all = [
     { name = "parakeet-mlx" },
     { name = "pyloudnorm" },
     { name = "pyobjc-framework-avfoundation", marker = "sys_platform == 'darwin'" },
+    { name = "scikit-learn" },
     { name = "sherpa-onnx" },
     { name = "silero-vad" },
     { name = "sounddevice" },
@@ -1690,7 +1692,9 @@ cartesia = [
     { name = "cartesia" },
 ]
 debug = [
+    { name = "joblib" },
     { name = "pyloudnorm" },
+    { name = "scikit-learn" },
 ]
 deepgram = [
     { name = "deepgram-sdk" },
@@ -1778,6 +1782,7 @@ requires-dist = [
     { name = "deepgram-sdk", marker = "extra == 'deepgram'", specifier = ">=3.0" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=1.0" },
     { name = "faster-whisper", marker = "extra == 'faster-whisper'", specifier = ">=1.0" },
+    { name = "joblib", marker = "extra == 'debug'", specifier = ">=1.3" },
     { name = "lingua-language-detector", marker = "extra == 'lang'" },
     { name = "mlx-audio", marker = "extra == 'tts'" },
     { name = "my-stt-tts", extras = ["llm", "audio", "stt", "tts", "speaker", "vad", "wake", "lang", "aec", "turn", "transport", "webrtc", "music", "debug", "diarize"], marker = "extra == 'all'" },
@@ -1794,6 +1799,7 @@ requires-dist = [
     { name = "pyrnnoise", marker = "extra == 'denoiser'", specifier = ">=0.4" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pywhispercpp", marker = "extra == 'whispercpp'", specifier = ">=1.2" },
+    { name = "scikit-learn", marker = "extra == 'debug'", specifier = ">=1.3" },
     { name = "sherpa-onnx", marker = "extra == 'diarize'", specifier = "==1.10.46" },
     { name = "silero-vad", marker = "extra == 'vad'" },
     { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.4" },

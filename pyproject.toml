@@ -67,11 +67,14 @@ linux-aec = ["webrtc-audio-processing>=0.1; sys_platform == 'linux'"]
 # itself is uv-installable here. The local intent router in the turn path handles
 # "play <song>" for every brain; this extra just provides the resolver.
 music = ["yt-dlp>=2024.1"]
-# Wake / audio DEBUG instruments (the wake-gain diagnostics): pyloudnorm computes the
-# integrated LUFS loudness reported on the mic-check / wake-test result events. It is
-# OPTIONAL — capture_stats degrades `lufs` to None without it, so core + every other
-# extra import cleanly without pyloudnorm. Install only when you want LUFS readouts.
-debug = ["pyloudnorm>=0.1"]
+# Wake / audio DEBUG instruments (the wake-gain diagnostics + the EVALUATION toolkit):
+# pyloudnorm computes the integrated LUFS loudness reported on the mic-check / wake-test
+# result events; scikit-learn trains the openWakeWord-style custom wake VERIFIER
+# (logistic-regression head on the shared embedding — see wake_verifier.py). BOTH are
+# OPTIONAL — capture_stats degrades `lufs` to None and train_verifier degrades to a clear
+# "needs scikit-learn" message without them, so core + every other extra import cleanly.
+# Install only when you want LUFS readouts or to train a custom verifier.
+debug = ["pyloudnorm>=0.1", "scikit-learn>=1.3", "joblib>=1.3"]
 # Within-turn speaker diarization (G7+): sherpa-onnx splits a captured turn into
 # anonymous per-speaker segments (pure ONNX, Apache-2.0, no torch, arm64 wheels, no
 # HF token) which are then NAMED via the existing SpeechBrain ECAPA path (the

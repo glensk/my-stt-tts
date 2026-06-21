@@ -62,7 +62,9 @@ CLAUDE.local.md
 # Mic / wake diagnostics — saved per run for the GUI's /recordings/ route + the
 # play_recording action; never source. Mic checks: debug/recordings/*.wav. Wake
 # tests: kept as training data in per-word folders debug/recordings/wake/<word>/*.wav
-# plus the data-driven reliability log debug/wake_stats.json. The whole tree is ignored.
+# plus the data-driven reliability log debug/wake_stats.json. The negative corpus the
+# eval toolkit reads (the user's own wake-word-free WAVs) lives in debug/negatives/
+# (WAKE_NEG_CORPUS). The whole tree is ignored.
 debug/
 
 # Voice enrollment profiles (private)
@@ -94,5 +96,7 @@ wakewords/*.tflite
 !wakewords/hey_jarvis.onnx
 !wakewords/hey_mycroft.onnx
 
-# Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run)
+# Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run).
+# Also holds trained custom wake VERIFIERS (models/wake_verifiers/<word>.joblib) — they
+# are per-user voice data, never committed (like the saved recordings).
 models/
