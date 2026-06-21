@@ -296,7 +296,9 @@ def test_run_mic_record_replay_records_plays_and_reports(monkeypatch: pytest.Mon
     from my_stt_tts.events import bus
 
     clip = (np.sin(np.linspace(0, 30, 16000)) * 0.5).astype(np.float32)
-    monkeypatch.setattr(main_mod.audio, "record_fixed", lambda _sr, seconds=3.0: (clip, 48000))
+    monkeypatch.setattr(
+        main_mod.audio, "record_fixed", lambda _sr, seconds=3.0, **_k: (clip, 48000)
+    )
     monkeypatch.setattr(main_mod.audio, "mic_permission_status", lambda *_a: "authorized")
     played: list[tuple[np.ndarray, int]] = []
     # Replay goes through audio.play(clip, device_rate) so it plays at the CAPTURE
@@ -333,7 +335,9 @@ def test_run_mic_record_replay_silent_capture_reports_not_ok(
     from my_stt_tts.events import bus
 
     silent = np.zeros(16000, dtype=np.float32)
-    monkeypatch.setattr(main_mod.audio, "record_fixed", lambda _sr, seconds=3.0: (silent, 48000))
+    monkeypatch.setattr(
+        main_mod.audio, "record_fixed", lambda _sr, seconds=3.0, **_k: (silent, 48000)
+    )
     monkeypatch.setattr(main_mod.audio, "mic_permission_status", lambda *_a: "authorized")
     monkeypatch.setattr(main_mod, "_play", lambda _s: None)
     sub = bus.subscribe()
