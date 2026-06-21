@@ -386,10 +386,11 @@ _CLI_ALIAS_TO_ID: dict[str, str] = {
     "haiku": "claude-haiku-4-5",
 }
 
-# Reasoning / thinking level the claude-cli brain runs at. The CLI is invoked
-# without an explicit thinking flag (brain._stream_claude_cli), so it uses the
-# CLI's standard thinking budget — labelled ``think`` per the shared GUI contract.
-CLAUDE_CLI_REASONING = "think"
+# Effort / size tier the claude-cli brain runs at, shown after the model version in
+# the label (e.g. ``opus-4.8 xlarge``). It is the CLI's largest effort/size tier per
+# the shared GUI contract — surfaced so the user sees not just WHICH model spoke but
+# at WHAT effort. Space-separated from the version (no ``·`` separator).
+CLAUDE_CLI_REASONING = "xlarge"
 
 
 def model_version_label(model: str) -> str:
@@ -400,19 +401,19 @@ def model_version_label(model: str) -> str:
 
 
 def model_label(provider: str, model: str) -> str:
-    """The EXACT model + reasoning-level label for the active brain.
+    """The EXACT model + effort/size-tier label for the active brain.
 
     Used for the ``bus.response(model=…)`` string the GUI renders as
     "ASSISTANT · <label>" and for ``settings_text``. Resolves a bare CLI alias or a
     pinned API id to its marketing version (``opus-4.8``) and, for the claude-cli
-    brain, appends the reasoning level it runs at (``· think``) — so the user sees
-    precisely which model + thinking budget produced the reply, e.g.
-    ``claude-cli / opus-4.8 · think``. Other providers show ``provider / version``.
-    Pure string work — no imports, trivially testable.
+    brain, appends the effort/size tier it runs at (``xlarge``) — so the user sees
+    precisely which model + tier produced the reply, e.g. ``claude-cli / opus-4.8
+    xlarge``. Other providers show ``provider / version``. Pure string work — no
+    imports, trivially testable.
     """
     version = model_version_label(model)
     if provider == "claude-cli":
-        return f"{provider} / {version} · {CLAUDE_CLI_REASONING}"
+        return f"{provider} / {version} {CLAUDE_CLI_REASONING}"
     return f"{provider} / {version}"
 
 
@@ -586,8 +587,12 @@ class Config:
     agent_model: str = "sonnet"
 
     # --- Wake / capture ---
-    wake_phrase: str = "maziko"
-    wake_model_path: str = "wakewords/maziko.onnx"
+    # Default to the official, extensively-trained ``hey_jarvis`` model: it fires
+    # 99-100% on Albert's (non-native) voice, whereas the synthetic-English
+    # self-trained words (maziko/nexus/…) score ~0 on him. All words stay selectable
+    # via WAKE_PHRASE / --wake-word / the GUI dropdown.
+    wake_phrase: str = "hey_jarvis"
+    wake_model_path: str = "wakewords/hey_jarvis.onnx"
     # openWakeWord score (0..1) a frame must clear to fire the wake word. Lower =
     # triggers more easily (more false-positives); higher = stricter (may miss a
     # quiet "maziko"). 0.4 is a touch more sensitive than openWakeWord's 0.5
@@ -947,9 +952,9 @@ class Config:
             # Selecting a pre-shipped wake word = setting WAKE_PHRASE: the model path
             # auto-derives as wakewords/<phrase>.onnx. WAKE_MODEL_PATH is an explicit
             # override (a custom-trained model elsewhere) and wins when set.
-            wake_phrase=env.get("WAKE_PHRASE", "maziko"),
+            wake_phrase=env.get("WAKE_PHRASE", "hey_jarvis"),
             wake_model_path=env.get("WAKE_MODEL_PATH")
-            or wake_model_for(env.get("WAKE_PHRASE", "maziko")),
+            or wake_model_for(env.get("WAKE_PHRASE", "hey_jarvis")),
             stt_model=env.get("STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3"),
             piper_data_dir=env.get("PIPER_DATA_DIR", "voices"),
             barge_in=env.get("BARGE_IN", "off"),

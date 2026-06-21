@@ -150,7 +150,9 @@ else
 fi
 
 # --- Launch: wake word live if the model is present, else typed --------------
-wake_phrase="${WAKE_PHRASE:-maziko}"
+# Default to the official `hey_jarvis` model — it fires 99-100% on Albert's voice,
+# unlike the self-trained synthetic-English words. Override with WAKE_PHRASE.
+wake_phrase="${WAKE_PHRASE:-hey_jarvis}"
 wake_model="${WAKE_MODEL_PATH:-wakewords/${wake_phrase}.onnx}"
 if [ -f "${wake_model}" ]; then
 	echo "quickstart: opening the browser control room with the WAKE WORD live…"

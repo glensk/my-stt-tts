@@ -94,8 +94,8 @@ def test_from_env_default_phrase_derives_path(monkeypatch) -> None:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     cfg = Config.from_env()
-    assert cfg.wake_phrase == "maziko"
-    assert cfg.wake_model_path == "wakewords/maziko.onnx"
+    assert cfg.wake_phrase == "hey_jarvis"
+    assert cfg.wake_model_path == "wakewords/hey_jarvis.onnx"
 
 
 def test_from_env_wake_phrase_drives_path(monkeypatch) -> None:
@@ -164,7 +164,7 @@ def test_settings_dict_carries_wake_words(monkeypatch) -> None:
     )
     s = settings_dict(Config())
     assert s["wake_words"] == ["alexa", "computer", "maziko"]
-    assert s["wake_phrase"] == "maziko"
+    assert s["wake_phrase"] == "hey_jarvis"  # the new key-free default (fires on Albert)
 
 
 def test_apply_settings_wake_phrase_rederives_path() -> None:
