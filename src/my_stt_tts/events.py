@@ -547,10 +547,11 @@ class EventBus:
         self.publish(event)
 
     def wake(self, *, detector: str = "oww") -> None:
-        """Publish a wake-fired event. ``detector`` ("oww" | "kws") names which detector
-        produced the fire — openWakeWord for an official word, or for a custom word the
-        winner of the openWakeWord-OR-sherpa-KWS combine — so the GUI/log can show the
-        OR'd path's source. Defaults to "oww" (the only detector for official words)."""
+        """Publish a wake-fired event. ``detector`` ("oww" | "kws" | "fewshot") names which
+        detector produced the fire — openWakeWord for an official word, or for a custom word
+        the winner of the openWakeWord-OR-sherpa-KWS-OR-few-shot-enrolled combine — so the
+        GUI/log can show the OR'd path's source. Defaults to "oww" (the only detector for
+        official words)."""
         self.publish({"type": "wake", "fired": True, "detector": detector})
 
     def mic_result(

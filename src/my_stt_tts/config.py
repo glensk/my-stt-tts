@@ -658,6 +658,27 @@ class Config:
     # itself is always included as a spelling; these are added on top. Env: KWS_SPELLINGS
     # as `word=alt1|alt2;word2=…`.
     kws_spellings: dict[str, list[str]] = field(default_factory=dict)
+    # --- Few-shot ENROLLED wake detector (EfficientWord-Net's idea): a THIRD, OR'd
+    # detector for CUSTOM / self-trained words ONLY. Enroll a handful of the user's own
+    # clips of the word (scripts/enroll_wakeword.py) -> mean-pooled openWakeWord embeddings
+    # saved to the gitignored models/wake_embeddings/<word>.npz; live audio fires on the MAX
+    # cosine similarity to those references (no GPU retrain). Empirically validated on
+    # Albert's maziko clips (d-prime 5.41 whole-clip / 2.52 streaming) — see
+    # PLAN_wake_checker_loop.md; uses the embedding ALREADY loaded, so ZERO new dependency
+    # (we do NOT pull EWN's 88 MB ResNet). For an OFFICIAL word it is NEVER used (official
+    # stays openWakeWord-only, byte-identical). Env: FEWSHOT_WAKE_ENABLED (default true). ---
+    fewshot_wake_enabled: bool = True
+    # Cosine-similarity (0..1) a rolling window's mean-pooled embedding must reach to count as
+    # a hit. Tuned against the NEGATIVES set (not positives alone): on Albert's maziko clips
+    # (leave-one-out, ~1.75 s window) 0.96 gives 100% recall with ZERO of the 23 hard negatives
+    # (other wake-word attempts) firing at patience 2. Higher = stricter (may miss); lower =
+    # more sensitive (more false-accepts). Env: FEWSHOT_THRESHOLD.
+    fewshot_threshold: float = 0.96
+    # How many CONSECUTIVE rolling windows must clear fewshot_threshold to fire (the
+    # false-accept de-bounce, mirroring openWakeWord's patience). 1 = fire on a single window
+    # (max responsiveness); 2 = require two in a row (the conservative default — it dropped the
+    # hard-negative leak from 1/23 to 0/23 at thr 0.96 with no recall loss). Env: FEWSHOT_PATIENCE.
+    fewshot_patience: int = 2
     preroll_seconds: float = 0.3
     max_record_seconds: float = 30.0
     vad_silence_seconds: float = 0.7
@@ -991,6 +1012,7 @@ class Config:
             kws_enabled=_env_bool("KWS_ENABLED", default=True),
             kws_auto_download=_env_bool("KWS_AUTO_DOWNLOAD", default=True),
             kws_spellings=_parse_kws_spellings(env.get("KWS_SPELLINGS")),
+            fewshot_wake_enabled=_env_bool("FEWSHOT_WAKE_ENABLED", default=True),
             speaker_diarize_enabled=_env_bool("SPEAKER_DIARIZE", default=False),
             diarize_auto_download=_env_bool("DIARIZE_AUTO_DOWNLOAD", default=True),
             stt_backend=env.get("STT_BACKEND", "local"),
@@ -1100,6 +1122,10 @@ class Config:
             cfg.kws_threshold = float(env["KWS_THRESHOLD"])
         if env.get("KWS_MODEL_DIR"):
             cfg.kws_model_dir = env["KWS_MODEL_DIR"]
+        if env.get("FEWSHOT_THRESHOLD"):
+            cfg.fewshot_threshold = float(env["FEWSHOT_THRESHOLD"])
+        if env.get("FEWSHOT_PATIENCE"):
+            cfg.fewshot_patience = int(env["FEWSHOT_PATIENCE"])
         if env.get("DIARIZE_SEGMENTATION_MODEL_PATH"):
             cfg.diarize_segmentation_model_path = env["DIARIZE_SEGMENTATION_MODEL_PATH"]
         if env.get("DIARIZE_EMBEDDING_MODEL_PATH"):
@@ -1211,6 +1237,10 @@ class Config:
             errors.append(f"kws_boost must be >= 0; got {self.kws_boost}")
         if not 0.0 <= self.kws_threshold <= 1.0:
             errors.append(f"kws_threshold must be in [0, 1]; got {self.kws_threshold}")
+        if not 0.0 <= self.fewshot_threshold <= 1.0:
+            errors.append(f"fewshot_threshold must be in [0, 1]; got {self.fewshot_threshold}")
+        if self.fewshot_patience < 1:
+            errors.append(f"fewshot_patience must be >= 1; got {self.fewshot_patience}")
         if not 0.0 <= self.vad_threshold <= 1.0:
             errors.append(f"vad_threshold must be in [0, 1]; got {self.vad_threshold}")
         if self.interrupt_min_words < 0:

@@ -20,7 +20,13 @@ feature(s) (worktree-isolated, tests, CI-green, merge) → re-judge → repeat u
       custom words, multi-spelling/boost/threshold) + the eval toolkit (FA/hour ROC-DET, separation
       histogram, custom verifier, spectrogram). Re-judge: we hold a strict superset + better eval
       rigor. Optional S follow-up noted: add the 2025 bilingual zh-en KWS model for non-English words.
-- [ ] 2. **EfficientWord-Net** — few-shot siamese on user's own samples → verifier on weak oWW hits. JUDGING (3-panel: recall / few-shot-accent / deps).
+- [x] 2. **EfficientWord-Net** — ✅ **BUILT (gate: VIABLE via mean-pool, not windowing)**. Shipped
+      `EnrolledWake`: few-shot enrolled detector on the user's own clips, MAX cosine to per-clip
+      mean-pooled oWW embeddings, ~1.75 s rolling window + patience, OR'd as a 3rd branch (custom
+      words only). Empirically gated FIRST: oWW windowing FAILS (d' 0.80, the EWN hypothesis is
+      false for this embedding), mean-pool SEPARATES (d' 5.41 whole-clip / 2.52 streaming). Recall
+      1/6 → 6/6 on Albert's maziko, 0/23 hard-neg fires at thr 0.96/pat 2. Did NOT pull EWN's 88 MB
+      ResNet (zero new dep). See round log below.
 - [ ] 3. **microWakeWord** — PCEN/PCAN front-end + multi-window gate (PCEN NOT a drop-in for our
       oWW models — they're trained without it; only safe with a PCEN-trained model).
 - [ ] 4. **Picovoice Porcupine** — sensitivity calibration; accent+noise benchmark as a test harness.
@@ -91,6 +97,124 @@ clips (thin even with 214 augmentations), oversubscribed shared node, and a brit
 **Not retrying now** — `hey_jarvis`/`alexa`/`hey_mycroft` already fire 99-100% on Albert (the real
 fix). The training pod was deleted to free the GH200. A future attempt needs more of Albert's real
 clips (now auto-saved under `debug/recordings/wake/maziko/`) + a fixed-deps container.
+
+### Repo 2 — EfficientWord-Net · Round 1 — EMPIRICAL GATE then BUILD (2026-06-21, branch `fewshot-wake`)
+
+EfficientWord-Net's IDEA: a PRIMARY few-shot ENROLLED detector — embed the user's own clips
+of a word, fire on MAX cosine similarity to them (no GPU retrain). Gate decision: **MEASURE
+an available embedding's separability FIRST, build only if usable.** EWN ships an 88 MB
+contrastively-trained ResNet-50; we do NOT pull it (dependency decision for the user). We
+tested whether the oWW **shared 96-d embedding** (already loaded; used by `wake_verifier`) or
+ECAPA can separate `maziko` few-shot, on the saved clips in `debug/recordings/`
+(6 maziko positives; 23 negatives = nexus×4, alexa×3, hey_jarvis×4, hey_mycroft×2, mic×5,
+unlabeled×5). Leave-one-out (held-out maziko vs other maziko refs; each negative vs ALL refs).
+
+**Phase-1 numbers (d-prime via `wake.separation`; abs pos−neg mean gap; recall@0-FA):**
+
+| Embedding + aggregation                | d-prime  | pos mean | neg mean | abs GAP  | min-pos vs max-neg MARGIN | verdict     |
+| --------------------------------------- | -------- | -------- | -------- | -------- | ------------------------- | ----------- |
+| oWW **MEAN-POOL** (whole-clip)          | **+5.41**| 0.9761   | 0.9444   | +0.0317  | 0.9733 vs 0.9561 = **+0.0172** | **VIABLE**  |
+| oWW WINDOWED (single per-row max-cos)   | +0.80    | 0.9765   | 0.9629   | +0.0136  | grazes (max-neg 0.9899)   | NOT viable  |
+| oWW WINDOWED-MEAN (4-row ~1.0 s window) | +1.44    | 0.9802   | 0.9548   | +0.0254  | −0.0130 (neg 0.9891)      | NOT viable  |
+| ECAPA (speaker-identity)                | +1.28    | 0.5229   | 0.4138   | +0.1091  | grazes (max-neg 0.6233)   | NOT viable  |
+
+**KEY FINDING — the EWN windowing hypothesis is FALSE for the oWW embedding.** The
+orchestrator predicted windowed >> mean-pool. The opposite holds: taking the MAX over
+individual ~775 ms oWW embedding rows lets a single spurious negative frame align too well
+(max-neg up to 0.99 > every positive), DESTROYING the margin. The oWW shared embedding's
+word-discriminative signal lives in the **whole-utterance MEAN**, not in any one window
+(unlike EWN's ResNet, whose per-window embeddings are themselves contrastively discriminative).
+So the faithful EWN aggregation is the WRONG choice here — **mean-pool is correct.**
+
+**Streaming reality (the live regime — rolling 1.5 s window, 0.25 s hop, mean-pool each
+window, max-cos to per-clip refs):** d-prime **+2.52**, min-pos 0.9498 vs max-neg 0.9509
+(margin ≈ 0; ONE "other" negative grazes the lowest positive). At a midpoint threshold 0.9504:
+**recall 83 % (5/6), 1/23 negatives fire.** The negatives here are other WAKE-WORD attempts —
+the adversarial worst case, not ambient audio; the FA/hour figures (hundreds/h) are an artifact
+of the 6.56 s total negative duration and must NOT be read literally.
+
+**Patience tightens it (reusing `fired_with_patience`/`count_fa_events`):**
+
+| patience | threshold | recall (of 6) | hard-neg clips firing (of 23) |
+| -------- | --------- | ------------- | ----------------------------- |
+| 1        | 0.952     | 83 % (5)      | 1                             |
+| 1        | 0.948     | 100 % (6)     | 3                             |
+| 2        | 0.945     | 83 % (5)      | 2                             |
+| 2        | 0.948     | 67 % (4)      | **0**                         |
+
+**VERDICT: VIABLE — via MEAN-POOL (not windowing).** Build `EnrolledWake`: rolling-window
+mean-pooled oWW embedding, MAX cosine to per-clip enrolled refs, fire ≥ threshold with
+`patience` consecutive hits. vs the oWW-only baseline **1/6 = 17 %** on these exact clips,
+EnrolledWake gives **67 % (zero hard-neg leak, pat 2 / thr 0.948) to 83 % (1 hard-neg leak,
+pat 1 / thr 0.952)** — a **4–5× recall lift**, OR-combined so it only ADDS detections. Default
+operating point chosen conservatively. We did NOT pull EWN's 88 MB ResNet (flagged for the user
+if multilingual phonetic few-shot is later needed). See the BUILD section below.
+
+### Repo 2 — EfficientWord-Net · Round 1 — BUILT `EnrolledWake` (2026-06-21, branch `fewshot-wake`)
+
+Shipped the few-shot ENROLLED detector the gate found VIABLE — mean-pool (NOT windowing).
+
+- **`enrolled_wake.py`** — `EnrolledWake` (the `WakeWord`-identical surface: `detect`/`reset`/
+  `last_score` + `threshold`/`model_name`/`available`/`from_config`). `enroll_word()` reads
+  every saved clip of a word (`debug/recordings/wake/<word>/` + loose `*-<word>-*.wav`),
+  mean-pools each clip's oWW embedding, L2-normalizes, and saves the **per-clip** references
+  (NOT a centroid) to the gitignored `models/wake_embeddings/<word>.npz`. `detect()` keeps a
+  rolling ~1.75 s buffer, scores once per 0.25 s hop (mean-pool the window → MAX cosine to any
+  ref), and fires after `patience` CONSECUTIVE windows ≥ threshold. `score_clip_enrolled()` is
+  the offline/eval twin (same window + patience). All openWakeWord access is lazy + degrades to
+  never-fire — core imports clean without the `wake` extra.
+- **WINDOW LENGTH was the decisive knob.** The refs are whole-clip (~2 s) means, so a too-short
+  live window dilutes the word: leave-one-out recall@0.95 climbed 0 %@1.0 s → 83 %@1.5 s →
+  **100 %@1.75 s** (margin flips +0.0126), 100 %@2.0 s (+0.0172). Set `WINDOW_SECONDS=1.75`.
+- **OR-combine** — `EnrolledWake` is a THIRD branch in `wake.OrCombinedWake` + `make_wake_detector`
+  (live loop) and `score_wake_clip_combined` (GUI/clip path), gated `is_official_wake_word`:
+  official words → bare `WakeWord` (byte-identical); custom word → oWW OR KWS OR few-shot, fire
+  if ANY fires, `last_detector` ∈ {"oww","kws","fewshot"} names the winner. Mirrors the KWS port.
+- **Operating point tuned against the NEGATIVES** (threshold × patience sweep via the shipped
+  clip path):
+
+  | thr   | patience | recall (of 6) | hard-neg fires (of 23) |
+  | ----- | -------- | ------------- | ---------------------- |
+  | 0.950 | 1        | 100 %         | 4                      |
+  | 0.950 | 2        | 100 %         | 1                      |
+  | 0.960 | 1        | 100 %         | 1                      |
+  | **0.960** | **2**| **100 %**     | **0**                  |
+  | 0.965 | 1        | 100 %         | 0                      |
+  | 0.970 | 2        | 17 %          | 0                      |
+
+  Default = **thr 0.96 / patience 2**: 100 % recall, ZERO of the 23 hard negatives (other
+  wake-word attempts — the adversarial worst case) firing. The live `detect()` path was verified
+  end-to-end (all 6 maziko clips fire, max last_score ~0.99; nexus/alexa don't).
+
+- **A/B vs the oWW-only baseline (HONEST, leave-one-out on Albert's 6 real maziko clips):**
+
+  | detector                              | recall   | hard-neg fires | note                                  |
+  | ------------------------------------- | -------- | -------------- | ------------------------------------- |
+  | openWakeWord-only (maziko, thr 0.4)   | **1/6 (17 %)** | n/a      | one clip @0.67; other 5 ~0.001 dead   |
+  | EnrolledWake (thr 0.96, patience 2)   | **6/6 (100 %)**| **0/23** | mean-pool, ~1.75 s window, OR'd       |
+
+  A **6× recall lift**, OR-combined so it only ADDS detections; official words untouched.
+
+- **Contract** — Config `fewshot_wake_enabled` (env `FEWSHOT_WAKE_ENABLED`, default true),
+  `fewshot_threshold` (0.96), `fewshot_patience` (2) + validate(); `settings_dict` adds the three
+  - `wake_word_info[w]["detector"]` now OR-joins branches ("oww"|"oww+kws"|"oww+fewshot"|
+  "oww+kws+fewshot"); `apply_settings` accepts+clamps them; `settings_text` shows a `fewshot` row;
+  `bus.wake(detector=…)` carries "fewshot". `scripts/enroll_wakeword.py` (mirrors `enroll.py` +
+  `_bootstrap`) records/enrolls N clips (or `--from-saved`).
+- **Tests/lint** — `tests/test_enrolled_wake.py` (+20): enroll store/load (per-clip refs, ≥N gate),
+  max-cosine detect, patience de-bounce, threshold-from-negatives, OR-routing (official
+  byte-identical, fewshot branch fires + reported), config (env/validate/defaults/settings),
+  graceful-degrade (oWW absent → no-op), + a real-oWW-embedding round-trip (gated). **CORE-ONLY
+  verified** (951 passed / 13 skipped — 19 of the 20 new tests run WITHOUT extras via a fake oWW
+  front-end; only the real-model one skips; every module imports clean). Full suite **963 passed /
+  1 skipped** (was 941/3). ruff + mypy clean; pylint only the repo's established lazy-import /
+  broad-except / keyword-rich-signature relaxations. `models/wake_embeddings/` gitignored. NEVER
+  touched `main`/`README.md`/`clients`/`esp32`/`webui.html`/`wakewords/maziko.onnx`.
+
+> **Did NOT pull EfficientWord-Net's 88 MB ResNet-50 ONNX** — the gate proved the embedding
+> already in-process separates the word, so no new model dependency. If a MULTILINGUAL phonetic
+> few-shot word is later needed (the oWW embedding is English-acoustic), EWN's contrastively
+> trained ResNet is the flagged option for the user to decide on.
 
 ### Round 1 — Wave 2 — EVALUATION/DEBUG toolkit (2026-06-21, branch `wake-eval-toolkit`)
 

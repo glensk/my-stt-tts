@@ -97,6 +97,7 @@ wakewords/*.tflite
 !wakewords/hey_mycroft.onnx
 
 # Smart Turn v3 ONNX (large; auto-downloaded + checksum-verified on first run).
-# Also holds trained custom wake VERIFIERS (models/wake_verifiers/<word>.joblib) — they
-# are per-user voice data, never committed (like the saved recordings).
+# Also holds trained custom wake VERIFIERS (models/wake_verifiers/<word>.joblib) AND the
+# few-shot ENROLLED wake references (models/wake_embeddings/<word>.npz) — both are per-user
+# voice data, never committed (like the saved recordings).
 models/

@@ -252,6 +252,9 @@ def settings_text(cfg: Config, *, color: bool | None = None) -> str:
         f"  available [{', '.join(available_wake_words()) or 'none — see wakewords/WAKEWORD.md'}]",
         f"  kws        enabled {blue}{cfg.kws_enabled}{reset}  (OR'd detector for CUSTOM words;"
         f" official words stay openWakeWord-only)  boost {cfg.kws_boost}  threshold {cfg.kws_threshold}",
+        f"  fewshot    enabled {blue}{cfg.fewshot_wake_enabled}{reset}  (few-shot ENROLLED OR'd"
+        f" detector for CUSTOM words; enroll via scripts/enroll_wakeword.py)"
+        f"  threshold {blue}{cfg.fewshot_threshold}{reset}  patience {blue}{cfg.fewshot_patience}{reset}",
         f"  speaker-id {blue}{cfg.speaker_id_enabled}{reset}  enroll {cfg.enroll_dir}"
         f"  threshold {cfg.speaker_threshold}  margin {cfg.speaker_margin}"
         f"  diarize {blue}{cfg.speaker_diarize_enabled}{reset}"

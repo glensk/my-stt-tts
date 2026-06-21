@@ -70,19 +70,29 @@ def settings_dict(
     """
     from .audio import mic_permission_status
     from .config import is_official_wake_word
-    from .kws import kws_available
-    from .platform import host_app_name
 
     # Is the sherpa KeywordSpotter usable at all (enabled + importable + model fetchable)?
     # Per-word detector annotation: official words are openWakeWord-ONLY ("oww"); a custom
-    # word is also served by KWS ("oww+kws") when KWS is available, else "oww".
+    # word is ALSO served by KWS (zero-train open-vocab) when KWS is available, and by the
+    # few-shot enrolled detector when that word has saved references — so the detector string
+    # OR-joins the available branches ("oww", "oww+kws", "oww+fewshot", "oww+kws+fewshot").
+    from .enrolled_wake import load_references
+    from .kws import kws_available
+    from .platform import host_app_name
+
     kws_ok = kws_available(cfg)
+    fewshot_on = getattr(cfg, "fewshot_wake_enabled", True)
     word_info = wake_word_info()
     for word, info in word_info.items():
         if is_official_wake_word(word):
             info["detector"] = "oww"
-        else:
-            info["detector"] = "oww+kws" if kws_ok else "oww"
+            continue
+        branches = ["oww"]
+        if kws_ok:
+            branches.append("kws")
+        if fewshot_on and load_references(word) is not None:
+            branches.append("fewshot")
+        info["detector"] = "+".join(branches)
 
     return {
         "audio_enabled": audio_enabled,
@@ -128,6 +138,13 @@ def settings_dict(
         # the GigaSpeech model present or auto-downloadable). Official words never use it.
         "kws_available": kws_ok,
         "kws_enabled": cfg.kws_enabled,
+        # The few-shot ENROLLED wake detector (third, OR'd path for CUSTOM words): whether it
+        # is enabled, plus its operating knobs. A custom word gains the "fewshot" detector tag
+        # (in wake_word_info[word]["detector"]) once it has saved references under
+        # models/wake_embeddings/. Official words never use it.
+        "fewshot_wake_enabled": getattr(cfg, "fewshot_wake_enabled", True),
+        "fewshot_threshold": getattr(cfg, "fewshot_threshold", 0.96),
+        "fewshot_patience": getattr(cfg, "fewshot_patience", 2),
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),
         # clip-protected to ±1.0. Reported back to the page as processing.gain.
         "mic_gain": cfg.mic_gain,
@@ -208,6 +225,16 @@ def apply_settings(cfg: Config, data: dict[str, Any]) -> None:
     if "kws_enabled" in data:
         # Toggle the OR'd sherpa-KWS path for custom words (official words ignore it).
         cfg.kws_enabled = bool(data["kws_enabled"])
+    if "fewshot_wake_enabled" in data:
+        # Toggle the OR'd few-shot enrolled path for custom words (official words ignore it).
+        cfg.fewshot_wake_enabled = bool(data["fewshot_wake_enabled"])
+    if "fewshot_threshold" in data:
+        # Clamp to [0, 1] like wake_threshold: a hand-crafted POST shouldn't push it past
+        # validate()'s bound.
+        cfg.fewshot_threshold = max(0.0, min(1.0, float(data["fewshot_threshold"])))
+    if "fewshot_patience" in data:
+        # Floor at 1 (validate() requires >= 1); a single window is the most-sensitive setting.
+        cfg.fewshot_patience = max(1, int(data["fewshot_patience"]))
     if "mic_gain" in data:
         # Clamp to (0, 10]: a hand-crafted POST shouldn't push it past validate()'s
         # bound (0 would zero out the capture; >10 risks pure clipping).

@@ -279,24 +279,31 @@ class WakeWord:
 
 
 class OrCombinedWake:
-    """openWakeWord OR sherpa-KWS — fire if EITHER detector fires (custom words only).
+    """openWakeWord OR sherpa-KWS OR few-shot enrolled — fire if ANY fires (custom words).
 
     Presents the EXACT :class:`WakeWord` surface the wake loop drives —
     ``detect(frame) -> bool``, ``reset()``, ``last_score``, ``threshold``,
     ``model_name``, ``available()`` — so :func:`my_stt_tts.audio.listen_for_wake` calls
-    it identically. It wraps the openWakeWord :class:`WakeWord` (always) plus an optional
-    :class:`my_stt_tts.kws.SherpaKws` (only for a CUSTOM / self-trained word, when KWS is
-    enabled + available). Each frame is fed to BOTH; the word fires the instant EITHER
-    fires. ``last_detector`` ("oww" | "kws") names which produced the latest fire so the
-    caller can report it. For an OFFICIAL word this class is NEVER constructed (the loop
-    uses the bare :class:`WakeWord`), so official behaviour is byte-identical.
+    it identically. It wraps the openWakeWord :class:`WakeWord` (always) plus, for a CUSTOM /
+    self-trained word, an optional :class:`my_stt_tts.kws.SherpaKws` (zero-train open-vocab)
+    AND an optional :class:`my_stt_tts.enrolled_wake.EnrolledWake` (few-shot on the user's own
+    clips). Each frame is fed to all present detectors; the word fires the instant ANY fires.
+    ``last_detector`` ("oww" | "kws" | "fewshot") names which produced the latest fire so the
+    caller can report it. For an OFFICIAL word this class is NEVER constructed (the loop uses
+    the bare :class:`WakeWord`), so official behaviour is byte-identical.
     """
 
-    def __init__(self, oww: WakeWord, kws: Any = None) -> None:  # noqa: ANN401 — SherpaKws | None
+    def __init__(
+        self,
+        oww: WakeWord,
+        kws: Any = None,  # noqa: ANN401 — SherpaKws | None
+        fewshot: Any = None,  # noqa: ANN401 — EnrolledWake | None
+    ) -> None:
         self.oww = oww
         self.kws = kws
-        # last_detector: which detector produced the most recent fire ("oww" | "kws"),
-        # or "" when nothing has fired this session. Surfaced on the detection event.
+        self.fewshot = fewshot
+        # last_detector: which detector produced the most recent fire ("oww" | "kws" |
+        # "fewshot"), or "" when nothing has fired this session. Surfaced on the event.
         self.last_detector: str = ""
 
     @property
@@ -321,15 +328,22 @@ class OrCombinedWake:
         return self.oww.available()
 
     def detect(self, frame: np.ndarray) -> bool:
-        """Fire if EITHER detector fires on this frame. oWW is scored first (cheap, keeps
-        ``last_score`` live for the debug plot); KWS only when present. ``last_detector``
-        records the winner — oWW wins ties (it ran first)."""
+        """Fire if ANY detector fires on this frame. oWW is scored first (cheap, keeps
+        ``last_score`` live for the debug plot); KWS then the few-shot enrolled detector
+        only when present. ALL present detectors are fed the frame every call (so each keeps
+        its rolling state current) before the decision. ``last_detector`` records the winner —
+        oWW wins ties (it ran first), then KWS, then few-shot."""
         oww_fired = self.oww.detect(frame)
+        kws_fired = self.kws.detect(frame) if self.kws is not None else False
+        fewshot_fired = self.fewshot.detect(frame) if self.fewshot is not None else False
         if oww_fired:
             self.last_detector = "oww"
             return True
-        if self.kws is not None and self.kws.detect(frame):
+        if kws_fired:
             self.last_detector = "kws"
+            return True
+        if fewshot_fired:
+            self.last_detector = "fewshot"
             return True
         return False
 
@@ -337,31 +351,47 @@ class OrCombinedWake:
         self.oww.reset()
         if self.kws is not None:
             self.kws.reset()
+        if self.fewshot is not None:
+            self.fewshot.reset()
         self.last_detector = ""
 
 
 def make_wake_detector(cfg: Config) -> WakeWord | OrCombinedWake:
-    """Build the wake detector for ``cfg.wake_phrase``: bare oWW, or oWW-OR-KWS.
+    """Build the wake detector for ``cfg.wake_phrase``: bare oWW, or oWW OR'd with extras.
 
     The single entry point the wake loop uses. For an OFFICIAL word it returns the bare
     :class:`WakeWord` (openWakeWord only — byte-identical to before). For a CUSTOM /
-    self-trained word, when ``kws_enabled`` and the sherpa KeywordSpotter is available, it
-    returns an :class:`OrCombinedWake` that fires if EITHER detector fires; otherwise it
-    also returns the bare :class:`WakeWord`. KWS construction is fully defensive (returns
-    ``None`` on any failure), so this NEVER raises and never changes oWW behaviour.
+    self-trained word it OR-combines openWakeWord with any AVAILABLE second-stage detector:
+    the sherpa :class:`my_stt_tts.kws.SherpaKws` (zero-train open-vocab, when ``kws_enabled``)
+    and the few-shot :class:`my_stt_tts.enrolled_wake.EnrolledWake` (when ``fewshot_wake_enabled``
+    and the word has saved enrolled references). When neither extra is available it returns the
+    bare :class:`WakeWord`. Every extra's construction is fully defensive (returns ``None`` on
+    any failure / when not applicable), so this NEVER raises and never changes oWW behaviour.
     """
     oww = WakeWord.from_config(cfg)
     from .config import is_official_wake_word
 
-    if is_official_wake_word(cfg.wake_phrase) or not getattr(cfg, "kws_enabled", True):
-        return oww
-    from .kws import SherpaKws
+    if is_official_wake_word(cfg.wake_phrase):
+        return oww  # official words are openWakeWord-ONLY (byte-identical)
+    kws = None
+    if getattr(cfg, "kws_enabled", True):
+        from .kws import SherpaKws
 
-    kws = SherpaKws.from_config(cfg, cfg.wake_phrase)
-    if kws is None:
+        kws = SherpaKws.from_config(cfg, cfg.wake_phrase)
+    fewshot = None
+    if getattr(cfg, "fewshot_wake_enabled", True):
+        from .enrolled_wake import EnrolledWake
+
+        fewshot = EnrolledWake.from_config(cfg, cfg.wake_phrase)
+    if kws is None and fewshot is None:
         return oww
-    log.info("wake detector: openWakeWord OR sherpa-KWS for custom word %r", cfg.wake_phrase)
-    return OrCombinedWake(oww, kws)
+    branches = [name for name, d in (("KWS", kws), ("few-shot", fewshot)) if d is not None]
+    log.info(
+        "wake detector: openWakeWord OR %s for custom word %r",
+        " OR ".join(branches),
+        cfg.wake_phrase,
+    )
+    return OrCombinedWake(oww, kws, fewshot)
 
 
 @overload
@@ -620,12 +650,40 @@ def score_wake_clip_combined(
     )
     if oww_fired:
         return (conf, True, "oww", trace)
-    if is_official_wake_word(word) or not getattr(cfg, "kws_enabled", True):
-        return (conf, False, "", trace)
-    # Custom word, oWW did NOT fire: give the open-vocabulary KWS a shot.
-    if _kws_fires_on_clip(clip, sample_rate, word, cfg):
+    if is_official_wake_word(word):
+        return (conf, False, "", trace)  # official words are openWakeWord-ONLY
+    # Custom word, oWW did NOT fire: give the open-vocabulary KWS a shot, then the
+    # few-shot enrolled detector (each gated + fully defensive — a miss leaves oWW intact).
+    if getattr(cfg, "kws_enabled", True) and _kws_fires_on_clip(clip, sample_rate, word, cfg):
         return (conf, True, "kws", trace)
+    if getattr(cfg, "fewshot_wake_enabled", True) and _fewshot_fires_on_clip(
+        clip, sample_rate, word, cfg
+    ):
+        return (conf, True, "fewshot", trace)
     return (conf, False, "", trace)
+
+
+def _fewshot_fires_on_clip(clip: np.ndarray, sample_rate: int, word: str, cfg: Config) -> bool:
+    """Whether the few-shot enrolled detector fires on ``clip`` (the GUI/clip path).
+
+    Loads ``word``'s saved enrolled references and replays the clip through the SAME
+    rolling-window scorer + patience the live :class:`my_stt_tts.enrolled_wake.EnrolledWake`
+    uses. Returns ``False`` when no references are enrolled / openWakeWord is unavailable —
+    never raises. The caller has already established ``word`` is custom + enabled.
+    """
+    from .enrolled_wake import load_references, score_clip_enrolled
+
+    refs = load_references(word)
+    if refs is None:
+        return False
+    _conf, fired = score_clip_enrolled(
+        clip,
+        sample_rate,
+        refs,
+        threshold=getattr(cfg, "fewshot_threshold", 0.96),
+        patience=getattr(cfg, "fewshot_patience", 2),
+    )
+    return bool(fired)
 
 
 # --------------------------------------------------------------------------- #
