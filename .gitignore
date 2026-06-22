@@ -51,6 +51,13 @@ secrets.yml
 
 Icon?
 
+# Internal planning + research notes — kept LOCALLY for the maintainer, never
+# committed (not needed by external clones; public conventions live in AGENTS.md).
+PLAN*.md
+README.relevant-git-repos.md
+README.microphone-hardware.md
+README.gemini-live-alternatives.md
+
 # AI assistant private files (public conventions live in AGENTS.md)
 CLAUDE.md
 CLAUDE.local.md
