@@ -10,5 +10,8 @@
   // Prose and link/table lines are not wrapped at 80 cols in a landing page.
   "MD013": false,
   // The document opens with a centered HTML hero block, not an <h1> heading.
-  "MD041": false
+  "MD041": false,
+  // Tables use space-padded, column-aligned pipes for readability in raw/source
+  // view; the "compact" single-space style would flag that intentional padding.
+  "MD060": false
 }
