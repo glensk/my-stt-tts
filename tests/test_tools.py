@@ -12,6 +12,7 @@ No real API calls, keys, mic, or network — every provider boundary is faked.
 # pylint: disable=too-few-public-methods,redefined-builtin,unused-argument
 # (test doubles mirror SDK shapes: tiny fakes + the OpenAI tool-call `id` field name)
 
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -110,6 +111,8 @@ class _Block:
 class _Msg:
     def __init__(self, content: list[_Block]) -> None:
         self.content = content
+        self.model = "claude-tool-test"
+        self.usage = SimpleNamespace(input_tokens=8, output_tokens=2)
 
 
 class _StreamCtx:
@@ -117,6 +120,9 @@ class _StreamCtx:
 
     def __init__(self, parts: list[str]) -> None:
         self.text_stream = iter(parts)
+
+    def get_final_message(self):
+        return _Msg([_Block(type="text", text="done")])
 
     def __enter__(self):
         return self
@@ -154,7 +160,8 @@ class _FakeAnthropicClient:
 
 def test_anthropic_tool_round_trip_executes_and_feeds_result_back():
     cfg = Config(llm_provider="anthropic", anthropic_api_key="x")
-    brain = Brain(cfg)  # default tools include the calculator
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)  # default tools include the calculator
     client = _FakeAnthropicClient(final_parts=["The ", "answer ", "is ", "four."])
     brain._client = client  # inject the fake provider client
 
@@ -170,6 +177,9 @@ def test_anthropic_tool_round_trip_executes_and_feeds_result_back():
         if isinstance(block, dict) and block.get("type") == "tool_result"
     ]
     assert tool_results and tool_results[0]["content"] == "4"
+    assert len(rows) == 3  # tool request, no-more-tools check, final stream
+    assert all(row["provider"] == "anthropic" and row["ok"] for row in rows)
+    assert all(row["tokens_in"] == 8 and row["tokens_out"] == 2 for row in rows)
 
 
 # --- OpenAI tool-call round-trip (mocked client) -------------------------------
@@ -182,7 +192,7 @@ class _Fn:
 
 
 class _TC:
-    def __init__(self, id: str, name: str, arguments: str) -> None:  # noqa: A002
+    def __init__(self, id: str, name: str, arguments: str) -> None:
         self.id = id
         self.function = _Fn(name, arguments)
 
@@ -194,7 +204,7 @@ class _OAIMessage:
 
 
 class _Choice:
-    def __init__(self, message=None, delta=None) -> None:  # noqa: ANN001
+    def __init__(self, message=None, delta=None) -> None:
         self.message = message
         self.delta = delta
 
@@ -202,6 +212,8 @@ class _Choice:
 class _Completion:
     def __init__(self, message: _OAIMessage) -> None:
         self.choices = [_Choice(message=message)]
+        self.model = "gpt-tool-test"
+        self.usage = SimpleNamespace(prompt_tokens=9, completion_tokens=4)
 
 
 class _Delta:
@@ -210,8 +222,10 @@ class _Delta:
 
 
 class _StreamChunk:
-    def __init__(self, content: str | None) -> None:
-        self.choices = [_Choice(delta=_Delta(content))]
+    def __init__(self, content: str | None, *, final: bool = False) -> None:
+        self.choices = [] if final else [_Choice(delta=_Delta(content))]
+        self.model = "gpt-tool-test"
+        self.usage = SimpleNamespace(prompt_tokens=12, completion_tokens=5) if final else None
 
 
 class _FakeOpenAICompletions:
@@ -222,7 +236,9 @@ class _FakeOpenAICompletions:
 
     def create(self, **kwargs: Any):
         if kwargs.get("stream"):
-            return iter(_StreamChunk(p) for p in self._final_parts)
+            chunks = [_StreamChunk(p) for p in self._final_parts]
+            chunks.append(_StreamChunk(None, final=True))
+            return iter(chunks)
         self._calls += 1
         self.tool_messages = kwargs["messages"]
         if self._calls == 1:
@@ -243,7 +259,8 @@ class _FakeOpenAIClient:
 
 def test_openai_tool_round_trip_executes_and_feeds_result_back():
     cfg = Config(llm_provider="openai", openai_api_key="x")
-    brain = Brain(cfg)
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)
     client = _FakeOpenAIClient(final_parts=["Forty-", "two."])
     brain._client = client
 
@@ -252,14 +269,34 @@ def test_openai_tool_round_trip_executes_and_feeds_result_back():
     # A tool-role message carrying the calculator result ("42") was fed back.
     tool_msgs = [m for m in client.completions.tool_messages if m.get("role") == "tool"]
     assert tool_msgs and tool_msgs[0]["content"] == "42"
+    assert len(rows) == 3  # tool request, no-more-tools check, final stream
+    assert all(row["provider"] == "openai" and row["ok"] for row in rows)
+    assert rows[-1]["tokens_in"] == 12
+    assert rows[-1]["tokens_out"] == 5
 
 
 def test_tools_disabled_uses_plain_stream():
     cfg = Config(llm_provider="anthropic", anthropic_api_key="x", tools_enabled=False)
-    brain = Brain(cfg)
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)
     assert brain.tools is None
-    brain._stream_anthropic = lambda model: iter(["plain ", "reply"])  # type: ignore[assignment]
+    brain._client = _FakeAnthropicClient(final_parts=["plain ", "reply"])
     assert "".join(brain.stream("hi")) == "plain reply"
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "anthropic"
+    assert rows[0]["model"] == "claude-tool-test"
+
+
+def test_openai_tools_disabled_uses_logged_plain_fallback():
+    cfg = Config(llm_provider="openai", openai_api_key="x", tools_enabled=False)
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)
+    brain._client = _FakeOpenAIClient(final_parts=["plain ", "reply"])
+
+    assert "".join(brain.stream("hi")) == "plain reply"
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "openai"
+    assert rows[0]["model"] == "gpt-tool-test"
 
 
 # --- backend selection (R2-7) --------------------------------------------------
@@ -300,7 +337,7 @@ def test_synth_pcm_prefers_cloud_when_active():
     router = TTSRouter(Config(tts_backend="cloud", tts_cloud_api_key="sk-test"))
 
     class _CloudStub:
-        def render(self, text: str):  # noqa: ARG002
+        def render(self, text: str):
             return np.full(16, 0.2, dtype=np.float32), 24000
 
     router._cloud = _CloudStub()  # type: ignore[assignment]

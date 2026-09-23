@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from my_stt_tts.agent import AgentResult
+from my_stt_tts.agent import AgentResult, dispatch_to_agent
 from my_stt_tts.brain import Brain, LLMError, should_use_deep
 from my_stt_tts.config import Config
 from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, match_speaker
@@ -66,8 +66,19 @@ def test_detect_language_falls_back_without_lingua():
 
 def test_claude_cli_session_then_resume():
     cfg = Config(llm_provider="claude-cli", llm_model="haiku")
-    brain = Brain(cfg)
-    completed = MagicMock(returncode=0, stdout=json.dumps({"result": "hi", "is_error": False}))
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)
+    completed = MagicMock(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "result": "hi",
+                "is_error": False,
+                "session_id": "cli-session",
+                "modelUsage": {"claude-haiku-test": {"inputTokens": 7, "outputTokens": 2}},
+            }
+        ),
+    )
     with (
         patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/claude"),
         patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
@@ -81,6 +92,12 @@ def test_claude_cli_session_then_resume():
         assert brain._session_id == session_id  # same session reused
         assert "--resume" in run.call_args.args[0]
         assert session_id in run.call_args.args[0]
+    assert len(rows) == 2
+    assert rows[0]["provider"] == "claude"
+    assert rows[0]["purpose"] == "stt-brain"
+    assert rows[0]["model"] == "claude-haiku-test"
+    assert rows[0]["tokens_in"] == 7
+    assert rows[0]["tokens_out"] == 2
 
 
 def test_claude_cli_error_propagates():
@@ -97,7 +114,8 @@ def test_claude_cli_error_propagates():
 
 def test_codex_cli_runs_exec_and_returns_stdout():
     cfg = Config(llm_provider="codex-cli", llm_model="gpt-5-codex")
-    brain = Brain(cfg)
+    rows = []
+    brain = Brain(cfg, recorder=rows.append)
     completed = MagicMock(returncode=0, stdout="the answer\n", stderr="")
     with (
         patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/codex"),
@@ -110,6 +128,102 @@ def test_codex_cli_runs_exec_and_returns_stdout():
         assert "--sandbox" in argv and "read-only" in argv  # isolated
         assert "--skip-git-repo-check" in argv
         assert "--ignore-user-config" in argv
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "codex"
+    assert rows[0]["outcome"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("provider", "tools_enabled"),
+    [
+        ("claude-cli", True),
+        ("codex-cli", True),
+        ("anthropic", False),
+        ("openai", False),
+    ],
+)
+def test_plain_turn_routes_through_ai_prompt_with_stdin(
+    monkeypatch, provider: str, tools_enabled: bool
+):
+    rows: list[dict[str, object]] = []
+    brain = Brain(
+        Config(
+            llm_provider=provider,
+            anthropic_api_key="x",
+            openai_api_key="x",
+            tools_enabled=tools_enabled,
+        ),
+        recorder=rows.append,
+    )
+    monkeypatch.setenv("AI_BIN", "test-ai")
+    completed = MagicMock(returncode=0, stdout="routed reply\n", stderr="")
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/test-ai"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
+    ):
+        assert "".join(brain.stream("hello routed world")) == "routed reply"
+
+    assert run.call_args.args[0] == [
+        "/usr/bin/test-ai",
+        "prompt",
+        "-R",
+        "judge",
+        "-p",
+        "stt-brain",
+        "-i",
+    ]
+    assert run.call_args.kwargs["input"].find("hello routed world") >= 0
+    assert run.call_args.kwargs["input"].find(brain.cfg.system_prompt.strip()) >= 0
+    assert rows == []  # ai owns the ledger row for routed calls
+
+
+def test_agent_dispatch_records_claude_json_envelope(monkeypatch):
+    rows = []
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    completed = MagicMock(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "result": "done",
+                "is_error": False,
+                "session_id": "agent-session",
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 3,
+                    "cache_read_input_tokens": 5,
+                },
+                "modelUsage": {"claude-sonnet-test": {}},
+            }
+        ),
+    )
+    with (
+        patch("my_stt_tts.agent.shutil.which", return_value="/usr/bin/claude"),
+        patch("my_stt_tts.agent.subprocess.run", return_value=completed),
+    ):
+        result = dispatch_to_agent(
+            "do a task", workspace="/tmp/workspace", model="sonnet", recorder=rows.append
+        )
+
+    assert result == AgentResult(text="done", session_id="agent-session")
+    assert len(rows) == 1
+    assert rows[0] == {
+        "provider": "claude",
+        "seat": "private",
+        "purpose": "stt-agent",
+        "outcome": "ok",
+        "ok": True,
+        "ms": rows[0]["ms"],
+        "caller": "my_stt_tts.agent",
+        "requested_model": "sonnet",
+        "prompt_chars": 9,
+        "cwd": "/tmp/workspace",
+        "write": True,
+        "model": "claude-sonnet-test",
+        "tokens_in": 11,
+        "tokens_out": 3,
+        "tokens_cache_read": 5,
+        "session": "agent-session",
+    }
 
 
 def test_codex_cli_error_propagates():
@@ -126,7 +240,7 @@ def test_codex_cli_error_propagates():
 
 def test_codex_cli_command_overridable_via_env(monkeypatch):
     cfg = Config(llm_provider="codex-cli", llm_model="gpt-5-codex")
-    brain = Brain(cfg)
+    brain = Brain(cfg, recorder=lambda row: None)
     monkeypatch.setenv("CODEX_CLI_CMD", "mycodex run --foo")
     completed = MagicMock(returncode=0, stdout="ok", stderr="")
     with (

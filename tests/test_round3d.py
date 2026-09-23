@@ -270,7 +270,7 @@ class _FakeTwilioConn:
         self._frames = frames
         self.sent: list[str] = []
 
-    async def send(self, data) -> None:  # noqa: ANN001
+    async def send(self, data) -> None:
         self.sent.append(data)
 
     def __aiter__(self):
@@ -552,7 +552,7 @@ class _FakeRealtimeConn:
         self.sent: list[str] = []
         self.closed = False
 
-    async def send(self, data) -> None:  # noqa: ANN001
+    async def send(self, data) -> None:
         self.sent.append(data)
 
     async def close(self) -> None:
@@ -582,7 +582,7 @@ def test_run_realtime_session_round_trip_over_mocked_ws():
     t.end_mic()
     sunk: list[tuple[int, int]] = []
 
-    def _record(pcm, sr):  # noqa: ANN001, ANN202
+    def _record(pcm, sr):
         sunk.append((np.asarray(pcm).size, sr))
 
     t.send_tts = _record  # type: ignore[method-assign]
@@ -592,12 +592,23 @@ def test_run_realtime_session_round_trip_over_mocked_ws():
         json.dumps({"type": "response.audio_transcript.delta", "delta": "Hello"}),
         json.dumps({"type": "response.audio.delta", "delta": reply}),
         json.dumps({"type": "response.audio_transcript.done", "transcript": "Hello there"}),
-        json.dumps({"type": "response.done"}),
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": "resp-1",
+                    "status": "completed",
+                    "model": "gpt-realtime-test",
+                    "usage": {"input_tokens": 20, "output_tokens": 6},
+                },
+            }
+        ),
     ]
     # The small delay lets the mic-pump thread send appends before the server replies.
     conn = _FakeRealtimeConn(events, delay=0.15)
     cfg = Config(realtime_api_key="sk-test")
-    run_realtime_session(t, cfg, connection=conn, max_turns=1)
+    rows = []
+    run_realtime_session(t, cfg, connection=conn, max_turns=1, recorder=rows.append)
 
     # session.update was the first thing sent, mic audio was appended, the reply
     # audio was sunk back to the transport (at the realtime 24 kHz rate), and the
@@ -606,6 +617,12 @@ def test_run_realtime_session_round_trip_over_mocked_ws():
     assert sum("input_audio_buffer.append" in s for s in conn.sent) == 3
     assert sunk == [(240, REALTIME_SR)]
     assert conn.closed is True
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "openai"
+    assert rows[0]["purpose"] == "stt-brain"
+    assert rows[0]["model"] == "gpt-realtime-test"
+    assert rows[0]["tokens_in"] == 20
+    assert rows[0]["tokens_out"] == 6
 
 
 def test_realtime_client_connect_requires_key():

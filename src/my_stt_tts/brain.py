@@ -3,8 +3,13 @@
 Programs against an OpenAI-compatible interface. Anthropic/Claude is the default,
 but OpenAI, Ollama, vLLM, or any OpenAI-compatible server work via ``LLM_BASE_URL``.
 
-The ``claude-cli`` provider shells out to the Claude Code CLI (``claude -p``) and
-keeps a session id for multi-turn continuity — handy when you have no API key. It
+Plain prompt-to-text turns are sent through the central ``ai prompt`` router so
+provider selection and the ccc run ledger stay consistent with the rest of the
+system.  If that command is not installed, the configured direct backend below is
+used as a compatibility fallback and writes its own ledger row.
+
+The direct ``claude-cli`` fallback shells out to Claude Code (``claude -p``) and
+keeps a session id for multi-turn continuity. It
 is deliberately STRIPPED and ISOLATED from your general Claude use
 (``--system-prompt`` replaces the agentic prompt with prompts/system_prompt.md,
 ``--setting-sources ""`` skips ~/.claude & ~/.llm-shared & hooks, ``--tools ""``
@@ -34,6 +39,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Generator, Iterator
 from pathlib import Path
@@ -43,6 +49,16 @@ from .agent import AgentError, dispatch_to_agent
 from .config import Config, current_time_line, locale_prompt_line
 from .memory import ContextAggregator, make_memory_store
 from .music import music_state_line
+from .run_ledger import (
+    RunRecorder,
+    claude_seat,
+    codex_seat,
+    emit_run,
+    endpoint_seat,
+    json_object,
+    record_run,
+    usage_fields,
+)
 from .tools import ToolCall, ToolRegistry, default_tools
 from .util import RateLimiter
 
@@ -58,7 +74,7 @@ def should_use_deep(cfg: Config, text: str) -> bool:
     return cfg.deep_trigger.lower() in text.lower()
 
 
-class Brain:
+class Brain:  # pylint: disable=too-many-instance-attributes
     """Streaming chat with short conversation memory, fast/deep + agent routing."""
 
     def __init__(
@@ -67,8 +83,10 @@ class Brain:
         *,
         tools: ToolRegistry | None = None,
         context: ContextAggregator | None = None,
+        recorder: RunRecorder = record_run,
     ) -> None:
         self.cfg = cfg
+        self._recorder = recorder
         # Per-speaker persistent memory + provider-agnostic context assembly (G7).
         # ``history`` is aliased to the aggregator's LIVE session (back-compat: the
         # backends and commit_spoken still read/repair ``self.history``); the
@@ -150,6 +168,7 @@ class Brain:
                 workspace=self.cfg.agent_workspace,
                 model=self.cfg.agent_model,
                 session_id=self._agent_session_id,
+                recorder=self._recorder,
             )
         except AgentError as exc:
             return f"error: {exc}"
@@ -177,13 +196,13 @@ class Brain:
         if self._client is not None:
             return self._client
         if self.cfg.llm_provider == "anthropic":
-            from anthropic import Anthropic
+            from anthropic import Anthropic  # pylint: disable=import-outside-toplevel,import-error
 
             self._client = Anthropic(
                 api_key=self.cfg.anthropic_api_key, base_url=self.cfg.llm_base_url or None
             )
         else:
-            from openai import OpenAI
+            from openai import OpenAI  # pylint: disable=import-outside-toplevel,import-error
 
             self._client = OpenAI(
                 api_key=self.cfg.openai_api_key or "not-needed",
@@ -211,9 +230,14 @@ class Brain:
         self._pending_user_text = user_text  # for per-speaker persistence (G7)
         try:
             agent_task = self._agent_task(user_text)
-            use_tools = self.tools is not None and len(self.tools) > 0
+            # The CLI backends never expose this registry to the model, so they
+            # remain plain prompt-to-text calls and are eligible for ai routing.
+            supports_tools = self.cfg.llm_provider not in {"claude-cli", "codex-cli"}
+            use_tools = supports_tools and self.tools is not None and len(self.tools) > 0
             if agent_task is not None:
                 deltas = self._dispatch_agent(agent_task)
+            elif not use_tools and (ai_bin := self._ai_bin()) is not None:
+                deltas = self._stream_routed_prompt(ai_bin)
             elif self.cfg.llm_provider == "claude-cli":
                 deltas = self._stream_claude_cli(model, user_text)
             elif self.cfg.llm_provider == "codex-cli":
@@ -278,7 +302,7 @@ class Brain:
             return None
         stripped = text.strip()
         low = stripped.lower()
-        if low == trigger or low.startswith(f"{trigger} ") or low.startswith(f"{trigger},"):
+        if low == trigger or low.startswith((f"{trigger} ", f"{trigger},")):
             return stripped[len(trigger) :].lstrip(" ,:").strip()
         return None
 
@@ -295,6 +319,7 @@ class Brain:
                 workspace=self.cfg.agent_workspace,
                 model=self.cfg.agent_model,
                 session_id=self._agent_session_id,
+                recorder=self._recorder,
             )
         except AgentError as exc:
             raise LLMError(str(exc)) from exc
@@ -302,6 +327,116 @@ class Brain:
         yield result.text
 
     # --- Chat backends ---
+
+    @staticmethod
+    def _ai_bin() -> str | None:
+        """Resolve the central ``ai prompt`` router, honoring ``AI_BIN`` first."""
+        override = os.environ.get("AI_BIN")
+        if override is not None:
+            candidate = override.strip()
+            if not candidate:
+                return None
+            if os.path.sep in candidate:
+                return (
+                    candidate
+                    if Path(candidate).is_file() and os.access(candidate, os.X_OK)
+                    else None
+                )
+            return shutil.which(candidate)
+        found = shutil.which("ai")
+        if found:
+            return found
+        fallback = Path("/Users/albert/obsidian/42-Git/home/mydotfiles/bin/ai.py")
+        return str(fallback) if fallback.is_file() and os.access(fallback, os.X_OK) else None
+
+    def _stream_routed_prompt(self, ai_bin: str) -> Iterator[str]:
+        """Run a plain text turn through the centrally routed and logged AI command."""
+        prompt = (
+            "Follow the system instructions and answer the latest user message. "
+            "Return only the assistant reply.\n\n"
+            f"System instructions:\n{self._system_prompt()}\n\n"
+            "Conversation messages (JSON):\n"
+            f"{json.dumps(self._assembled(), ensure_ascii=False)}"
+        )
+        cmd = [ai_bin, "prompt", "-R", "judge", "-p", "stt-brain", "-i"]
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()[:200]
+            raise LLMError(f"AI router failed (rc={proc.returncode}): {detail}")
+        yield proc.stdout.strip()
+
+    def _attempt_row(
+        self,
+        *,
+        provider: str,
+        seat: str,
+        requested_model: str,
+        prompt_chars: int,
+    ) -> dict[str, object]:
+        return {
+            "provider": provider,
+            "seat": seat,
+            "purpose": "stt-brain",
+            "outcome": "error:call",
+            "ok": False,
+            "ms": 0,
+            "caller": "my_stt_tts.brain",
+            "requested_model": requested_model,
+            "prompt_chars": prompt_chars,
+        }
+
+    def _finish_attempt(
+        self,
+        row: dict[str, object],
+        started: float,
+        *,
+        response: Any = None,
+        error: BaseException | str | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        """Complete and emit one physical-attempt row."""
+        row.update(usage_fields(response))
+        if error is None and not cancelled:
+            row.update(outcome="ok", ok=True)
+        else:
+            if cancelled:
+                kind = "cancelled"
+                message = "stream consumer stopped before completion"
+            elif isinstance(error, BaseException):
+                kind = (
+                    "timeout"
+                    if isinstance(error, TimeoutError | subprocess.TimeoutExpired)
+                    else type(error).__name__.lower()
+                )
+                message = str(error)
+            else:
+                kind = str(error or "call")
+                message = str(error or "LLM call failed")
+            row.update(outcome=f"error:{kind}", error=kind, error_message=message[:500])
+        row["ms"] = int((time.perf_counter() - started) * 1000)
+        emit_run(self._recorder, row)
+
+    @staticmethod
+    def _payload_chars(*parts: Any) -> int:
+        return len(json.dumps(parts, ensure_ascii=False, default=str))
+
+    def _recorded_call(self, call: Any, row: dict[str, object]) -> Any:
+        """Run one non-streaming SDK request and ledger it exactly once."""
+        started = time.perf_counter()
+        try:
+            response = call()
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            raise
+        self._finish_attempt(row, started, response=response)
+        return response
 
     @staticmethod
     def _claude_cwd() -> str:
@@ -332,20 +467,41 @@ class Brain:
             cmd += ["--session-id", self._session_id]
         else:
             cmd += ["--resume", self._session_id]
-        proc = subprocess.run(  # noqa: S603
-            cmd, cwd=self._claude_cwd(), capture_output=True, text=True, check=False, timeout=180
+        row = self._attempt_row(
+            provider="claude",
+            seat=claude_seat(),
+            requested_model=model,
+            prompt_chars=len(user_text) + len(self._system_prompt()),
         )
-        data = None
-        if proc.stdout.strip():
-            try:
-                data = json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                data = None
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=self._claude_cwd(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=180,
+            )
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            raise
+        data = json_object(proc.stdout)
         if data is None:
             detail = (proc.stderr or proc.stdout or "").strip()[:200]
+            self._finish_attempt(row, started, error="invalid-json")
             raise LLMError(f"claude CLI failed (rc={proc.returncode}): {detail}")
+        if data.get("session_id"):
+            row["session"] = str(data["session_id"])
         if data.get("is_error"):
-            raise LLMError(str(data.get("result") or "claude CLI error"))
+            detail = str(data.get("result") or "claude CLI error")
+            self._finish_attempt(row, started, response=data, error="claude")
+            raise LLMError(detail)
+        if proc.returncode != 0:
+            detail = (proc.stderr or f"exit {proc.returncode}").strip()[:200]
+            self._finish_attempt(row, started, response=data, error="exit")
+            raise LLMError(f"claude CLI failed (rc={proc.returncode}): {detail}")
+        self._finish_attempt(row, started, response=data)
         yield str(data.get("result", ""))
 
     @staticmethod
@@ -388,12 +544,30 @@ class Brain:
             "--ignore-user-config",  # skip $CODEX_HOME/config.toml: decoupled from your codex
             prompt,
         ]
-        proc = subprocess.run(  # noqa: S603
-            cmd, cwd=self._codex_cwd(), capture_output=True, text=True, check=False, timeout=180
+        row = self._attempt_row(
+            provider="codex",
+            seat=codex_seat(),
+            requested_model=model,
+            prompt_chars=len(prompt),
         )
+        started = time.perf_counter()
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=self._codex_cwd(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=180,
+            )
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            raise
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()[:200]
+            self._finish_attempt(row, started, error="exit")
             raise LLMError(f"codex CLI failed (rc={proc.returncode}): {detail}")
+        self._finish_attempt(row, started)
         yield proc.stdout.strip()
 
     @staticmethod
@@ -404,24 +578,74 @@ class Brain:
 
     def _stream_anthropic(self, model: str) -> Iterator[str]:
         client = self._ensure_client()
-        with client.messages.stream(  # type: ignore[attr-defined]
-            model=model,
-            max_tokens=1024,
-            system=self._system_prompt(),
-            messages=self._assembled(),
-        ) as stream:
-            yield from stream.text_stream
+        system = self._system_prompt()
+        messages = self._assembled()
+        row = self._attempt_row(
+            provider="anthropic",
+            seat=endpoint_seat(self.cfg.llm_base_url),
+            requested_model=model,
+            prompt_chars=self._payload_chars(system, messages),
+        )
+        started = time.perf_counter()
+        recorded = completed = False
+        response = None
+        try:
+            with client.messages.stream(  # type: ignore[attr-defined]
+                model=model,
+                max_tokens=1024,
+                system=system,
+                messages=messages,
+            ) as stream:
+                yield from stream.text_stream
+                completed = True
+                final_message = getattr(stream, "get_final_message", None)
+                if callable(final_message):
+                    try:
+                        response = final_message()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        log.debug("could not read Anthropic stream usage", exc_info=True)
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            recorded = True
+            raise
+        finally:
+            if not recorded:
+                self._finish_attempt(row, started, response=response, cancelled=not completed)
 
     def _stream_openai(self, model: str) -> Iterator[str]:
         client = self._ensure_client()
         messages = [{"role": "system", "content": self._system_prompt()}, *self._assembled()]
-        stream = client.chat.completions.create(  # type: ignore[attr-defined]
-            model=model, messages=messages, stream=True
+        row = self._attempt_row(
+            provider="openai",
+            seat=endpoint_seat(self.cfg.llm_base_url),
+            requested_model=model,
+            prompt_chars=self._payload_chars(messages),
         )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        kwargs: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+        if self.cfg.llm_provider == "openai":
+            kwargs["stream_options"] = {"include_usage": True}
+        started = time.perf_counter()
+        recorded = completed = False
+        response = None
+        try:
+            stream = client.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
+            for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    response = chunk
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta.content
+                if delta:
+                    yield delta
+            completed = True
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            recorded = True
+            raise
+        finally:
+            if not recorded:
+                self._finish_attempt(row, started, response=response, cancelled=not completed)
 
     # --- tool-calling round-trips (R2-7) ---------------------------------
 
@@ -441,12 +665,21 @@ class Brain:
         messages: list[dict[str, Any]] = [dict(m) for m in self._assembled()]
         tool_schemas = self.tools.anthropic_tools()
         for _ in range(self.cfg.tools_max_iterations):
-            msg = client.messages.create(  # type: ignore[attr-defined]
-                model=model,
-                max_tokens=1024,
-                system=system,
-                messages=messages,
-                tools=tool_schemas,
+            row = self._attempt_row(
+                provider="anthropic",
+                seat=endpoint_seat(self.cfg.llm_base_url),
+                requested_model=model,
+                prompt_chars=self._payload_chars(system, messages, tool_schemas),
+            )
+            msg = self._recorded_call(
+                lambda: client.messages.create(  # type: ignore[attr-defined]
+                    model=model,
+                    max_tokens=1024,
+                    system=system,
+                    messages=messages,
+                    tools=tool_schemas,
+                ),
+                row,
             )
             calls = _anthropic_tool_calls(msg)
             if not calls:
@@ -457,14 +690,38 @@ class Brain:
             messages.append({"role": "assistant", "content": _content_blocks(msg)})
             messages.append({"role": "user", "content": self._anthropic_tool_results(calls)})
         # Final pass with the (possibly tool-augmented) context — streamed.
-        with client.messages.stream(  # type: ignore[attr-defined]
-            model=model,
-            max_tokens=1024,
-            system=system,
-            messages=messages,
-            tools=tool_schemas,
-        ) as stream:
-            yield from stream.text_stream
+        row = self._attempt_row(
+            provider="anthropic",
+            seat=endpoint_seat(self.cfg.llm_base_url),
+            requested_model=model,
+            prompt_chars=self._payload_chars(system, messages, tool_schemas),
+        )
+        started = time.perf_counter()
+        recorded = completed = False
+        response = None
+        try:
+            with client.messages.stream(  # type: ignore[attr-defined]
+                model=model,
+                max_tokens=1024,
+                system=system,
+                messages=messages,
+                tools=tool_schemas,
+            ) as stream:
+                yield from stream.text_stream
+                completed = True
+                final_message = getattr(stream, "get_final_message", None)
+                if callable(final_message):
+                    try:
+                        response = final_message()
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        log.debug("could not read Anthropic stream usage", exc_info=True)
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            recorded = True
+            raise
+        finally:
+            if not recorded:
+                self._finish_attempt(row, started, response=response, cancelled=not completed)
 
     def _anthropic_tool_results(self, calls: list[ToolCall]) -> list[dict[str, Any]]:
         """Execute ``calls`` and wrap each result as an Anthropic ``tool_result`` block."""
@@ -491,8 +748,17 @@ class Brain:
         ]
         tool_schemas = self.tools.openai_tools()
         for _ in range(self.cfg.tools_max_iterations):
-            completion = client.chat.completions.create(  # type: ignore[attr-defined]
-                model=model, messages=messages, tools=tool_schemas
+            row = self._attempt_row(
+                provider="openai",
+                seat=endpoint_seat(self.cfg.llm_base_url),
+                requested_model=model,
+                prompt_chars=self._payload_chars(messages, tool_schemas),
+            )
+            completion = self._recorded_call(
+                lambda: client.chat.completions.create(  # type: ignore[attr-defined]
+                    model=model, messages=messages, tools=tool_schemas
+                ),
+                row,
             )
             message = completion.choices[0].message
             calls = _openai_tool_calls(message)
@@ -502,13 +768,37 @@ class Brain:
             for call in calls:
                 output = self.tools.dispatch(call.name, call.arguments)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
-        stream = client.chat.completions.create(  # type: ignore[attr-defined]
-            model=model, messages=messages, stream=True
+        row = self._attempt_row(
+            provider="openai",
+            seat=endpoint_seat(self.cfg.llm_base_url),
+            requested_model=model,
+            prompt_chars=self._payload_chars(messages),
         )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        kwargs: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+        if self.cfg.llm_provider == "openai":
+            kwargs["stream_options"] = {"include_usage": True}
+        started = time.perf_counter()
+        recorded = completed = False
+        response = None
+        try:
+            stream = client.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
+            for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    response = chunk
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta.content
+                if delta:
+                    yield delta
+            completed = True
+        except Exception as exc:
+            self._finish_attempt(row, started, error=exc)
+            recorded = True
+            raise
+        finally:
+            if not recorded:
+                self._finish_attempt(row, started, response=response, cancelled=not completed)
 
 
 # --- provider-response parsing helpers (R2-7) ----------------------------------

@@ -30,16 +30,20 @@ WS server** — no real key, no network.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from .events import bus
+from .run_ledger import RunRecorder, emit_run, endpoint_seat, record_run, usage_fields
 
 if TYPE_CHECKING:
     from .config import Config
@@ -155,17 +159,30 @@ class RealtimeProtocol:
         if not isinstance(msg, dict):
             return {"type": "unknown"}
         etype = str(msg.get("type", "unknown"))
+        event: dict[str, Any] = {"type": etype}
         if etype == "response.audio.delta":
-            return {"type": etype, "pcm": base64_to_pcm(str(msg.get("delta", "")))}
-        if etype in ("response.audio_transcript.delta", "response.text.delta"):
-            return {"type": etype, "text": str(msg.get("delta", ""))}
-        if etype == "response.audio_transcript.done":
-            return {"type": etype, "text": str(msg.get("transcript", ""))}
-        if etype == "error":
+            event.update(
+                pcm=base64_to_pcm(str(msg.get("delta", ""))),
+                response_id=str(msg.get("response_id", "")),
+            )
+        elif etype in ("response.audio_transcript.delta", "response.text.delta"):
+            event.update(
+                text=str(msg.get("delta", "")), response_id=str(msg.get("response_id", ""))
+            )
+        elif etype == "response.audio_transcript.done":
+            event.update(
+                text=str(msg.get("transcript", "")),
+                response_id=str(msg.get("response_id", "")),
+            )
+        elif etype in ("response.created", "response.done"):
+            response = msg.get("response")
+            response_id = response.get("id", "") if isinstance(response, dict) else ""
+            event.update(response=response, response_id=str(response_id))
+        elif etype == "error":
             err = msg.get("error", {})
             message = err.get("message") if isinstance(err, dict) else str(err)
-            return {"type": "error", "message": str(message or "realtime error")}
-        return {"type": etype}
+            event["message"] = str(message or "realtime error")
+        return event
 
 
 class RealtimeError(RuntimeError):
@@ -182,8 +199,9 @@ class RealtimeClient:
     is configured — :func:`make_realtime_brain` uses it to decide fallback.
     """
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, recorder: RunRecorder = record_run) -> None:
         self.cfg = cfg
+        self.recorder = recorder
         self.protocol = RealtimeProtocol(
             model=cfg.realtime_model,
             voice=cfg.realtime_voice,
@@ -205,7 +223,7 @@ class RealtimeClient:
         if not self.available():
             raise RealtimeError("realtime endpoint needs REALTIME_API_KEY / OPENAI_API_KEY")
         try:
-            import websockets
+            import websockets  # pylint: disable=import-outside-toplevel,import-error
         except ImportError as exc:  # pragma: no cover - only without the extra
             raise RealtimeError(
                 "realtime needs the 'transport' extra: uv sync --extra transport"
@@ -225,6 +243,7 @@ def run_realtime_session(
     client: RealtimeClient | None = None,
     connection: Any | None = None,
     max_turns: int | None = None,
+    recorder: RunRecorder = record_run,
 ) -> None:
     """Bridge a mic/audio :class:`AudioTransport` to a realtime endpoint (R3-5).
 
@@ -240,23 +259,126 @@ def run_realtime_session(
     no network. ``max_turns`` bounds the loop for tests (None = run until the mic
     source or the connection ends).
     """
-    import asyncio
-
-    client = client or RealtimeClient(cfg)
+    client = client or RealtimeClient(cfg, recorder=recorder)
     asyncio.run(_run_realtime_async(transport, cfg, client, connection, max_turns))
+
+
+class _RealtimeLedger:
+    """Track and asynchronously record OpenAI Realtime response attempts."""
+
+    def __init__(self, cfg: Config, recorder: RunRecorder) -> None:
+        self._cfg = cfg
+        self._recorder = recorder
+        self._attempts: dict[str, float] = {}
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    @staticmethod
+    def _key(event: dict[str, Any]) -> str:
+        return str(event.get("response_id") or "current")
+
+    def observe(self, event: dict[str, Any]) -> None:
+        """Start timing the response represented by its first server event."""
+        etype = event.get("type")
+        if isinstance(etype, str) and etype.startswith("response.") and etype != "response.done":
+            key = self._key(event)
+            if key == "current" and "current" not in self._attempts and len(self._attempts) == 1:
+                return
+            self._attempts.setdefault(key, time.perf_counter())
+
+    def finish(self, event: dict[str, Any], *, error: str | None = None) -> None:
+        """Record a completed/failed response without blocking the audio loop."""
+        if error is not None and not self._attempts:
+            return
+        key = self._key(event)
+        if key not in self._attempts:
+            if "current" in self._attempts:
+                key = "current"
+            elif len(self._attempts) == 1:
+                key = next(iter(self._attempts))
+        started = self._attempts.pop(key, time.perf_counter())
+        response = event.get("response")
+        status = response.get("status") if isinstance(response, dict) else None
+        failed = error or (str(status) if status not in (None, "completed") else None)
+        row = self._base_row(started)
+        row.update(usage_fields(response))
+        row.setdefault("model", self._cfg.realtime_model)
+        if failed:
+            row.update(outcome=f"error:{failed}", ok=False, error=failed, error_message=failed)
+        self._queue(row)
+
+    def cancel_pending(self) -> None:
+        """Record responses that ended without a terminal ``response.done`` event."""
+        for key, started in list(self._attempts.items()):
+            row = self._base_row(started)
+            row.update(
+                outcome="error:cancelled",
+                ok=False,
+                error="cancelled",
+                error_message=f"realtime response {key} ended without response.done",
+            )
+            self._queue(row)
+        self._attempts.clear()
+
+    async def drain(self) -> None:
+        """Wait for queued best-effort recorders when the socket session ends."""
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    def _base_row(self, started: float) -> dict[str, object]:
+        return {
+            "provider": "openai",
+            "seat": endpoint_seat(self._cfg.realtime_url),
+            "purpose": "stt-brain",
+            "outcome": "ok",
+            "ok": True,
+            "ms": int((time.perf_counter() - started) * 1000),
+            "caller": "my_stt_tts.realtime",
+            "requested_model": self._cfg.realtime_model,
+            "model": self._cfg.realtime_model,
+        }
+
+    def _queue(self, row: dict[str, object]) -> None:
+        task = asyncio.create_task(asyncio.to_thread(emit_run, self._recorder, row))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+
+def _start_mic_pump(
+    transport: AudioTransport,
+    conn: Any,
+    proto: RealtimeProtocol,
+    loop: asyncio.AbstractEventLoop,
+    stop: threading.Event,
+) -> None:
+    """Start forwarding blocking microphone frames into the async socket."""
+
+    def _pump() -> None:
+        try:
+            for frame in transport.mic_frames():
+                if stop.is_set():
+                    return
+                arr = np.asarray(frame, dtype=np.float32).ravel()
+                if arr.size:
+                    future = asyncio.run_coroutine_threadsafe(
+                        conn.send(proto.append_audio(arr)), loop
+                    )
+                    future.result(timeout=5.0)
+        except Exception:  # pylint: disable=broad-exception-caught
+            log.debug("realtime mic pump ended", exc_info=True)
+        finally:
+            stop.set()
+
+    threading.Thread(target=_pump, daemon=True).start()
 
 
 async def _run_realtime_async(
     transport: AudioTransport,
-    cfg: Config,  # noqa: ARG001 - kept for symmetry / future per-session tuning
+    cfg: Config,
     client: RealtimeClient,
     connection: Any | None,
     max_turns: int | None,
 ) -> None:
     """The async core of :func:`run_realtime_session` (see its docstring)."""
-    import asyncio
-    import contextlib
-
     conn = connection if connection is not None else await client.connect()
     proto = client.protocol
     await conn.send(proto.session_update())
@@ -267,28 +389,16 @@ async def _run_realtime_async(
     loop = asyncio.get_running_loop()
     stop = threading.Event()
 
-    def _pump_mic() -> None:
-        try:
-            for frame in transport.mic_frames():
-                if stop.is_set():
-                    return
-                arr = np.asarray(frame, dtype=np.float32).ravel()
-                if arr.size:
-                    fut = asyncio.run_coroutine_threadsafe(conn.send(proto.append_audio(arr)), loop)
-                    fut.result(timeout=5.0)
-        except Exception:  # mic source ended / send failed -> stop the session
-            log.debug("realtime mic pump ended", exc_info=True)
-        finally:
-            stop.set()
-
-    mic_thread = threading.Thread(target=_pump_mic, daemon=True)
-    mic_thread.start()
+    _start_mic_pump(transport, conn, proto, loop, stop)
 
     turns = 0
+    ledger = _RealtimeLedger(cfg, client.recorder)
+
     try:
         async for raw in conn:
             event = proto.decode(raw)
             etype = event.get("type")
+            ledger.observe(event)
             if etype == "response.audio.delta":
                 pcm = event.get("pcm")
                 if isinstance(pcm, np.ndarray) and pcm.size:
@@ -301,21 +411,25 @@ async def _run_realtime_async(
             elif etype == "input_audio_buffer.speech_started":
                 bus.state("recording", "realtime")
             elif etype == "response.done":
+                ledger.finish(event)
                 bus.response("", final=True)
                 bus.state("idle")
                 turns += 1
                 if max_turns is not None and turns >= max_turns:
                     break
             elif etype == "error":
+                ledger.finish(event, error="realtime")
                 log.error("realtime error: %s", event.get("message"))
                 bus.log(str(event.get("message")), "error")
         # NB: a finished mic source (``stop``) must NOT end this loop — the model may
         # still be streaming its reply. We read server events until the connection
         # is exhausted or ``max_turns`` is hit; the mic pump stops independently.
     finally:
+        ledger.cancel_pending()
         stop.set()
         with contextlib.suppress(Exception):
             await conn.close()
+        await ledger.drain()
 
 
 class RealtimeBrain:
@@ -342,7 +456,8 @@ class RealtimeBrain:
 
     # A realtime brain has no text stream; keep the surface explicit for callers
     # that probe for cascade behaviour.
-    def stream(self, user_text: str) -> Iterator[str]:  # noqa: ARG002
+    def stream(self, user_text: str) -> Iterator[str]:
+        del user_text
         raise RealtimeError("RealtimeBrain is audio-only; use run() over a transport")
 
 
