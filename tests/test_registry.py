@@ -101,7 +101,8 @@ def test_select_tts_backend_local_is_none():
     assert select_tts_backend(Config()) is None
 
 
-def test_select_tts_backend_elevenlabs_without_key_is_none():
+def test_select_tts_backend_elevenlabs_without_key_is_none(monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)  # a developer .env must not leak in
     cfg = Config()
     cfg.tts_backend = "elevenlabs"
     cfg.elevenlabs_api_key = None
@@ -241,8 +242,10 @@ def test_deepgram_transcribe_via_sdk_to_dict(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_elevenlabs_available_gated_on_key():
+def test_elevenlabs_available_gated_on_key(monkeypatch):
     from my_stt_tts.tts_cloud import ElevenLabsTTS
+
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)  # a developer .env must not leak in
 
     assert not ElevenLabsTTS(api_key=None).available()
     assert ElevenLabsTTS(api_key="el").available()
