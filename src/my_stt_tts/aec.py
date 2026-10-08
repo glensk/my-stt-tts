@@ -264,6 +264,9 @@ class VoiceProcessingCapture:
 
             # pylint: disable=no-member  # PyObjC populates these dynamically
             engine = AVFoundation.AVAudioEngine.alloc().init()
+            # Output-side nodes must exist BEFORE voice processing is enabled; enabling
+            # it first leaves the output node at 0 ch / 0 Hz and start() fails (-10875).
+            self._configure(engine)
             input_node = engine.inputNode()
             ok, err = input_node.setVoiceProcessingEnabled_error_(True, None)
             if not ok or not input_node.isVoiceProcessingEnabled():
@@ -287,6 +290,9 @@ class VoiceProcessingCapture:
             log.info("VoiceProcessingIO capture unavailable; using sounddevice + NLMS.")
             return False
 
+    def _configure(self, engine: Any) -> None:
+        """Hook to attach extra nodes to the engine before it starts (no-op here)."""
+
     def _on_buffer(self, buf: Any, _when: Any) -> None:
         """Tap callback: bridge channel-0 float32 PCM -> numpy, resample, enqueue."""
         try:
@@ -294,7 +300,8 @@ class VoiceProcessingCapture:
             channels = buf.floatChannelData()
             if channels is None or n == 0:
                 return
-            raw = np.frombuffer(channels[0].as_buffer(n * 4), dtype=np.float32).copy()
+            # as_buffer() takes a SAMPLE count (n floats -> n * 4 bytes)
+            raw = np.frombuffer(channels[0].as_buffer(n), dtype=np.float32).copy()
         except Exception:  # malformed buffer -> drop it, never raise into CoreAudio
             return
         frame = self._resample(raw)
@@ -334,6 +341,80 @@ class VoiceProcessingCapture:
                 self._input.removeTapOnBus_(0)
             if self._engine is not None:
                 self._engine.stop()
+
+
+class VoiceProcessingDuplex(VoiceProcessingCapture):
+    """Capture AND play back through ONE VoiceProcessingIO engine (full-duplex AEC).
+
+    The HAL echo canceller subtracts what *its own* output plays; audio played by
+    another stream (sounddevice, ``afplay``) is not its reference and leaks back into
+    the mic. Here playback goes through an ``AVAudioPlayerNode`` on the same engine,
+    so on open speakers the mic carries only the user — barge-in works the way it does
+    in a browser (which runs WebRTC AEC the same way). :meth:`play` takes 16-bit mono
+    PCM at ``sample_rate``; :meth:`flush` drops everything still queued (barge-in).
+    """
+
+    def __init__(self, sample_rate: int = 16000, *, frame_samples: int = 512) -> None:
+        super().__init__(sample_rate, frame_samples=frame_samples)
+        self._player: Any = None
+        self._play_fmt: Any = None
+        self._pending = 0
+        self._pending_lock = threading.Lock()
+
+    def _configure(self, engine: Any) -> None:
+        import AVFoundation  # pylint: disable=import-outside-toplevel
+
+        # pylint: disable=no-member  # PyObjC populates these dynamically
+        fmt = AVFoundation.AVAudioFormat.alloc()
+        fmt = fmt.initWithCommonFormat_sampleRate_channels_interleaved_(
+            AVFoundation.AVAudioPCMFormatFloat32, float(self.sample_rate), 1, False
+        )
+        player = AVFoundation.AVAudioPlayerNode.alloc().init()
+        engine.attachNode_(player)
+        engine.connect_to_format_(player, engine.mainMixerNode(), fmt)
+        self._player, self._play_fmt = player, fmt
+
+    def start(self) -> bool:
+        if not super().start():
+            return False
+        self._player.play()
+        return True
+
+    def play(self, pcm16: bytes) -> None:
+        """Queue 16-bit mono PCM for playback (non-blocking)."""
+        import AVFoundation  # pylint: disable=import-outside-toplevel
+
+        samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        n = samples.size
+        if n == 0 or self._player is None:
+            return
+        # pylint: disable=no-member  # PyObjC populates these dynamically
+        buf = AVFoundation.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(
+            self._play_fmt, n
+        )
+        buf.setFrameLength_(n)
+        np.frombuffer(buf.floatChannelData()[0].as_buffer(n), dtype=np.float32)[:] = samples
+        with self._pending_lock:
+            self._pending += 1
+        self._player.scheduleBuffer_completionHandler_(buf, self._on_played)
+
+    def _on_played(self) -> None:
+        with self._pending_lock:
+            self._pending = max(0, self._pending - 1)
+
+    def flush(self) -> None:
+        """Drop all queued playback immediately and keep the player ready."""
+        if self._player is None:
+            return
+        self._player.stop()
+        with self._pending_lock:
+            self._pending = 0
+        self._player.play()
+
+    def playing(self) -> bool:
+        """True while scheduled audio has not finished playing."""
+        with self._pending_lock:
+            return self._pending > 0
 
 
 class _suppress:  # noqa: N801 — tiny context-manager helper

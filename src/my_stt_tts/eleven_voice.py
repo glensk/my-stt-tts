@@ -9,11 +9,14 @@ functions ("client tools"), e.g. to reach Claude Code sessions on this Mac.
 
 Audio modes (``-m``):
 
-* ``headphones`` (default) — full duplex, you can interrupt the agent any time.
+* ``aec`` (default) — open speakers, full duplex: mic AND playback both run through
+  one macOS VoiceProcessingIO engine (the FaceTime echo canceller,
+  :class:`my_stt_tts.aec.VoiceProcessingDuplex`), so the agent never hears itself
+  and you can talk over it — like the browser, which does the same with WebRTC.
+  Uses the system default devices; falls back to ``speakers`` if it cannot start.
 * ``speakers`` — the mic is muted while the agent speaks, so it never hears and
   interrupts itself; the price is that you cannot talk over it.
-* ``aec`` — experimental: capture through macOS VoiceProcessingIO (the FaceTime
-  echo canceller) via :class:`my_stt_tts.aec.VoiceProcessingCapture`.
+* ``headphones`` — raw mic + plain playback, full duplex; only safe with headphones.
 
 Needs the ``elevenlabs`` + ``audio`` extras and ``ELEVENLABS_API_KEY`` /
 ``ELEVENLABS_AGENT_ID`` in the repo's ``.env``.
@@ -42,7 +45,7 @@ log = logging.getLogger("my_stt_tts.eleven_voice")
 SAMPLE_RATE = 16000  # the SDK's fixed PCM format: 16-bit mono 16 kHz, both ways
 INPUT_CHUNK = 4000  # 250 ms, the SDK's recommended input chunk
 OUTPUT_BLOCK = 320  # 20 ms playback blocks keep interruption snappy
-MODES = ("headphones", "speakers", "aec")
+MODES = ("aec", "speakers", "headphones")
 
 
 def _sd() -> Any:
@@ -104,9 +107,10 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
     from elevenlabs.conversational_ai.conversation import AudioInterface
 
     class MacAudioInterface(AudioInterface):
-        """sounddevice (or VoiceProcessingIO) capture + buffered sounddevice playback."""
+        """VoiceProcessingIO duplex, or sounddevice capture + buffered playback."""
 
         def __init__(self) -> None:
+            self.mode = mode
             self.playback = _Playback(out_dev)
             self._stop = threading.Event()
             self._in_stream: Any = None
@@ -114,14 +118,17 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
             self._thread: threading.Thread | None = None
 
         def _send(self, cb: Callable[[bytes], None], pcm: bytes) -> None:
-            if mode == "speakers" and self.playback.speaking():
+            if self.mode == "speakers" and self.playback.speaking():
                 pcm = b"\x00" * len(pcm)  # gate the mic while the agent talks
             cb(pcm)
 
         def start(self, input_callback: Callable[[bytes], None]) -> None:
+            if self.mode == "aec":
+                if self._start_vp(input_callback):
+                    return
+                log.warning("⚠️  echo cancellation unavailable; mic muted while the agent talks.")
+                self.mode = "speakers"
             self.playback.start()
-            if mode == "aec" and self._start_vp(input_callback):
-                return
             self._in_stream = _sd().RawInputStream(
                 samplerate=SAMPLE_RATE,
                 channels=1,
@@ -133,11 +140,10 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
             self._in_stream.start()
 
         def _start_vp(self, input_callback: Callable[[bytes], None]) -> bool:
-            from .aec import VoiceProcessingCapture
+            from .aec import VoiceProcessingDuplex
 
-            vp = VoiceProcessingCapture(SAMPLE_RATE, frame_samples=INPUT_CHUNK)
+            vp = VoiceProcessingDuplex(SAMPLE_RATE, frame_samples=INPUT_CHUNK)
             if not vp.start():
-                log.warning("VoiceProcessingIO unavailable; falling back to plain capture.")
                 return False
             self._vp = vp
 
@@ -157,15 +163,21 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
             if self._in_stream is not None:
                 self._in_stream.stop()
                 self._in_stream.close()
+                self.playback.stop()
             if self._vp is not None:
                 self._vp.close()
-            self.playback.stop()
 
         def output(self, audio: bytes) -> None:
-            self.playback.push(audio)
+            if self._vp is not None:
+                self._vp.play(audio)
+            else:
+                self.playback.push(audio)
 
         def interrupt(self) -> None:
-            self.playback.clear()
+            if self._vp is not None:
+                self._vp.flush()
+            else:
+                self.playback.clear()
 
     return MacAudioInterface()
 
@@ -216,18 +228,18 @@ def main(argv: list[str] | None = None) -> int:
         description="Talk to your ElevenLabs agent through this Mac's mic and speakers.",
         epilog=(
             "examples:\n"
-            "  mac-voice                 headphones, full duplex (interrupt any time)\n"
+            "  mac-voice                 open speakers + macOS echo cancellation (talk over it)\n"
             "  mac-voice -m speakers     open speakers, mic muted while the agent talks\n"
-            "  mac-voice -m aec          open speakers via macOS echo cancellation (experimental)\n"
+            "  mac-voice -m headphones   raw mic + plain playback (headphones only)\n"
             "  mac-voice -l              list audio devices\n"
             "  mac-voice -i 2 -o 3       pick input/output device by index or name"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("-m", "--mode", choices=MODES, default="headphones", help="audio mode")
+    parser.add_argument("-m", "--mode", choices=MODES, default="aec", help="audio mode")
     parser.add_argument("-a", "--agent-id", help="agent id (default: ELEVENLABS_AGENT_ID)")
-    parser.add_argument("-i", "--input-device", help="input device index or name")
-    parser.add_argument("-o", "--output-device", help="output device index or name")
+    parser.add_argument("-i", "--input-device", help="input device (speakers/headphones modes)")
+    parser.add_argument("-o", "--output-device", help="output device (speakers/headphones modes)")
     parser.add_argument("-l", "--list-devices", action="store_true", help="list audio devices")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging (latency)")
     args = parser.parse_args(argv)

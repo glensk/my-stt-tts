@@ -287,12 +287,12 @@ One-time: `uv sync --inexact --extra elevenlabs`, then put `ELEVENLABS_API_KEY` 
 `ELEVENLABS_AGENT_ID` into `.env`. The SDK talks to the agent's **published** version, so publish
 dashboard changes before testing them here.
 
-| Command                   | Meaning                                                            |
-| :------------------------ | :----------------------------------------------------------------- |
-| `./mac-voice`             | headphones, full duplex — interrupt any time                       |
-| `./mac-voice -m speakers` | open speakers; mic muted while the agent talks (no interrupting)   |
-| `./mac-voice -m aec`      | open speakers through macOS echo cancellation (experimental)       |
-| `./mac-voice -l`          | list audio devices; pick them with `-i` / `-o`                     |
+| Command                     | Meaning                                                                           |
+| :-------------------------- | :-------------------------------------------------------------------------------- |
+| `./mac-voice`               | open speakers + macOS echo cancellation (FaceTime's) — talk over it any time      |
+| `./mac-voice -m speakers`   | open speakers; mic muted while the agent talks (fallback, no interrupting)        |
+| `./mac-voice -m headphones` | raw mic + plain playback, full duplex — headphones only                           |
+| `./mac-voice -l`            | list audio devices; pick them with `-i` / `-o` (speakers/headphones modes)        |
 
 Ctrl-C ends the conversation. Code: [`eleven_voice.py`](src/my_stt_tts/eleven_voice.py).
 
