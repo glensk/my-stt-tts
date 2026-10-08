@@ -98,6 +98,7 @@ all = ["my-stt-tts[llm,audio,stt,tts,speaker,vad,wake,lang,aec,turn,transport,we
 [project.scripts]
 my-stt-tts = "my_stt_tts.__main__:main"
 my-stt-tts-satellite = "my_stt_tts.satellite:main"
+mac-voice = "my_stt_tts.eleven_voice:main"
 
 [project.urls]
 Homepage = "https://github.com/glensk/my-stt-tts"

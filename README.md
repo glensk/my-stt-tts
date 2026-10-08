@@ -272,6 +272,32 @@ token if you have a key.
 
 </details>
 
+### ☁️ Or talk to an ElevenLabs agent
+
+`./mac-voice` runs a cloud **ElevenLabs agent** (their speech-to-text, LLM and voice, configured in the
+ElevenLabs dashboard) through this Mac's mic and speakers. Running it locally instead of in the
+browser is what lets the agent later call local functions on this Mac.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+One-time: `uv sync --inexact --extra elevenlabs`, then put `ELEVENLABS_API_KEY` and
+`ELEVENLABS_AGENT_ID` into `.env`. The SDK talks to the agent's **published** version, so publish
+dashboard changes before testing them here.
+
+| Command                   | Meaning                                                            |
+| :------------------------ | :----------------------------------------------------------------- |
+| `./mac-voice`             | headphones, full duplex — interrupt any time                       |
+| `./mac-voice -m speakers` | open speakers; mic muted while the agent talks (no interrupting)   |
+| `./mac-voice -m aec`      | open speakers through macOS echo cancellation (experimental)       |
+| `./mac-voice -l`          | list audio devices; pick them with `-i` / `-o`                     |
+
+Ctrl-C ends the conversation. Code: [`eleven_voice.py`](src/my_stt_tts/eleven_voice.py).
+
+</details>
+
 <div align="right"><a href="#top">↑ back to top</a></div>
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">

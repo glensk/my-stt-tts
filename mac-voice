@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Talk to the ElevenLabs agent through this Mac's mic/speakers (see
+# src/my_stt_tts/eleven_voice.py). Runs straight from the project venv, like ./mstt.
+# One-time setup: uv sync --inexact --extra elevenlabs
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${here}/.venv/bin/python" -m my_stt_tts.eleven_voice "$@"
