@@ -9,19 +9,24 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from my_stt_tts import voice_control as vc
 
+FAST = {"settle": 0.0, "cooldown": 0.0}
+
 
 class FakeSession:
-    """A conversation that ends when ``end`` is called (or never, until then)."""
+    """A conversation that ends when ``end`` is called (or when told to hang)."""
 
-    def __init__(self, idle: float = 0.0) -> None:
+    def __init__(self, idle: float = 0.0, hang: bool = False) -> None:
         self.started = False
         self.ended = threading.Event()
         self.idle = idle
+        self.hang = hang
+        self.release = threading.Event()
 
     def start(self) -> None:
         self.started = True
@@ -30,7 +35,9 @@ class FakeSession:
         self.ended.set()
 
     def wait(self) -> str | None:
-        self.ended.wait(5)
+        if self.hang:
+            self.release.wait(30)
+        self.ended.wait(30)
         return "conv_fake"
 
     def idle_for(self) -> float:
@@ -38,7 +45,8 @@ class FakeSession:
 
 
 class FakeListener:
-    instances: list[FakeListener] = []  # noqa: RUF012 — test registry
+    instances: ClassVar[list[FakeListener]] = []
+    log: ClassVar[list[str]] = []
 
     def __init__(self, on_wake: Callable[[], None]) -> None:
         self.on_wake = on_wake
@@ -47,9 +55,12 @@ class FakeListener:
 
     def start(self) -> None:
         self.running = True
+        FakeListener.log.append("armed")
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         self.running = False
+        FakeListener.log.append("disarmed")
+        return True
 
 
 def _wait_for(pred: Callable[[], bool], timeout: float = 3.0) -> None:
@@ -62,6 +73,7 @@ def _wait_for(pred: Callable[[], bool], timeout: float = 3.0) -> None:
 @pytest.fixture(name="made")
 def _made(tmp_path: Path) -> tuple[vc.VoiceDaemon, list[FakeSession], list[str]]:
     FakeListener.instances.clear()
+    FakeListener.log.clear()
     sessions: list[FakeSession] = []
     said: list[str] = []
 
@@ -69,12 +81,17 @@ def _made(tmp_path: Path) -> tuple[vc.VoiceDaemon, list[FakeSession], list[str]]
         sessions.append(FakeSession())
         return sessions[-1]
 
+    def announce(text: str) -> None:
+        said.append(text)
+        FakeListener.log.append(f"say {text}")
+
     daemon = vc.VoiceDaemon(
         factory,
         listener_factory=FakeListener,
-        announce=said.append,
+        announce=announce,
         notify=lambda: None,
         state_dir=tmp_path,
+        timing=FAST,
     )
     return daemon, sessions, said
 
@@ -87,54 +104,82 @@ def test_toggle_starts_then_stops_with_announcements(made) -> None:
     daemon.handle("toggle")
     _wait_for(lambda: daemon.state == "idle")
     assert sessions[0].ended.is_set()
-    _wait_for(lambda: said == ["voice on", "voice off"])
+    assert said == ["voice on", "voice off"]
 
 
-def test_wake_listener_released_before_session_and_rearmed_after(made) -> None:
+def test_wake_rearms_only_after_voice_off(made) -> None:
     daemon, _sessions, _said = made
-    daemon.arm_wake()
-    first = FakeListener.instances[0]
-    assert first.running
-    first.on_wake()  # the wake word fired
+    daemon.submit("arm")
+    daemon.drain()
+    FakeListener.instances[0].on_wake()  # the wake word fired
     _wait_for(lambda: daemon.state == "talking")
-    assert not first.running  # mic released before the session took it
+    assert not FakeListener.instances[0].running  # mic released before the session took it
     daemon.handle("off")
-    _wait_for(lambda: len(FakeListener.instances) == 2 and FakeListener.instances[1].running)
+    _wait_for(lambda: daemon.state == "idle")
+    daemon.drain()
+    assert FakeListener.log == ["armed", "disarmed", "say voice on", "say voice off", "armed"]
+
+
+def test_concurrent_toggles_are_linearised(made) -> None:
+    daemon, sessions, _said = made
+    threads = [threading.Thread(target=daemon.handle, args=("toggle",)) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    daemon.drain()
+    _wait_for(lambda: daemon.state in ("idle", "talking"))
+    daemon.drain()
+    assert len(sessions) <= 2  # never two sessions alive at once
+    assert sum(not s.ended.is_set() for s in sessions) <= 1
 
 
 def test_idle_timeout_hangs_up(tmp_path: Path) -> None:
     session = FakeSession(idle=999.0)
     daemon = vc.VoiceDaemon(
-        lambda: session, announce=lambda _t: None, notify=lambda: None, state_dir=tmp_path
+        lambda: session,
+        announce=lambda _t: None,
+        notify=lambda: None,
+        state_dir=tmp_path,
+        timing=FAST | {"idle_timeout": 0.5},
     )
-    daemon.idle_timeout = 1.0
     daemon.handle("on")
     _wait_for(session.ended.is_set)
     _wait_for(lambda: daemon.state == "idle")
 
 
-def test_off_during_starting_cancels_the_session(tmp_path: Path) -> None:
-    gate = threading.Event()
-    session = FakeSession()
-
-    def slow_factory() -> FakeSession:
-        gate.wait(2)
-        return session
-
+def test_stuck_session_triggers_clean_restart(tmp_path: Path, monkeypatch) -> None:
+    fatal = threading.Event()
+    monkeypatch.setattr(vc.VoiceDaemon, "_fatal", lambda self, why: fatal.set())
+    session = FakeSession(hang=True)
     daemon = vc.VoiceDaemon(
-        slow_factory, announce=lambda _t: None, notify=lambda: None, state_dir=tmp_path
+        lambda: session,
+        announce=lambda _t: None,
+        notify=lambda: None,
+        state_dir=tmp_path,
+        timing=FAST | {"stop_deadline": 0.3},
     )
     daemon.handle("on")
-    _wait_for(lambda: daemon.state == "starting")
+    _wait_for(lambda: daemon.state == "talking")
     daemon.handle("off")
-    gate.set()
-    _wait_for(session.ended.is_set)
+    _wait_for(fatal.is_set)
+    session.release.set()
+
+
+def test_off_right_after_on_ends_the_new_session(made) -> None:
+    daemon, sessions, _said = made
+    daemon.handle("on")
+    daemon.handle("off")
+    daemon.drain()
+    _wait_for(lambda: daemon.state == "idle")
+    assert sessions and sessions[0].ended.is_set()
 
 
 def test_wake_preference_persists(made, tmp_path: Path) -> None:
     daemon, _s, _a = made
-    reply = daemon.handle("wake off")
-    assert reply["ok"] and reply["wake"] is False
+    daemon.handle("wake off")
+    daemon.drain()
+    assert daemon.status()["wake"] is False
     again = vc.VoiceDaemon(
         FakeSession, listener_factory=FakeListener, notify=lambda: None, state_dir=tmp_path
     )
@@ -147,8 +192,11 @@ def test_failed_start_returns_to_idle(tmp_path: Path) -> None:
     def broken() -> FakeSession:
         raise RuntimeError("no network")
 
-    daemon = vc.VoiceDaemon(broken, announce=said.append, notify=lambda: None, state_dir=tmp_path)
-    daemon.start_talking("test")
+    daemon = vc.VoiceDaemon(
+        broken, announce=said.append, notify=lambda: None, state_dir=tmp_path, timing=FAST
+    )
+    daemon.handle("on")
+    daemon.drain()
     assert daemon.state == "idle" and said == ["voice on", "voice failed"]
 
 
@@ -165,8 +213,11 @@ def test_socket_roundtrip_and_status_file(made, tmp_path: Path) -> None:
     server = threading.Thread(target=vc.serve, args=(daemon, path, stop), daemon=True)
     server.start()
     _wait_for(path.exists)
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
     reply = vc.send("status", path)
     assert reply is not None and reply["state"] == "idle"
+    with pytest.raises(RuntimeError):
+        vc.serve(daemon, path, threading.Event())  # a second daemon refuses to start
     vc.send("on", path)
     _wait_for(lambda: daemon.state == "talking")
     assert '"talking"' in (tmp_path / "status.json").read_text()
@@ -181,5 +232,6 @@ def test_launch_agent_plist_runs_the_daemon(tmp_path: Path) -> None:
     data = plistlib.loads(vc.launch_agent_plist(Path("/x/mac-voice"), tmp_path))
     assert data["Label"] == "com.albert.mac-voice"
     assert data["ProgramArguments"] == ["/x/mac-voice", "-d"]
+    assert data["WorkingDirectory"] == "/x"
     assert data["KeepAlive"] is True and data["RunAtLoad"] is True
     assert data["StandardErrorPath"] == str(tmp_path / "daemon.log")

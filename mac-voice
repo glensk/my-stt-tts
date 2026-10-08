@@ -4,4 +4,5 @@
 # One-time setup: uv sync --inexact --extra elevenlabs
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${here}"  # relative paths (wake models, .env) resolve from the repo root
 exec "${here}/.venv/bin/python" -m my_stt_tts.eleven_voice "$@"

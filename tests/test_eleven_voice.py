@@ -151,3 +151,26 @@ def test_aec_mode_falls_back_to_gated_speakers(monkeypatch: pytest.MonkeyPatch) 
     iface.output(b"\x07" * 64)
     _mic()(b"\x11" * 8, 4, None, None)
     assert sent[-1] == b"\x00" * 8
+
+
+def test_start_after_stop_does_not_open_the_mic() -> None:
+    iface = eleven_voice.make_audio_interface("headphones", None, None)
+    iface.stop()  # end_session() before the SDK's late audio start
+    iface.start(lambda _pcm: None)
+    assert len(_FakeStream.created) == 1  # only the playback object; no input stream
+
+
+def test_stop_is_idempotent() -> None:
+    iface = eleven_voice.make_audio_interface("headphones", None, None)
+    iface.start(lambda _pcm: None)
+    iface.stop()
+    iface.stop()
+
+
+def test_loud_mic_audio_marks_the_user_as_speaking() -> None:
+    iface = eleven_voice.make_audio_interface("headphones", None, None)
+    iface.start(lambda _pcm: None)
+    _mic()(b"\x00\x00" * 4, 4, None, None)
+    assert iface.last_user_audio == 0.0
+    _mic()((3000).to_bytes(2, "little", signed=True) * 4, 4, None, None)
+    assert iface.last_user_audio > 0.0

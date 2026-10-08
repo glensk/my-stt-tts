@@ -43,6 +43,7 @@ import numpy as np
 
 log = logging.getLogger("my_stt_tts.eleven_voice")
 
+VOICE_RMS = 600.0  # int16 RMS (~-35 dBFS) above which the user counts as speaking
 SAMPLE_RATE = 16000  # the SDK's fixed PCM format: 16-bit mono 16 kHz, both ways
 INPUT_CHUNK = 4000  # 250 ms, the SDK's recommended input chunk
 OUTPUT_BLOCK = 320  # 20 ms playback blocks keep interruption snappy
@@ -103,11 +104,16 @@ class _Playback:
         return pending or (time.monotonic() - self.last_audio) < tail_s
 
 
-def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str | None) -> Any:
-    """Build an SDK ``AudioInterface`` for ``mode`` (see module docstring)."""
+def make_audio_interface(  # pylint: disable=too-many-statements  # one nested class
+    mode: str, in_dev: int | str | None, out_dev: int | str | None
+) -> Any:
+    """Build an SDK ``AudioInterface`` for ``mode`` (see module docstring).
+
+    The class is nested so the optional ``elevenlabs`` base class is imported lazily.
+    """
     from elevenlabs.conversational_ai.conversation import AudioInterface
 
-    class MacAudioInterface(AudioInterface):
+    class MacAudioInterface(AudioInterface):  # pylint: disable=too-many-instance-attributes
         """VoiceProcessingIO duplex, or sounddevice capture + buffered playback."""
 
         def __init__(self) -> None:
@@ -117,13 +123,28 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
             self._in_stream: Any = None
             self._vp: Any = None
             self._thread: threading.Thread | None = None
+            self._lifecycle = threading.Lock()  # start/stop never interleave
+            self.last_user_audio = 0.0  # monotonic time the user was last audible
 
         def _send(self, cb: Callable[[bytes], None], pcm: bytes) -> None:
             if self.mode == "speakers" and self.playback.speaking():
                 pcm = b"\x00" * len(pcm)  # gate the mic while the agent talks
+            self._note_level(pcm)
             cb(pcm)
 
+        def _note_level(self, pcm: bytes) -> None:
+            samples = np.frombuffer(pcm, dtype="<i2")
+            if samples.size and np.sqrt(np.mean(samples.astype(np.float32) ** 2)) > VOICE_RMS:
+                self.last_user_audio = time.monotonic()
+
         def start(self, input_callback: Callable[[bytes], None]) -> None:
+            # The SDK opens audio only after the websocket connects; an end_session() in
+            # between has already called stop(), so a late start must not open the mic.
+            with self._lifecycle:
+                if not self._stop.is_set():
+                    self._open(input_callback)
+
+        def _open(self, input_callback: Callable[[bytes], None]) -> None:
             if self.mode == "aec":
                 if self._start_vp(input_callback):
                     return
@@ -153,6 +174,7 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
                     if self._stop.is_set():
                         break
                     pcm = (np.clip(frame, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+                    self._note_level(pcm)
                     input_callback(pcm)
 
             self._thread = threading.Thread(target=_pump, name="vp-capture", daemon=True)
@@ -160,13 +182,18 @@ def make_audio_interface(mode: str, in_dev: int | str | None, out_dev: int | str
             return True
 
         def stop(self) -> None:
-            self._stop.set()
-            if self._in_stream is not None:
-                self._in_stream.stop()
-                self._in_stream.close()
-                self.playback.stop()
-            if self._vp is not None:
-                self._vp.close()
+            with self._lifecycle:
+                if self._stop.is_set():
+                    return  # idempotent: the SDK and the daemon may both stop us
+                self._stop.set()
+                if self._in_stream is not None:
+                    self._in_stream.stop()
+                    self._in_stream.close()
+                    self.playback.stop()
+                if self._vp is not None:
+                    self._vp.close()
+                if self._thread is not None and self._thread is not threading.current_thread():
+                    self._thread.join(timeout=2.0)  # capture thread gone before the mic is reused
 
         def output(self, audio: bytes) -> None:
             if self._vp is not None:
@@ -205,8 +232,9 @@ def _device(value: str | None) -> int | str | None:
 class VoiceSession:
     """One ElevenLabs conversation: ``start`` returns at once, ``end`` hangs up, ``wait`` blocks.
 
-    ``last_activity`` (monotonic) moves on every user/agent transcript, so a supervisor can
-    hang up an idle session — the agent bills per connected minute, not per word.
+    ``idle_for`` counts from the latest of: a transcript, the user's voice reaching the mic
+    (before any transcript exists) and the end of agent playback — so a supervisor can hang
+    up an idle session without cutting off a long utterance; the agent bills per minute.
     """
 
     def __init__(
@@ -251,10 +279,11 @@ class VoiceSession:
         return self.conversation.wait_for_session_end()
 
     def idle_for(self) -> float:
-        """Seconds since the last transcript, 0 while the agent is still speaking."""
+        """Seconds since the user or agent last did anything (0 while the agent speaks)."""
         if self.audio.speaking():
             self.last_activity = time.monotonic()
-        return time.monotonic() - self.last_activity
+        latest = max(self.last_activity, self.audio.last_user_audio)
+        return time.monotonic() - latest
 
 
 def credentials(agent_id: str | None = None) -> tuple[str, str] | None:

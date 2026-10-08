@@ -1,19 +1,25 @@
 """mac-voice control daemon: one owner of the mic, toggled by wake word, chord or menu bar.
 
-States: ``idle`` (the wake-word listener holds the mic, if wake is enabled), ``starting``
-and ``talking`` (an ElevenLabs :class:`~my_stt_tts.eleven_voice.VoiceSession` holds it).
-The wake listener is always closed before a session opens the VoiceProcessingIO engine and
-re-armed only after the session is gone and "voice off" was spoken, so the agent's voice
-and the announcements can never fire the wake word.
+States: ``idle`` (the wake-word listener holds the mic, if wake is enabled), ``starting``,
+``talking`` (an ElevenLabs :class:`~my_stt_tts.eleven_voice.VoiceSession` holds it) and
+``stopping``. Every state change runs on ONE worker thread fed by a queue, so concurrent
+chord / menu / wake / hang-up events are linearised.
 
-Control: a unix socket (``control.sock`` in the state dir) taking one-line commands
+Mic handoff (CoreAudio releases a device asynchronously): the wake listener is stopped,
+its thread joined and a settle pause taken BEFORE a session opens the VoiceProcessingIO
+engine; on the way back the session's audio is stopped and joined, "voice off" is spoken
+and a cooldown passes BEFORE the listener re-arms — so neither the agent's voice nor the
+announcements can fire the wake word, and ``idle`` is only published once that is done.
+
+Control: a unix socket (``control.sock`` in the 0700 state dir) taking one-line commands
 ``on | off | toggle | status | wake on | wake off``; each reply is one JSON line. The
-daemon also writes ``status.json`` there on every change (read by the SwiftBar plugin
-without starting Python) and asks SwiftBar to refresh the ``mac-voice`` plugin.
+daemon writes ``status.json`` on every change (read by the SwiftBar plugin without
+starting Python) and asks SwiftBar to refresh the plugin.
 
-A session ends on ``off``/``toggle``, when the agent hangs up, or after ``idle_timeout``
-seconds without a transcript while the agent is silent (the agent is billed per
-connected minute).
+A session ends on ``off``/``toggle``, when the agent hangs up, after ``idle_timeout``
+seconds without the user speaking while the agent is silent, or at ``max_duration``. If
+a session cannot be reclaimed within ``stop_deadline`` the process exits non-zero so the
+LaunchAgent restarts it with a clean audio stack.
 """
 
 from __future__ import annotations
@@ -33,8 +39,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-import numpy as np
-
 # Native/optional backends (sounddevice, openWakeWord) are imported lazily on purpose.
 # pylint: disable=import-outside-toplevel
 
@@ -42,11 +46,18 @@ log = logging.getLogger("my_stt_tts.voice_control")
 
 STATE_DIR = Path(os.environ.get("MAC_VOICE_STATE_DIR", Path.home() / ".local/state/mac-voice"))
 IDLE_TIMEOUT_S = 60.0
-WAKE_FRAME = 1280  # 80 ms at 16 kHz, openWakeWord's frame
+MAX_DURATION_S = 15 * 60.0  # local backstop above the agent's own 10-minute cap
+STOP_DEADLINE_S = 10.0
+SETTLE_S = 0.3  # CoreAudio hands a released input device over asynchronously
+REARM_COOLDOWN_S = 0.5  # acoustic tail after "voice off" before the wake word listens
 SAMPLE_RATE = 16000
-SWIFTBAR_REFRESH = "swiftbar://refreshplugin?name=mac-voice"
+SWIFTBAR_REFRESH = (
+    "swiftbar://refreshplugin?name=mac-voice",
+    "swiftbar://refreshplugin?name=mac-voice.5s.sh",
+)
 LAUNCH_LABEL = "com.albert.mac-voice"
 LAUNCH_AGENT = Path.home() / "Library/LaunchAgents" / f"{LAUNCH_LABEL}.plist"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Session(Protocol):
@@ -62,7 +73,7 @@ class Listener(Protocol):
     """What the daemon needs from a wake-word listener (:class:`WakeListener`)."""
 
     def start(self) -> None: ...
-    def stop(self) -> None: ...
+    def stop(self) -> bool: ...
 
 
 def socket_path(state_dir: Path = STATE_DIR) -> Path:
@@ -70,109 +81,105 @@ def socket_path(state_dir: Path = STATE_DIR) -> Path:
 
 
 class WakeListener:
-    """Mic -> wake detector on a background thread; calls ``on_wake`` once, then stops."""
+    """Run :func:`my_stt_tts.audio.listen_for_wake` on a thread; ``on_wake`` once, then stop.
 
-    def __init__(self, detector: Any, on_wake: Callable[[], None]) -> None:
+    Reuses the main pipeline's wake loop (native-rate capture, resampling, exact 80 ms
+    reframing, gain) instead of a second, simplified capture path.
+    """
+
+    def __init__(self, detector: Any, on_wake: Callable[[], None], *, gain: float = 1.0) -> None:
         self.detector = detector
         self.on_wake = on_wake
-        self._q: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
+        self.gain = gain
         self._stop = threading.Event()
-        self._stream: Any = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        import sounddevice as sd
-
         self._stop.clear()
-        with contextlib.suppress(Exception):
-            self.detector.reset()
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            blocksize=WAKE_FRAME,
-            callback=self._on_audio,
-        )
-        self._stream.start()
-        self._thread = threading.Thread(target=self._loop, name="wake", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="wake", daemon=True)
         self._thread.start()
 
-    def _on_audio(self, indata: Any, _frames: int, _time: Any, _status: Any) -> None:
-        with contextlib.suppress(queue.Full):
-            self._q.put_nowait(indata[:, 0].copy())
+    def _run(self) -> None:
+        from . import audio
 
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                frame = self._q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if self.detector.detect(frame):
-                log.info("wake word fired (score %.2f)", getattr(self.detector, "last_score", 0))
-                self._stop.set()
-                threading.Thread(target=self.on_wake, name="wake-fire", daemon=True).start()
-                return
+        try:
+            fired = audio.listen_for_wake(
+                self.detector, SAMPLE_RATE, gain=self.gain, stop=self._stop
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            log.exception("❌ wake listener crashed")
+            return
+        if fired and not self._stop.is_set():
+            log.info("wake word fired (score %.2f)", getattr(self.detector, "last_score", 0.0))
+            self.on_wake()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Stop and join; True once the capture thread (and its stream) is gone."""
         self._stop.set()
-        if self._stream is not None:
-            with contextlib.suppress(Exception):
-                self._stream.stop()
-                self._stream.close()
-            self._stream = None
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=2.0)
-        self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(timeout=2.0)
+        return not thread.is_alive()
 
 
 def say(text: str) -> None:
     """Speak a short local announcement (macOS ``say``; blocks until spoken)."""
-    with contextlib.suppress(OSError):
-        subprocess.run(["say", text], check=False, timeout=10)
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(["/usr/bin/say", text], check=False, timeout=10)
 
 
 def refresh_menu_bar() -> None:
     """Ask SwiftBar to re-run the mac-voice plugin now (no-op without SwiftBar)."""
-    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-        subprocess.run(
-            ["open", "-g", SWIFTBAR_REFRESH],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
+    for url in SWIFTBAR_REFRESH:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["/usr/bin/open", "-g", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
 
 
 class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
     """State machine behind the control socket (see module docstring)."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         session_factory: Callable[[], Session],
         *,
         listener_factory: Callable[[Callable[[], None]], Listener] | None = None,
         announce: Callable[[str], None] = say,
         notify: Callable[[], None] = refresh_menu_bar,
-        idle_timeout: float = IDLE_TIMEOUT_S,
         state_dir: Path = STATE_DIR,
         wake_enabled: bool | None = None,
+        timing: dict[str, float] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.listener_factory = listener_factory
         self.announce = announce
         self.notify = notify
-        self.idle_timeout = idle_timeout
         self.state_dir = state_dir
+        self.timing = {
+            "idle_timeout": IDLE_TIMEOUT_S,
+            "max_duration": MAX_DURATION_S,
+            "stop_deadline": STOP_DEADLINE_S,
+            "settle": SETTLE_S,
+            "cooldown": REARM_COOLDOWN_S,
+        } | (timing or {})
         self.state = "idle"
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._session: Session | None = None
         self._listener: Listener | None = None
-        self._cancel = False
+        self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._closed = threading.Event()
         prefs = self._read_prefs()
         default_wake = bool(prefs.get("wake", True)) if wake_enabled is None else wake_enabled
         self.wake_enabled = default_wake and listener_factory is not None
+        threading.Thread(target=self._work, name="voice-worker", daemon=True).start()
 
-    # -- persistence --------------------------------------------------------------------
+    # -- persistence / publishing -------------------------------------------------------
     def _read_prefs(self) -> dict[str, Any]:
         try:
             data = json.loads((self.state_dir / "prefs.json").read_text())
@@ -181,7 +188,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             return {}
 
     def _write(self, name: str, data: dict[str, Any]) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = self.state_dir / f".{name}.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(self.state_dir / name)
@@ -195,70 +202,112 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
                 "pid": os.getpid(),
             }
 
-    def _changed(self) -> None:
+    def _set_state(self, state: str) -> None:
+        with self._lock:
+            self.state = state
+        self.publish()
+
+    def publish(self) -> None:
         with contextlib.suppress(OSError):
             self._write("status.json", self.status())
         self.notify()
 
-    # -- wake listener ------------------------------------------------------------------
-    def arm_wake(self) -> None:
-        with self._lock:
-            if not self.wake_enabled or self.state != "idle" or self._listener is not None:
-                return
-            assert self.listener_factory is not None
-            listener = self.listener_factory(lambda: self.start_talking("wake"))
+    # -- the serialised worker ----------------------------------------------------------
+    def submit(self, event: str, arg: Any = None) -> None:
+        self._events.put((event, arg))
+
+    def drain(self, timeout: float = 5.0) -> bool:
+        """Block until every event queued so far has been processed (tests, shutdown)."""
+        done = threading.Event()
+        self.submit("mark", done)
+        return done.wait(timeout)
+
+    def _work(self) -> None:
+        while not self._closed.is_set():
             try:
-                listener.start()
+                event, arg = self._events.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                self._dispatch(event, arg)
             except Exception:  # pylint: disable=broad-exception-caught
-                log.exception("❌ wake listener failed to start")
-                return
-            self._listener = listener
+                log.exception("❌ voice worker failed on %s", event)
 
-    def disarm_wake(self) -> None:
-        with self._lock:
-            listener, self._listener = self._listener, None
-        if listener is not None:
-            listener.stop()
+    def _dispatch(self, event: str, arg: Any) -> None:
+        if event == "on":
+            self._start_talking(str(arg))
+        elif event == "off":
+            self._stop_talking()
+        elif event == "toggle":
+            if self.state == "idle":
+                self._start_talking("toggle")
+            else:
+                self._stop_talking()
+        elif event == "wake":
+            self._set_wake(bool(arg))
+        elif event == "arm":
+            self._arm_wake()
+        elif event == "finished":
+            self._finish(arg)
+        elif event == "mark":
+            arg.set()
 
-    def set_wake(self, enabled: bool) -> None:
+    # -- wake listener ------------------------------------------------------------------
+    def _arm_wake(self) -> None:
+        if not self.wake_enabled or self.state != "idle" or self._listener is not None:
+            return
+        assert self.listener_factory is not None
+        listener = self.listener_factory(lambda: self.submit("on", "wake"))
+        try:
+            listener.start()
+        except Exception:  # pylint: disable=broad-exception-caught
+            log.exception("❌ wake listener failed to start")
+            return
+        self._listener = listener
+
+    def _disarm_wake(self) -> bool:
+        listener, self._listener = self._listener, None
+        if listener is None:
+            return True
+        released = listener.stop()
+        time.sleep(self.timing["settle"])
+        return released
+
+    def _set_wake(self, enabled: bool) -> None:
         with self._lock:
             self.wake_enabled = enabled and self.listener_factory is not None
         with contextlib.suppress(OSError):
             self._write("prefs.json", {"wake": enabled})
         if self.wake_enabled:
-            self.arm_wake()
+            self._arm_wake()
         else:
-            self.disarm_wake()
-        self._changed()
+            self._disarm_wake()
+        self.publish()
 
     # -- sessions -----------------------------------------------------------------------
-    def start_talking(self, reason: str) -> None:
-        with self._lock:
-            if self.state != "idle":
-                return
-            self.state, self._cancel = "starting", False
+    def _start_talking(self, reason: str) -> None:
+        if self.state != "idle":
+            return
         log.info("starting conversation (%s)", reason)
-        self._changed()
-        self.disarm_wake()  # release the mic before VoiceProcessingIO takes it
+        self._set_state("starting")
+        if not self._disarm_wake():
+            log.error("❌ wake listener did not release the mic; not starting")
+            self._set_state("idle")
+            self._arm_wake()
+            return
         self.announce("voice on")
         try:
             session = self.session_factory()
             session.start()
         except Exception:  # pylint: disable=broad-exception-caught
             log.exception("❌ conversation failed to start")
-            with self._lock:
-                self.state = "idle"
+            self._set_state("stopping")
             self.announce("voice failed")
-            self.arm_wake()
-            self._changed()
+            self._back_to_idle()
             return
-        with self._lock:
-            self._session, self.state = session, "talking"
-            cancel = self._cancel
-        self._changed()
+        self._session = session
+        self._set_state("talking")
         threading.Thread(target=self._supervise, args=(session,), daemon=True).start()
-        if cancel:
-            session.end()
 
     def _supervise(self, session: Session) -> None:
         done = threading.Event()
@@ -269,51 +318,88 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             done.set()
 
         threading.Thread(target=_wait, name="session-wait", daemon=True).start()
-        ending = False
-        while not done.wait(0.5):
-            if not ending and session.idle_for() > self.idle_timeout:
-                log.info("idle for %.0f s — hanging up", self.idle_timeout)
-                ending = True
-                session.end()
-        with self._lock:
-            if self._session is session:
-                self._session, self.state = None, "idle"
-        self.announce("voice off")
-        self.arm_wake()
-        self._changed()
+        started = time.monotonic()
+        ended_at: float | None = None
+        while not done.wait(0.25):
+            if ended_at is not None:
+                if time.monotonic() - ended_at > self.timing["stop_deadline"]:
+                    self._fatal("session did not end within the stop deadline")
+                    return
+                continue
+            if self.state == "stopping":  # a local "off" already asked it to end
+                ended_at = time.monotonic()
+                continue
+            too_long = time.monotonic() - started > self.timing["max_duration"]
+            try:
+                idle = session.idle_for() > self.timing["idle_timeout"]
+            except Exception:  # pylint: disable=broad-exception-caught
+                log.warning("⚠️  idle check failed; treating the session as idle", exc_info=True)
+                idle = True
+            if too_long or idle:
+                log.info("hanging up (%s)", "max duration" if too_long else "idle")
+                ended_at = time.monotonic()
+                with contextlib.suppress(Exception):
+                    session.end()
+        self.submit("finished", session)
 
-    def stop_talking(self) -> None:
-        with self._lock:
-            session = self._session
-            if self.state == "starting":
-                self._cancel = True
-        if session is not None:
-            session.end()
+    def _fatal(self, why: str) -> None:
+        """Unrecoverable audio/SDK state: exit so launchd restarts a clean process."""
+        log.critical("❌ %s — exiting for a clean restart", why)
+        with contextlib.suppress(OSError):
+            (self.state_dir / "status.json").unlink()
+        os._exit(70)  # pylint: disable=protected-access
+
+    def _stop_talking(self) -> None:
+        session = self._session
+        if session is None or self.state != "talking":
+            return
+        self._set_state("stopping")
+        with contextlib.suppress(Exception):
+            session.end()  # the supervisor sees wait() return and queues "finished"
+
+    def _finish(self, session: Session) -> None:
+        if self._session is not session:
+            return
+        self._session = None
+        self._set_state("stopping")
+        time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
+        self.announce("voice off")
+        self._back_to_idle()
+
+    def _back_to_idle(self) -> None:
+        time.sleep(self.timing["cooldown"])  # tail of the announcement, then listen again
+        self._set_state("idle")
+        self._arm_wake()
 
     # -- commands -----------------------------------------------------------------------
     def handle(self, line: str) -> dict[str, Any]:
         cmd = " ".join(line.strip().lower().split())
-        if cmd in ("on", "toggle") and (cmd == "on" or self.state == "idle"):
-            threading.Thread(target=self.start_talking, args=(cmd,), daemon=True).start()
-            time.sleep(0.05)  # let the state flip to "starting" before replying
-        elif cmd in ("off", "toggle"):
-            self.stop_talking()
+        if cmd in ("on", "off", "toggle"):
+            self.submit(cmd, "command")
+            time.sleep(0.05)  # usually lets the worker flip the state before replying
         elif cmd in ("wake on", "wake off"):
-            self.set_wake(cmd == "wake on")
+            self.submit("wake", cmd == "wake on")
+            time.sleep(0.05)
         elif cmd != "status":
             return {"ok": False, "error": f"unknown command {cmd!r}", **self.status()}
         return {"ok": True, **self.status()}
 
     def shutdown(self) -> None:
-        self.disarm_wake()
-        self.stop_talking()
+        session = self._session
+        if session is not None:
+            with contextlib.suppress(Exception):
+                session.end()
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener.stop()
+        self._closed.set()
 
 
 def serve(daemon: VoiceDaemon, path: Path, stop: threading.Event) -> None:
     """Accept control connections on the unix socket ``path`` until ``stop`` is set."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.exists():
-        if send("status", path) is not None:
+        if send("status", path, timeout=1.0) is not None:
             raise RuntimeError(f"another mac-voice daemon is already listening on {path}")
         path.unlink()
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -336,7 +422,7 @@ def serve(daemon: VoiceDaemon, path: Path, stop: threading.Event) -> None:
 
 def _answer(daemon: VoiceDaemon, conn: socket.socket) -> None:
     with conn:
-        conn.settimeout(2.0)
+        conn.settimeout(0.5)
         data = b""
         with contextlib.suppress(OSError):
             while b"\n" not in data and len(data) < 256:
@@ -344,12 +430,12 @@ def _answer(daemon: VoiceDaemon, conn: socket.socket) -> None:
                 if not chunk:
                     break
                 data += chunk
-        reply = daemon.handle(data.decode(errors="replace"))
+        reply = daemon.handle(data[:256].decode(errors="replace"))
         with contextlib.suppress(OSError):
             conn.sendall((json.dumps(reply) + "\n").encode())
 
 
-def send(command: str, path: Path | None = None, timeout: float = 5.0) -> dict[str, Any] | None:
+def send(command: str, path: Path | None = None, timeout: float = 3.0) -> dict[str, Any] | None:
     """Send one command to the daemon; its JSON reply, or None when no daemon listens."""
     target = path or socket_path()
     try:
@@ -358,7 +444,7 @@ def send(command: str, path: Path | None = None, timeout: float = 5.0) -> dict[s
             cli.connect(str(target))
             cli.sendall(command.encode() + b"\n")
             data = b""
-            while not data.endswith(b"\n"):
+            while not data.endswith(b"\n") and len(data) < 4096:
                 chunk = cli.recv(4096)
                 if not chunk:
                     break
@@ -378,25 +464,30 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         from .config import Config
         from .wake import make_wake_detector
 
-        detector = make_wake_detector(Config.from_env())
+        cfg = Config.from_env(REPO_ROOT / ".env")
+        if not Path(cfg.wake_model_path).is_absolute():
+            cfg.wake_model_path = str(REPO_ROOT / cfg.wake_model_path)
+        detector = make_wake_detector(cfg)
         if not detector.available():
             return None
     except Exception:  # pylint: disable=broad-exception-caught
         log.warning("⚠️  wake word unavailable; chord + menu bar only", exc_info=True)
         return None
-    return lambda on_wake: WakeListener(detector, on_wake)
+    gain = float(getattr(cfg, "wake_gain", 1.0))
+    return lambda on_wake: WakeListener(detector, on_wake, gain=gain)
 
 
 def daemon_main(session_factory: Callable[[], Session], *, wake: bool = True) -> int:
     """Run the daemon in the foreground until SIGTERM / SIGINT."""
+    logging.getLogger("my_stt_tts").setLevel(logging.INFO)
     stop = threading.Event()
     daemon = VoiceDaemon(
         session_factory, listener_factory=wake_listener_factory() if wake else None
     )
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
-    daemon.arm_wake()
-    daemon._changed()  # pylint: disable=protected-access  # publish the initial status
+    daemon.submit("arm")
+    daemon.publish()
     print(f"✅ mac-voice daemon listening on {socket_path()} (wake: {daemon.wake_enabled})")
     try:
         serve(daemon, socket_path(), stop)
@@ -415,8 +506,10 @@ def launch_agent_plist(launcher: Path, state_dir: Path = STATE_DIR) -> bytes:
         {
             "Label": LAUNCH_LABEL,
             "ProgramArguments": [str(launcher), "-d"],
+            "WorkingDirectory": str(launcher.parent),
             "RunAtLoad": True,
             "KeepAlive": True,
+            "ThrottleInterval": 10,
             "ProcessType": "Interactive",  # audio: no background throttling
             "StandardOutPath": log_file,
             "StandardErrorPath": log_file,
@@ -427,24 +520,22 @@ def launch_agent_plist(launcher: Path, state_dir: Path = STATE_DIR) -> bytes:
 def install_launch_agent(launcher: Path) -> int:
     """Write + (re)load the LaunchAgent; the daemon then starts at every login."""
     domain = f"gui/{os.getuid()}"
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
     LAUNCH_AGENT.write_bytes(launch_agent_plist(launcher))
     subprocess.run(
-        ["launchctl", "bootout", f"{domain}/{LAUNCH_LABEL}"], check=False, capture_output=True
+        ["/bin/launchctl", "bootout", f"{domain}/{LAUNCH_LABEL}"], check=False, capture_output=True
     )
-    res = subprocess.run(["launchctl", "bootstrap", domain, str(LAUNCH_AGENT)], check=False)
-    print(
-        ("✅ installed + started " if res.returncode == 0 else "❌ launchctl failed for ")
-        + str(LAUNCH_AGENT)
-    )
+    res = subprocess.run(["/bin/launchctl", "bootstrap", domain, str(LAUNCH_AGENT)], check=False)
+    ok = res.returncode == 0
+    print(("✅ installed + started " if ok else "❌ launchctl failed for ") + str(LAUNCH_AGENT))
     return res.returncode
 
 
 def uninstall_launch_agent() -> int:
     """Stop the LaunchAgent and remove its plist."""
     subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_LABEL}"],
+        ["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCH_LABEL}"],
         check=False,
         capture_output=True,
     )
