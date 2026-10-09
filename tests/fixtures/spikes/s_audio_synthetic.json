@@ -1,0 +1,1860 @@
+{
+ "conversation_id": "conv_1601m4ghx5q2egb8wypjn5f8n511",
+ "endpointer_silence_s": 0.5,
+ "inner_pause_s": 0.9,
+ "input_chunk_s": 0.25,
+ "rows": [
+  {
+   "i": 0,
+   "said": "Open YouTube.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 31.348,
+   "utterance_end": 32.29,
+   "utterance_closed": 32.79,
+   "utterance_len_s": 0.942,
+   "transcripts": [
+    "Open YouTube."
+   ],
+   "transcript_t": [
+    33.598
+   ],
+   "agent_response_t": 34.701,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.308,
+   "delta_transcript_minus_utt_closed": 0.808,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 1,
+   "said": "Lauter.",
+   "voice": "Anna",
+   "vad_utterances": 1,
+   "utterance_start": 42.13,
+   "utterance_end": 42.63,
+   "utterance_closed": 43.13,
+   "utterance_len_s": 0.5,
+   "transcripts": [
+    "Lauter."
+   ],
+   "transcript_t": [
+    44.301
+   ],
+   "agent_response_t": 45.229,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.671,
+   "delta_transcript_minus_utt_closed": 1.171,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 2,
+   "said": "Mets le volume à trente.",
+   "voice": "Thomas",
+   "vad_utterances": 1,
+   "utterance_start": 51.88,
+   "utterance_end": 53.226,
+   "utterance_closed": 53.726,
+   "utterance_len_s": 1.346,
+   "transcripts": [
+    "Mets le volume à 30."
+   ],
+   "transcript_t": [
+    54.748
+   ],
+   "agent_response_t": 56.005,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.522,
+   "delta_transcript_minus_utt_closed": 1.022,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 3,
+   "said": "Which sessions are running?",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 63.63,
+   "utterance_end": 64.88,
+   "utterance_closed": 65.38,
+   "utterance_len_s": 1.25,
+   "transcripts": [
+    "Which sessions are running ?"
+   ],
+   "transcript_t": [
+    66.244
+   ],
+   "agent_response_t": 66.877,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.364,
+   "delta_transcript_minus_utt_closed": 0.864,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 4,
+   "said": "Run the echo test.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 71.88,
+   "utterance_end": 73.104,
+   "utterance_closed": 73.604,
+   "utterance_len_s": 1.224,
+   "transcripts": [
+    "Run the echo test."
+   ],
+   "transcript_t": [
+    74.259
+   ],
+   "agent_response_t": 74.927,
+   "client_tool_call_t": 74.259,
+   "delta_transcript_minus_utt_end": 1.155,
+   "delta_transcript_minus_utt_closed": 0.655,
+   "delta_tool_minus_utt_end": 1.155
+  },
+  {
+   "i": 5,
+   "said": "Mach die Musik leiser.",
+   "voice": "Anna",
+   "vad_utterances": 1,
+   "utterance_start": 81.848,
+   "utterance_end": 83.13,
+   "utterance_closed": 83.63,
+   "utterance_len_s": 1.282,
+   "transcripts": [
+    "Mach die Musik leiser."
+   ],
+   "transcript_t": [
+    84.563
+   ],
+   "agent_response_t": 85.589,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.433,
+   "delta_transcript_minus_utt_closed": 0.933,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 6,
+   "said": "Ouvre YouTube.",
+   "voice": "Thomas",
+   "vad_utterances": 1,
+   "utterance_start": 91.598,
+   "utterance_end": 92.572,
+   "utterance_closed": 93.072,
+   "utterance_len_s": 0.974,
+   "transcripts": [
+    "Ouver YouTube."
+   ],
+   "transcript_t": [
+    94.36
+   ],
+   "agent_response_t": 95.064,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.788,
+   "delta_transcript_minus_utt_closed": 1.288,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 7,
+   "said": "Open YouTube. | And play the first video.",
+   "voice": "Samantha",
+   "vad_utterances": 2,
+   "utterance_start": 100.598,
+   "utterance_end": 103.976,
+   "utterance_closed": 104.476,
+   "utterance_len_s": 3.378,
+   "transcripts": [
+    "Open YouTube.",
+    "And play the first video."
+   ],
+   "transcript_t": [
+    102.794,
+    105.358
+   ],
+   "agent_response_t": 103.241,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": -1.182,
+   "delta_transcript_minus_utt_closed": -1.682,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 8,
+   "said": "Skip ten seconds.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 111.976,
+   "utterance_end": 113.104,
+   "utterance_closed": 113.604,
+   "utterance_len_s": 1.128,
+   "transcripts": [
+    "Skip 10 seconds."
+   ],
+   "transcript_t": [
+    114.316
+   ],
+   "agent_response_t": 114.989,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.212,
+   "delta_transcript_minus_utt_closed": 0.712,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 9,
+   "said": "Welche Sitzungen laufen gerade?",
+   "voice": "Anna",
+   "vad_utterances": 1,
+   "utterance_start": 120.598,
+   "utterance_end": 122.54,
+   "utterance_closed": 123.04,
+   "utterance_len_s": 1.942,
+   "transcripts": [
+    "Welche Sitzungen laufen gerade?"
+   ],
+   "transcript_t": [
+    124.052
+   ],
+   "agent_response_t": 124.705,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.512,
+   "delta_transcript_minus_utt_closed": 1.012,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 10,
+   "said": "Plus fort.",
+   "voice": "Thomas",
+   "vad_utterances": 1,
+   "utterance_start": 129.88,
+   "utterance_end": 130.63,
+   "utterance_closed": 131.13,
+   "utterance_len_s": 0.75,
+   "transcripts": [
+    "Plus 4."
+   ],
+   "transcript_t": [
+    132.066
+   ],
+   "agent_response_t": 132.751,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.436,
+   "delta_transcript_minus_utt_closed": 0.936,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 11,
+   "said": "Make the screen brighter.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 137.598,
+   "utterance_end": 138.822,
+   "utterance_closed": 139.322,
+   "utterance_len_s": 1.224,
+   "transcripts": [
+    "Make the screen brighter."
+   ],
+   "transcript_t": [
+    140.08
+   ],
+   "agent_response_t": 140.787,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.258,
+   "delta_transcript_minus_utt_closed": 0.758,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 12,
+   "said": "Öffne den Taschenrechner. | Und rechne zwei plus zwei.",
+   "voice": "Anna",
+   "vad_utterances": 2,
+   "utterance_start": 146.098,
+   "utterance_end": 150.354,
+   "utterance_closed": 150.854,
+   "utterance_len_s": 4.256,
+   "transcripts": [
+    "Öffne den Taschenrechner und rechne zwei plus zwei."
+   ],
+   "transcript_t": [
+    151.522
+   ],
+   "agent_response_t": 152.337,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.168,
+   "delta_transcript_minus_utt_closed": 0.668,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 13,
+   "said": "Quelles sessions sont actives ?",
+   "voice": "Thomas",
+   "vad_utterances": 1,
+   "utterance_start": 158.38,
+   "utterance_end": 160.008,
+   "utterance_closed": 160.508,
+   "utterance_len_s": 1.628,
+   "transcripts": [
+    "Quelles sessions sont actives?"
+   ],
+   "transcript_t": [
+    161.339
+   ],
+   "agent_response_t": 161.969,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.331,
+   "delta_transcript_minus_utt_closed": 0.831,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 14,
+   "said": "Run the echo test.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 166.88,
+   "utterance_end": 168.104,
+   "utterance_closed": 168.604,
+   "utterance_len_s": 1.224,
+   "transcripts": [
+    "Run the echo test."
+   ],
+   "transcript_t": [
+    169.248
+   ],
+   "agent_response_t": 169.964,
+   "client_tool_call_t": 169.249,
+   "delta_transcript_minus_utt_end": 1.144,
+   "delta_transcript_minus_utt_closed": 0.644,
+   "delta_tool_minus_utt_end": 1.145
+  },
+  {
+   "i": 15,
+   "said": "Pause the video.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 176.88,
+   "utterance_end": 177.758,
+   "utterance_closed": 178.258,
+   "utterance_len_s": 0.878,
+   "transcripts": [
+    "Pause the video."
+   ],
+   "transcript_t": [
+    179.245
+   ],
+   "agent_response_t": 179.709,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.487,
+   "delta_transcript_minus_utt_closed": 0.987,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 16,
+   "said": "Nächstes Video.",
+   "voice": "Anna",
+   "vad_utterances": 1,
+   "utterance_start": 184.598,
+   "utterance_end": 185.79,
+   "utterance_closed": 186.29,
+   "utterance_len_s": 1.192,
+   "transcripts": [
+    "Nächstes Video."
+   ],
+   "transcript_t": [
+    187.686
+   ],
+   "agent_response_t": 188.403,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.896,
+   "delta_transcript_minus_utt_closed": 1.396,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 17,
+   "said": "Mets en pause.",
+   "voice": "Thomas",
+   "vad_utterances": 1,
+   "utterance_start": 194.63,
+   "utterance_end": 195.604,
+   "utterance_closed": 196.104,
+   "utterance_len_s": 0.974,
+   "transcripts": [
+    "Mets en pause."
+   ],
+   "transcript_t": [
+    197.993
+   ],
+   "agent_response_t": 198.852,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 2.389,
+   "delta_transcript_minus_utt_closed": 1.889,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 18,
+   "said": "Open Calculator.",
+   "voice": "Samantha",
+   "vad_utterances": 1,
+   "utterance_start": 203.848,
+   "utterance_end": 205.104,
+   "utterance_closed": 205.604,
+   "utterance_len_s": 1.256,
+   "transcripts": [
+    "Open calculator."
+   ],
+   "transcript_t": [
+    206.331
+   ],
+   "agent_response_t": 207.09,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.227,
+   "delta_transcript_minus_utt_closed": 0.727,
+   "delta_tool_minus_utt_end": null
+  },
+  {
+   "i": 19,
+   "said": "Volume dreißig.",
+   "voice": "Anna",
+   "vad_utterances": 1,
+   "utterance_start": 213.38,
+   "utterance_end": 214.476,
+   "utterance_closed": 214.976,
+   "utterance_len_s": 1.096,
+   "transcripts": [
+    "Volume 30."
+   ],
+   "transcript_t": [
+    216.401
+   ],
+   "agent_response_t": 216.968,
+   "client_tool_call_t": null,
+   "delta_transcript_minus_utt_end": 1.925,
+   "delta_transcript_minus_utt_closed": 1.425,
+   "delta_tool_minus_utt_end": null
+  }
+ ],
+ "binding": [
+  {
+   "t": 33.598,
+   "text": "Open YouTube.",
+   "turn": 0,
+   "candidates": 1,
+   "latest_end": 32.290098999995266,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 44.301,
+   "text": "Lauter.",
+   "turn": 1,
+   "candidates": 1,
+   "latest_end": 42.63009899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 54.748,
+   "text": "Mets le volume à 30.",
+   "turn": 2,
+   "candidates": 1,
+   "latest_end": 53.226098999995266,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 66.244,
+   "text": "Which sessions are running ?",
+   "turn": 3,
+   "candidates": 1,
+   "latest_end": 64.88009899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 74.259,
+   "text": "Run the echo test.",
+   "turn": 4,
+   "candidates": 1,
+   "latest_end": 73.10409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 84.563,
+   "text": "Mach die Musik leiser.",
+   "turn": 5,
+   "candidates": 1,
+   "latest_end": 83.13009899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 94.36,
+   "text": "Ouver YouTube.",
+   "turn": 6,
+   "candidates": 1,
+   "latest_end": 92.57209899999526,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 102.794,
+   "text": "Open YouTube.",
+   "turn": 7,
+   "candidates": 1,
+   "latest_end": 101.54009899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 105.358,
+   "text": "And play the first video.",
+   "turn": 7,
+   "candidates": 1,
+   "latest_end": 103.97609899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 114.316,
+   "text": "Skip 10 seconds.",
+   "turn": 8,
+   "candidates": 1,
+   "latest_end": 113.10409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 124.052,
+   "text": "Welche Sitzungen laufen gerade?",
+   "turn": 9,
+   "candidates": 1,
+   "latest_end": 122.54009899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 132.066,
+   "text": "Plus 4.",
+   "turn": 10,
+   "candidates": 1,
+   "latest_end": 130.63009899999528,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 140.08,
+   "text": "Make the screen brighter.",
+   "turn": 11,
+   "candidates": 1,
+   "latest_end": 138.8220989999953,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 151.522,
+   "text": "Öffne den Taschenrechner und rechne zwei plus zwei.",
+   "turn": 12,
+   "candidates": 1,
+   "latest_end": 150.35409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 161.339,
+   "text": "Quelles sessions sont actives?",
+   "turn": 13,
+   "candidates": 1,
+   "latest_end": 160.00809899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 169.248,
+   "text": "Run the echo test.",
+   "turn": 14,
+   "candidates": 1,
+   "latest_end": 168.10409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 179.245,
+   "text": "Pause the video.",
+   "turn": 15,
+   "candidates": 1,
+   "latest_end": 177.75809899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 187.686,
+   "text": "Nächstes Video.",
+   "turn": 16,
+   "candidates": 1,
+   "latest_end": 185.79009899999528,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 197.993,
+   "text": "Mets en pause.",
+   "turn": 17,
+   "candidates": 1,
+   "latest_end": 195.60409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 206.331,
+   "text": "Open calculator.",
+   "turn": 18,
+   "candidates": 1,
+   "latest_end": 205.10409899999527,
+   "ok": true,
+   "ok_incl_open": true
+  },
+  {
+   "t": 216.401,
+   "text": "Volume 30.",
+   "turn": 19,
+   "candidates": 1,
+   "latest_end": 214.4760989999953,
+   "ok": true,
+   "ok_incl_open": true
+  }
+ ],
+ "summary": {
+  "turns": 20,
+  "turns_with_transcript": 20,
+  "within_3s": 19,
+  "pct_within_3s_of_all_turns": 95.0,
+  "median_delta_s": 1.399,
+  "p95_delta_s": 1.948,
+  "max_delta_s": 2.389,
+  "min_delta_s": -1.182,
+  "turns_split_by_vad": 2,
+  "turns_with_multiple_transcripts": 1,
+  "turns_without_transcript": [],
+  "transcripts_before_local_endpoint": 1,
+  "binding_rule_ok": 21,
+  "binding_rule_total": 21,
+  "binding_multi_candidate": 0,
+  "binding_rule_ok_if_open_utterance_counts": 21,
+  "threshold_pass": true
+ },
+ "events": [
+  {
+   "t": 29.095,
+   "ev": "start_session"
+  },
+  {
+   "t": 29.598,
+   "ev": "audio_interface_start"
+  },
+  {
+   "t": 29.609,
+   "ev": "conversation_started",
+   "conversation_id": "conv_1601m4ghx5q2egb8wypjn5f8n511"
+  },
+  {
+   "t": 31.351,
+   "ev": "feed_start",
+   "label": "turn 0"
+  },
+  {
+   "t": 32.351,
+   "ev": "feed_end",
+   "label": "turn 0"
+  },
+  {
+   "t": 33.128,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 33.598,
+   "ev": "user_transcript",
+   "text": "Open YouTube."
+  },
+  {
+   "t": 33.598,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 34.701,
+   "ev": "agent_response",
+   "text": "I can't open apps or websites from here. I can only talk with you, so you'll need to open YouTube yourself."
+  },
+  {
+   "t": 34.832,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 36.53,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 38.231,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 39.933,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 41.634,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 42.106,
+   "ev": "feed_start",
+   "label": "turn 1"
+  },
+  {
+   "t": 42.604,
+   "ev": "feed_end",
+   "label": "turn 1"
+  },
+  {
+   "t": 43.339,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 44.301,
+   "ev": "user_transcript",
+   "text": "Lauter."
+  },
+  {
+   "t": 44.301,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 45.036,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 45.229,
+   "ev": "agent_response",
+   "text": "Ich kann meine Lautstärke nicht selbst ändern. Dreh bitte an deinem Mac die Lautstärke hoch."
+  },
+  {
+   "t": 46.736,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 48.44,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 50.138,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 51.839,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 51.851,
+   "ev": "feed_start",
+   "label": "turn 2"
+  },
+  {
+   "t": 53.355,
+   "ev": "feed_end",
+   "label": "turn 2"
+  },
+  {
+   "t": 53.539,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 54.748,
+   "ev": "user_transcript",
+   "text": "Mets le volume à 30."
+  },
+  {
+   "t": 54.748,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 55.241,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 56.005,
+   "ev": "agent_response",
+   "text": "Je ne peux pas régler le volume de ton Mac. Tu peux le faire toi-même avec les touches du clavier ou depuis le centre de contrôle."
+  },
+  {
+   "t": 56.942,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 58.643,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 60.344,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 62.043,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 63.6,
+   "ev": "feed_start",
+   "label": "turn 3"
+  },
+  {
+   "t": 63.745,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 64.855,
+   "ev": "feed_end",
+   "label": "turn 3"
+  },
+  {
+   "t": 65.445,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 66.244,
+   "ev": "user_transcript",
+   "text": "Which sessions are running ?"
+  },
+  {
+   "t": 66.244,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 66.877,
+   "ev": "agent_response",
+   "text": "I can't see your sessions from here. Which app do you mean?"
+  },
+  {
+   "t": 67.146,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 68.85,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 70.547,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 71.855,
+   "ev": "feed_start",
+   "label": "turn 4"
+  },
+  {
+   "t": 72.248,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 73.105,
+   "ev": "feed_end",
+   "label": "turn 4"
+  },
+  {
+   "t": 73.95,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 74.259,
+   "ev": "user_transcript",
+   "text": "Run the echo test."
+  },
+  {
+   "t": 74.259,
+   "ev": "client_tool_call",
+   "tool": "spike_echo",
+   "params": {
+    "text": "echo test"
+   }
+  },
+  {
+   "t": 74.259,
+   "ev": "client_tool_return",
+   "tool": "spike_echo"
+  },
+  {
+   "t": 74.927,
+   "ev": "agent_response",
+   "text": "The tool returned: Echo received. The echo word is pineapple."
+  },
+  {
+   "t": 75.03,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 75.65,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 77.352,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 79.054,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 80.754,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 81.854,
+   "ev": "feed_start",
+   "label": "turn 5"
+  },
+  {
+   "t": 82.456,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 83.106,
+   "ev": "feed_end",
+   "label": "turn 5"
+  },
+  {
+   "t": 84.155,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 84.563,
+   "ev": "user_transcript",
+   "text": "Mach die Musik leiser."
+  },
+  {
+   "t": 84.564,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 85.589,
+   "ev": "agent_response",
+   "text": "Ich kann deine Musik nicht steuern. Nutze dafür die Lautstärketasten am Mac."
+  },
+  {
+   "t": 85.856,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 87.557,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 89.257,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 90.958,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 91.605,
+   "ev": "feed_start",
+   "label": "turn 6"
+  },
+  {
+   "t": 92.607,
+   "ev": "feed_end",
+   "label": "turn 6"
+  },
+  {
+   "t": 92.659,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 94.36,
+   "ev": "user_transcript",
+   "text": "Ouver YouTube."
+  },
+  {
+   "t": 94.36,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 94.361,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 95.064,
+   "ev": "agent_response",
+   "text": "Je ne peux pas ouvrir YouTube. Ouvre-le toi-même depuis ton navigateur."
+  },
+  {
+   "t": 96.062,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 97.763,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 99.463,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 100.604,
+   "ev": "feed_start",
+   "label": "turn 7"
+  },
+  {
+   "t": 101.164,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 102.794,
+   "ev": "user_transcript",
+   "text": "Open YouTube."
+  },
+  {
+   "t": 102.795,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 102.864,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 103.241,
+   "ev": "interruption"
+  },
+  {
+   "t": 103.241,
+   "ev": "agent_response",
+   "text": "I..."
+  },
+  {
+   "t": 104.105,
+   "ev": "feed_end",
+   "label": "turn 7"
+  },
+  {
+   "t": 104.565,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 105.358,
+   "ev": "user_transcript",
+   "text": "And play the first video."
+  },
+  {
+   "t": 105.358,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 106.116,
+   "ev": "agent_response",
+   "text": "I can't open YouTube or play videos. You'll have to do that yourself."
+  },
+  {
+   "t": 106.267,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 107.968,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 109.669,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 111.37,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 111.855,
+   "ev": "feed_start",
+   "label": "turn 8"
+  },
+  {
+   "t": 113.071,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 113.107,
+   "ev": "feed_end",
+   "label": "turn 8"
+  },
+  {
+   "t": 114.316,
+   "ev": "user_transcript",
+   "text": "Skip 10 seconds."
+  },
+  {
+   "t": 114.316,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 114.77,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 114.989,
+   "ev": "agent_response",
+   "text": "I can't control playback. Use the right arrow key in YouTube."
+  },
+  {
+   "t": 116.472,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 118.173,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 119.911,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 120.604,
+   "ev": "feed_start",
+   "label": "turn 9"
+  },
+  {
+   "t": 121.574,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 122.605,
+   "ev": "feed_end",
+   "label": "turn 9"
+  },
+  {
+   "t": 123.274,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 124.052,
+   "ev": "user_transcript",
+   "text": "Welche Sitzungen laufen gerade?"
+  },
+  {
+   "t": 124.052,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 124.705,
+   "ev": "agent_response",
+   "text": "Ich sehe deine Sitzungen nicht. Welche App meinst du?"
+  },
+  {
+   "t": 124.974,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 126.674,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 128.374,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 129.855,
+   "ev": "feed_start",
+   "label": "turn 10"
+  },
+  {
+   "t": 130.075,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 130.601,
+   "ev": "feed_end",
+   "label": "turn 10"
+  },
+  {
+   "t": 131.777,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 132.066,
+   "ev": "user_transcript",
+   "text": "Plus 4."
+  },
+  {
+   "t": 132.067,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 132.751,
+   "ev": "agent_response",
+   "text": "Unklar, was du meinst. Plus vier wofür?"
+  },
+  {
+   "t": 133.478,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 135.18,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 136.877,
+   "ev": "ping_latency",
+   "ms": 130
+  },
+  {
+   "t": 137.605,
+   "ev": "feed_start",
+   "label": "turn 11"
+  },
+  {
+   "t": 138.578,
+   "ev": "ping_latency",
+   "ms": 130
+  },
+  {
+   "t": 138.856,
+   "ev": "feed_end",
+   "label": "turn 11"
+  },
+  {
+   "t": 140.08,
+   "ev": "user_transcript",
+   "text": "Make the screen brighter."
+  },
+  {
+   "t": 140.08,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 140.28,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 140.787,
+   "ev": "agent_response",
+   "text": "I can't change brightness. Use the brightness keys on your Mac."
+  },
+  {
+   "t": 141.981,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 143.681,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 145.382,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 146.102,
+   "ev": "feed_start",
+   "label": "turn 12"
+  },
+  {
+   "t": 147.083,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 148.785,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 150.355,
+   "ev": "feed_end",
+   "label": "turn 12"
+  },
+  {
+   "t": 150.485,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 151.522,
+   "ev": "user_transcript",
+   "text": "Öffne den Taschenrechner und rechne zwei plus zwei."
+  },
+  {
+   "t": 151.526,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 152.187,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 152.337,
+   "ev": "agent_response",
+   "text": "Ich kann den Taschenrechner nicht öffnen. Aber zwei plus zwei ist vier."
+  },
+  {
+   "t": 153.887,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 155.587,
+   "ev": "ping_latency",
+   "ms": 129
+  },
+  {
+   "t": 157.286,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 158.351,
+   "ev": "feed_start",
+   "label": "turn 13"
+  },
+  {
+   "t": 158.993,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 159.855,
+   "ev": "feed_end",
+   "label": "turn 13"
+  },
+  {
+   "t": 160.692,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 161.339,
+   "ev": "user_transcript",
+   "text": "Quelles sessions sont actives?"
+  },
+  {
+   "t": 161.339,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 161.969,
+   "ev": "agent_response",
+   "text": "Je ne vois pas tes sessions. Quelle application veux-tu dire ?"
+  },
+  {
+   "t": 162.396,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 164.094,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 165.794,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 166.855,
+   "ev": "feed_start",
+   "label": "turn 14"
+  },
+  {
+   "t": 167.493,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 168.105,
+   "ev": "feed_end",
+   "label": "turn 14"
+  },
+  {
+   "t": 169.194,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 169.248,
+   "ev": "user_transcript",
+   "text": "Run the echo test."
+  },
+  {
+   "t": 169.249,
+   "ev": "client_tool_call",
+   "tool": "spike_echo",
+   "params": {
+    "text": "echo test"
+   }
+  },
+  {
+   "t": 169.249,
+   "ev": "client_tool_return",
+   "tool": "spike_echo"
+  },
+  {
+   "t": 169.964,
+   "ev": "agent_response",
+   "text": "The tool returned: Echo received. The echo word is pineapple."
+  },
+  {
+   "t": 170.056,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 170.894,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 172.596,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 174.296,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 175.997,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 176.855,
+   "ev": "feed_start",
+   "label": "turn 15"
+  },
+  {
+   "t": 177.697,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 177.855,
+   "ev": "feed_end",
+   "label": "turn 15"
+  },
+  {
+   "t": 179.245,
+   "ev": "user_transcript",
+   "text": "Pause the video."
+  },
+  {
+   "t": 179.246,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 179.407,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 179.709,
+   "ev": "agent_response",
+   "text": "I can't control videos. Press the space bar."
+  },
+  {
+   "t": 181.1,
+   "ev": "ping_latency",
+   "ms": 137
+  },
+  {
+   "t": 182.801,
+   "ev": "ping_latency",
+   "ms": 137
+  },
+  {
+   "t": 184.502,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 184.606,
+   "ev": "feed_start",
+   "label": "turn 16"
+  },
+  {
+   "t": 185.852,
+   "ev": "feed_end",
+   "label": "turn 16"
+  },
+  {
+   "t": 186.204,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 187.686,
+   "ev": "user_transcript",
+   "text": "Nächstes Video."
+  },
+  {
+   "t": 187.687,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 187.903,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 188.403,
+   "ev": "agent_response",
+   "text": "Ich kann Videos nicht steuern. In YouTube nimmst du Shift plus N."
+  },
+  {
+   "t": 189.604,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 191.306,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 193.007,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 194.605,
+   "ev": "feed_start",
+   "label": "turn 17"
+  },
+  {
+   "t": 194.707,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 195.603,
+   "ev": "feed_end",
+   "label": "turn 17"
+  },
+  {
+   "t": 196.408,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 197.993,
+   "ev": "user_transcript",
+   "text": "Mets en pause."
+  },
+  {
+   "t": 197.993,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 198.109,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 198.852,
+   "ev": "agent_response",
+   "text": "Je ne peux pas contrôler la lecture. Appuie sur la touche espace."
+  },
+  {
+   "t": 199.808,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 201.509,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 203.21,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 203.851,
+   "ev": "feed_start",
+   "label": "turn 18"
+  },
+  {
+   "t": 204.911,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 205.104,
+   "ev": "feed_end",
+   "label": "turn 18"
+  },
+  {
+   "t": 206.331,
+   "ev": "user_transcript",
+   "text": "Open calculator."
+  },
+  {
+   "t": 206.331,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 206.611,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 207.09,
+   "ev": "agent_response",
+   "text": "I can't open apps. Press Command and Space, then type Calculator."
+  },
+  {
+   "t": 208.313,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 210.014,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 211.716,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 213.353,
+   "ev": "feed_start",
+   "label": "turn 19"
+  },
+  {
+   "t": 213.415,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 214.601,
+   "ev": "feed_end",
+   "label": "turn 19"
+  },
+  {
+   "t": 215.116,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 216.401,
+   "ev": "user_transcript",
+   "text": "Volume 30."
+  },
+  {
+   "t": 216.401,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 216.816,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 216.968,
+   "ev": "agent_response",
+   "text": "I can't set your volume. Use the volume keys."
+  },
+  {
+   "t": 218.517,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 220.218,
+   "ev": "ping_latency",
+   "ms": 128
+  },
+  {
+   "t": 221.918,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 222.617,
+   "ev": "conversation_end"
+  }
+ ],
+ "vad_utterances": [
+  {
+   "start": 31.348098999995273,
+   "end": 32.290098999995266,
+   "closed": 32.790098999995266
+  },
+  {
+   "start": 42.13009899999527,
+   "end": 42.63009899999527,
+   "closed": 43.13009899999527
+  },
+  {
+   "start": 51.88009899999527,
+   "end": 53.226098999995266,
+   "closed": 53.726098999995266
+  },
+  {
+   "start": 63.63009899999527,
+   "end": 64.88009899999527,
+   "closed": 65.38009899999527
+  },
+  {
+   "start": 71.88009899999527,
+   "end": 73.10409899999527,
+   "closed": 73.60409899999527
+  },
+  {
+   "start": 81.84809899999527,
+   "end": 83.13009899999527,
+   "closed": 83.63009899999527
+  },
+  {
+   "start": 91.59809899999527,
+   "end": 92.57209899999526,
+   "closed": 93.07209899999526
+  },
+  {
+   "start": 100.59809899999527,
+   "end": 101.54009899999527,
+   "closed": 102.04009899999527
+  },
+  {
+   "start": 102.63009899999527,
+   "end": 103.97609899999527,
+   "closed": 104.47609899999527
+  },
+  {
+   "start": 111.97609899999527,
+   "end": 113.10409899999527,
+   "closed": 113.60409899999527
+  },
+  {
+   "start": 120.59809899999527,
+   "end": 122.54009899999527,
+   "closed": 123.04009899999527
+  },
+  {
+   "start": 129.88009899999528,
+   "end": 130.63009899999528,
+   "closed": 131.13009899999528
+  },
+  {
+   "start": 137.59809899999527,
+   "end": 138.8220989999953,
+   "closed": 139.3220989999953
+  },
+  {
+   "start": 146.09809899999527,
+   "end": 147.54009899999528,
+   "closed": 148.04009899999528
+  },
+  {
+   "start": 148.57209899999526,
+   "end": 150.35409899999527,
+   "closed": 150.85409899999527
+  },
+  {
+   "start": 158.38009899999528,
+   "end": 160.00809899999527,
+   "closed": 160.50809899999527
+  },
+  {
+   "start": 166.88009899999528,
+   "end": 168.10409899999527,
+   "closed": 168.60409899999527
+  },
+  {
+   "start": 176.88009899999528,
+   "end": 177.75809899999527,
+   "closed": 178.25809899999527
+  },
+  {
+   "start": 184.59809899999527,
+   "end": 185.79009899999528,
+   "closed": 186.29009899999528
+  },
+  {
+   "start": 194.63009899999528,
+   "end": 195.60409899999527,
+   "closed": 196.10409899999527
+  },
+  {
+   "start": 203.84809899999527,
+   "end": 205.10409899999527,
+   "closed": 205.60409899999527
+  },
+  {
+   "start": 213.38009899999528,
+   "end": 214.4760989999953,
+   "closed": 214.9760989999953
+  }
+ ],
+ "meta": {
+  "date": "2026-10-09T14:41:49+00:00",
+  "agent_id": "agent_0901m4ghsyfefx7vqbwzjzve1jz9"
+ },
+ "note": "Synthetic proxy: macOS say voices fed through a fake AudioInterface at real-time pace; the real-mic run with Albert stays an attended follow-up."
+}

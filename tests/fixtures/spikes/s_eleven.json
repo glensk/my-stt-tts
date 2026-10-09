@@ -1,0 +1,470 @@
+{
+ "meta": {
+  "date": "2026-10-09T14:41:49+00:00",
+  "agent_name": "spike-claude-bridge-20261009T144149Z",
+  "agent_id": "agent_0901m4ghsyfefx7vqbwzjzve1jz9",
+  "after_create": {
+   "version_id": "agtvrsn_3001m4ght03hfmktjk52xpg70b4v",
+   "branch_id": "agtbrch_3101m4ghszvhez0a8t45xa0aft5p",
+   "client_events": [
+    "audio",
+    "interruption",
+    "user_transcript",
+    "agent_response",
+    "agent_response_correction"
+   ],
+   "prompt_tools": [
+    "spike_echo",
+    "end_call",
+    "language_detection"
+   ],
+   "tool_ids": [
+    "tool_1601m4ghszvje82skkfadrxz9gb5"
+   ],
+   "first_message_override_allowed": false,
+   "updated_at_unix_secs": 1791556911
+  },
+  "patch": {
+   "patched_client_events": true,
+   "patched_first_message_override": true
+  },
+  "after_patch": {
+   "version_id": "agtvrsn_1801m4ghtkzgf5esf6jd78yn4vrn",
+   "branch_id": "agtbrch_3101m4ghszvhez0a8t45xa0aft5p",
+   "client_events": [
+    "audio",
+    "interruption",
+    "user_transcript",
+    "agent_response",
+    "agent_response_correction",
+    "client_tool_call"
+   ],
+   "prompt_tools": [
+    "spike_echo",
+    "end_call",
+    "language_detection"
+   ],
+   "tool_ids": [
+    "tool_1601m4ghszvje82skkfadrxz9gb5"
+   ],
+   "first_message_override_allowed": true,
+   "updated_at_unix_secs": 1791556931
+  }
+ },
+ "b_negative_no_client_event": {
+  "conversation_id": "conv_3101m4ght17cfwf94d5ksk9y0kmb",
+  "tool_called": true,
+  "user_transcript": [
+   "Run the echo test."
+  ],
+  "agent_response_text": [
+   "The tool returned: Echo received. The echo word is pineapple."
+  ],
+  "spoken_stt": "The tool returned. Echo received. The echo word is pineapple.",
+  "events": [
+   {
+    "t": 0.298,
+    "ev": "start_session"
+   },
+   {
+    "t": 0.876,
+    "ev": "audio_interface_start"
+   },
+   {
+    "t": 0.912,
+    "ev": "conversation_started",
+    "conversation_id": "conv_3101m4ght17cfwf94d5ksk9y0kmb"
+   },
+   {
+    "t": 4.378,
+    "ev": "feed_start",
+    "label": "run the echo test"
+   },
+   {
+    "t": 4.408,
+    "ev": "ping_latency",
+    "ms": 126
+   },
+   {
+    "t": 5.627,
+    "ev": "feed_end",
+    "label": "run the echo test"
+   },
+   {
+    "t": 6.109,
+    "ev": "ping_latency",
+    "ms": 126
+   },
+   {
+    "t": 6.915,
+    "ev": "user_transcript",
+    "text": "Run the echo test."
+   },
+   {
+    "t": 6.916,
+    "ev": "client_tool_call",
+    "tool": "spike_echo",
+    "params": {
+     "text": "echo test"
+    }
+   },
+   {
+    "t": 6.916,
+    "ev": "client_tool_return",
+    "tool": "spike_echo"
+   },
+   {
+    "t": 7.745,
+    "ev": "agent_response",
+    "text": "The tool returned: Echo received. The echo word is pineapple."
+   },
+   {
+    "t": 7.809,
+    "ev": "ping_latency",
+    "ms": 126
+   },
+   {
+    "t": 7.835,
+    "ev": "agent_audio_start"
+   },
+   {
+    "t": 9.509,
+    "ev": "ping_latency",
+    "ms": 125
+   },
+   {
+    "t": 11.21,
+    "ev": "ping_latency",
+    "ms": 125
+   },
+   {
+    "t": 12.912,
+    "ev": "ping_latency",
+    "ms": 125
+   },
+   {
+    "t": 14.613,
+    "ev": "ping_latency",
+    "ms": 126
+   },
+   {
+    "t": 16.315,
+    "ev": "ping_latency",
+    "ms": 126
+   },
+   {
+    "t": 17.942,
+    "ev": "conversation_end"
+   }
+  ]
+ },
+ "conversation_id": "conv_4001m4ghtpxcearsmm2pynpppeca",
+ "a_first_message": {
+  "accepted": true,
+  "agent_audio": true,
+  "agent_response_text": [
+   "Test briefing: scratch session needs a decision."
+  ],
+  "spoken_stt": "Test briefing. Scratch session needs a decision",
+  "spoken_matches": true
+ },
+ "b_client_tool": {
+  "tool_called": true,
+  "tool_args": {
+   "text": "echo test"
+  },
+  "user_transcript": [
+   "Run the echo test."
+  ],
+  "agent_response_text": [
+   "The tool returned: Echo received. The echo word is pineapple."
+  ],
+  "spoken_stt": "The tool returned Echo received The echo word is pineapple.",
+  "spoken_reflects_tool_result": true,
+  "latency_s": {
+   "utterance_end_to_transcript": 1.199,
+   "utterance_end_to_tool_call": 1.199,
+   "tool_return_to_agent_audio": 0.773,
+   "utterance_end_to_first_agent_audio": 1.972
+  }
+ },
+ "c_send_user_message": {
+  "agent_audio": true,
+  "agent_response_text": [
+   "System notice: the delivery to scratch-dead failed."
+  ],
+  "user_transcript_events": [],
+  "spoken_stt": "System notice. The delivery to Scratch Dead failed",
+  "spoken_mentions_notice": true,
+  "latency_to_first_audio_s": 0.939
+ },
+ "c_contextual_update": {
+  "agent_audio_s_within_8s": 0.0,
+  "agent_response_text": [],
+  "spoken_stt": "",
+  "followup_question": "Is there anything new?",
+  "followup_spoken_stt": "Duly noted. Nothing reliable. I mistakenly called a tool that doesn't exist. Its output mentioned Scratch too, so I'm ignoring it",
+  "followup_mentions_notice": true
+ },
+ "sdk_errors": [],
+ "vad_utterances": [
+  {
+   "start": 7.894996083006845,
+   "end": 9.150996083006845,
+   "closed": 9.650996083006845
+  },
+  {
+   "start": 37.644996083006845,
+   "end": 38.77299608300684,
+   "closed": 39.27299608300684
+  }
+ ],
+ "events": [
+  {
+   "t": 1.888,
+   "ev": "start_session"
+  },
+  {
+   "t": 2.395,
+   "ev": "audio_interface_start"
+  },
+  {
+   "t": 2.415,
+   "ev": "conversation_started",
+   "conversation_id": "conv_4001m4ghtpxcearsmm2pynpppeca"
+  },
+  {
+   "t": 2.537,
+   "ev": "agent_response",
+   "text": "Test briefing: scratch session needs a decision."
+  },
+  {
+   "t": 2.609,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 5.928,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 7.63,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 7.9,
+   "ev": "feed_start",
+   "label": "run the echo test"
+  },
+  {
+   "t": 9.151,
+   "ev": "feed_end",
+   "label": "run the echo test"
+  },
+  {
+   "t": 9.33,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 10.35,
+   "ev": "user_transcript",
+   "text": "Run the echo test."
+  },
+  {
+   "t": 10.35,
+   "ev": "client_tool_call",
+   "tool": "spike_echo",
+   "params": {
+    "text": "echo test"
+   }
+  },
+  {
+   "t": 10.35,
+   "ev": "client_tool_return",
+   "tool": "spike_echo"
+  },
+  {
+   "t": 11.03,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 11.039,
+   "ev": "agent_response",
+   "text": "The tool returned: Echo received. The echo word is pineapple."
+  },
+  {
+   "t": 11.123,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 12.732,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 14.432,
+   "ev": "ping_latency",
+   "ms": 125
+  },
+  {
+   "t": 16.135,
+   "ev": "ping_latency",
+   "ms": 125
+  },
+  {
+   "t": 17.833,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 19.307,
+   "ev": "send_user_message",
+   "text": "[system notice] The delivery to scratch-dead failed."
+  },
+  {
+   "t": 19.535,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 20.246,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 20.84,
+   "ev": "agent_response",
+   "text": "System notice: the delivery to scratch-dead failed."
+  },
+  {
+   "t": 21.236,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 22.937,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 24.638,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 26.337,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 27.045,
+   "ev": "send_contextual_update",
+   "text": "[system notice] The delivery to scratch-two failed."
+  },
+  {
+   "t": 28.038,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 29.741,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 31.44,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 33.141,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 34.842,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 36.542,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 37.652,
+   "ev": "feed_start",
+   "label": "anything new"
+  },
+  {
+   "t": 38.243,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 38.904,
+   "ev": "feed_end",
+   "label": "anything new"
+  },
+  {
+   "t": 39.943,
+   "ev": "ping_latency",
+   "ms": 127
+  },
+  {
+   "t": 41.478,
+   "ev": "user_transcript",
+   "text": "Is there anything new?"
+  },
+  {
+   "t": 41.478,
+   "ev": "agent_audio_start"
+  },
+  {
+   "t": 41.644,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 42.505,
+   "ev": "agent_response",
+   "text": "Duly noted... Nothing reliable. I mistakenly called a tool that doesn't exist. Its output mentioned scratch-two, so I'm ignoring it."
+  },
+  {
+   "t": 43.344,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 45.047,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 46.747,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 48.448,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 50.165,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 51.851,
+   "ev": "ping_latency",
+   "ms": 126
+  },
+  {
+   "t": 53.212,
+   "ev": "conversation_end"
+  }
+ ]
+}
