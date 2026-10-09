@@ -178,6 +178,7 @@ helper() {
 	CCC_REPO="$CCC_REPO" SPIKES="$SPIKES" "$CCC_PY" - "$@" <<'PY'
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -235,6 +236,14 @@ def ccc_name(sid, name):
         if res.returncode == 0:
             say(True, f"{name}: named in ccc")
             return True
+        holder = re.search(r"already used by session (\w+)", res.stdout + res.stderr)
+        if holder:  # a scratch session of an earlier run still holds it: move it aside
+            old = holder.group(1)
+            moved = subprocess.run(
+                [ccc, "name", "-s", old, f"{name}-{old}"], capture_output=True, text=True
+            )
+            say(moved.returncode == 0, f"{name}: freed the name from earlier session {old}")
+            continue
         time.sleep(1.0)
     say(False, f"{name}: ccc name failed: {(res.stderr or res.stdout).strip()[-160:]}")
     return False
