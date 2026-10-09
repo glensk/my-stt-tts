@@ -103,10 +103,12 @@ def format_report(conv: dict[str, Any], subscription: dict[str, Any] | None = No
         f" · ended: {_ended(meta.get('termination_reason'))}"
     )
     if subscription:
+        # The account's running credit counter for the billing month (all calls + tests;
+        # ElevenLabs updates it with a lag). On the free tier nothing is paid: it is an
+        # allowance, so no $ figure is shown for it.
         used, limit = subscription.get("character_count"), subscription.get("character_limit")
-        per_credit = usd / conv_credits if conv_credits else 0.0
-        worth = f" ≈ ${used * per_credit:.2f}" if per_credit and used else ""
-        summary += f" · period {used}/{limit} cr{worth}"
+        tier = subscription.get("tier", "?")
+        summary += f" · month so far: {used}/{limit} credits ({tier} plan)"
     lines.append(summary)
     return lines
 

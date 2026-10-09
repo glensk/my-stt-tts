@@ -53,12 +53,12 @@ def test_report_prices_each_llm_sentence_and_totals() -> None:
     summary = lines[-1]
     assert summary.startswith("🧾 call 87 s  $0.0575 (voice $0.0470 + LLM $0.0105 = 579 cr)")
     assert "ended: connection dropped (1006)" in summary
-    assert "period 3347/10000 cr ≈ $0.33" in summary
+    assert "month so far: 3347/10000 credits (free plan)" in summary
     assert len(lines) == 2  # one line per priced sentence + ONE summary line
 
 
 def test_report_without_subscription_has_no_period_line() -> None:
-    assert not any("period" in line for line in format_report(CONV, None))
+    assert not any("month so far" in line for line in format_report(CONV, None))
 
 
 def test_tool_only_turn_names_the_tool() -> None:
