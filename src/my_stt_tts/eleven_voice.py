@@ -396,7 +396,9 @@ def _send_control(command: str) -> int:
 
 
 def _admin(args: argparse.Namespace) -> int | None:
-    """Handle LaunchAgent and daemon-control flags; None when the CLI should go on."""
+    """Handle LaunchAgent, voice-profile and daemon-control flags; None to go on."""
+    if args.voices:
+        return _rebuild_voices()
     if args.install or args.uninstall:
         from . import voice_control
 
@@ -405,6 +407,23 @@ def _admin(args: argparse.Namespace) -> int | None:
         return voice_control.install_launch_agent(Path(__file__).resolve().parents[2] / "mac-voice")
     command = _control_command(args)
     return None if command is None else _send_control(command)
+
+
+def _rebuild_voices() -> int:
+    from .voice_gate import build_profile, enrolled_speakers
+
+    names = enrolled_speakers()
+    if not names:
+        print("❌ no enrollment clips — record some: scripts/enroll_wakeword.py 'voice on' -w NAME")
+        return 1
+    for who in names:
+        path, used, found = build_profile(who)
+        if path is None:
+            print(f"⚠️  {who}: only {found} clips — need at least 3")
+        else:
+            print(f"✅ {who}: voice profile from {used}/{found} clips → {path}")
+    print("Restart the daemon to use them (only these voices can start a conversation).")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -426,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
             "  mac-voice -n / -f         conversation on / off\n"
             "  mac-voice -w off          disable the wake word (on: enable)\n"
             "  mac-voice -s              daemon status as JSON\n"
-            "  mac-voice -I / -U         install / remove the login LaunchAgent"
+            "  mac-voice -I / -U         install / remove the login LaunchAgent\n"
+            "  mac-voice -V              rebuild voice profiles (only enrolled voices may start)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -444,6 +464,9 @@ def main(argv: list[str] | None = None) -> int:
     ctl.add_argument("-f", "--off", action="store_true", help="end the conversation")
     ctl.add_argument("-s", "--status", action="store_true", help="print daemon status")
     ctl.add_argument("-w", "--wake", choices=("on", "off"), help="enable/disable the wake word")
+    ctl.add_argument(
+        "-V", "--voices", action="store_true", help="(re)build voice profiles from enroll clips"
+    )
     ctl.add_argument("-I", "--install", action="store_true", help="install the login LaunchAgent")
     ctl.add_argument("-U", "--uninstall", action="store_true", help="remove the LaunchAgent")
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
@@ -451,6 +474,10 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = logging.StreamHandler()
     handler.setFormatter(EmojiFormatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    # speechbrain sets up its own loggers and announces every model file it loads
+    handler.addFilter(
+        lambda r: r.levelno >= logging.WARNING or not r.name.startswith("speechbrain")
+    )
     logging.basicConfig(level=logging.WARNING, handlers=[handler])
     warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")  # onnxruntime on macOS
     log.setLevel(logging.DEBUG if args.verbose else logging.WARNING)

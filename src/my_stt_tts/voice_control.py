@@ -90,10 +90,18 @@ class WakeListener:
     reframing, gain) instead of a second, simplified capture path.
     """
 
-    def __init__(self, detector: Any, on_wake: Callable[[], None], *, gain: float = 1.0) -> None:
+    def __init__(
+        self,
+        detector: Any,
+        on_wake: Callable[[], None],
+        *,
+        gain: float = 1.0,
+        gate: Any = None,
+    ) -> None:
         self.detector = detector
         self.on_wake = on_wake
         self.gain = gain
+        self.gate = gate  # voice_gate.VoiceGate: only enrolled voices may start
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -105,22 +113,47 @@ class WakeListener:
     def _run(self) -> None:
         from . import audio
 
-        try:
-            fired = audio.listen_for_wake(
-                self.detector, SAMPLE_RATE, gain=self.gain, stop=self._stop
-            )
-        except Exception:  # pylint: disable=broad-exception-caught
-            log.exception("❌ wake listener crashed")
-            return
-        if fired and not self._stop.is_set():
-            score = float(getattr(self.detector, "last_score", 0.0) or 0.0)
-            if score >= float(getattr(self.detector, "threshold", 1.0)):
-                log.info(
-                    "🔔 wake: %s (score %.2f)", getattr(self.detector, "model_name", "?"), score
+        fire_buffer = audio.WakeFireBuffer(SAMPLE_RATE, window_seconds=2.0)
+        while not self._stop.is_set():
+            try:
+                fired = audio.listen_for_wake(
+                    self.detector,
+                    SAMPLE_RATE,
+                    gain=self.gain,
+                    stop=self._stop,
+                    fire_buffer=fire_buffer,
                 )
-            else:  # the keyword spotter has no continuous score
-                log.info("🔔 wake: custom phrase (keyword spotter)")
-            self.on_wake()
+            except Exception:  # pylint: disable=broad-exception-caught
+                log.exception("❌ wake listener crashed")
+                return
+            if not fired or self._stop.is_set():
+                return
+            if self._accept(fire_buffer.last_fire):
+                self.on_wake()
+                return
+
+    def _accept(self, clip: Any) -> bool:
+        """Log the fire; True when the voice behind it may start a conversation."""
+        score = float(getattr(self.detector, "last_score", 0.0) or 0.0)
+        if score >= float(getattr(self.detector, "threshold", 1.0)):
+            what = f"{getattr(self.detector, 'model_name', '?')} (score {score:.2f})"
+        else:  # the keyword spotter has no continuous score
+            what = "custom phrase (keyword spotter)"
+        if self.gate is None or not self.gate.active:
+            log.info("🔔 wake: %s", what)
+            return True
+        ok, name, sim = self.gate.check(clip if clip is not None else [])
+        if ok:
+            log.info("🔔 wake: %s · 🗣️  %s (voice match %.2f)", what, name, sim)
+        else:
+            log.info(
+                "🚫 wake ignored: %s · voice not enrolled (closest %s %.2f < %.2f)",
+                what,
+                name or "-",
+                sim,
+                self.gate.threshold,
+            )
+        return bool(ok)
 
     def stop(self) -> bool:
         """Stop and join; True once the capture thread (and its stream) is gone."""
@@ -496,10 +529,13 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         # The configured openWakeWord model ("hey jarvis") keeps working; the custom phrase
         # is OR'd in via sherpa KWS. Both are overridable per machine.
         cfg.wake_phrase = os.environ.get("MAC_VOICE_WAKE", WAKE_PHRASE)
-        cfg.wake_threshold = float(os.environ.get("MAC_VOICE_WAKE_THRESHOLD", WAKE_THRESHOLD))
+        cfg.wake_threshold = float(os.environ.get("MAC_VOICE_WAKE_THRESHOLD", str(WAKE_THRESHOLD)))
         # 2 staggered openWakeWord copies instead of the pipeline's 8: ~12 % instead of
         # ~41 % of a core while idle, same hits on the test clips (measured 2026-10-09).
-        cfg.wake_phases = int(os.environ.get("MAC_VOICE_WAKE_PHASES", WAKE_PHASES))
+        cfg.wake_phases = int(os.environ.get("MAC_VOICE_WAKE_PHASES", str(WAKE_PHASES)))
+        # The few-shot "enrolled" branch matched Albert's VOICE, not the phrase: it fired on
+        # 34/43 recordings of his ordinary speech (2026-10-09) — never for the daemon.
+        cfg.fewshot_wake_enabled = False
         detector = make_wake_detector(cfg)
         if not detector.available():
             return None
@@ -507,7 +543,22 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         log.warning("⚠️  wake word unavailable; chord + menu bar only", exc_info=True)
         return None
     gain = float(getattr(cfg, "wake_gain", 1.0))
-    return lambda on_wake: WakeListener(detector, on_wake, gain=gain)
+    gate = voice_gate()
+    return lambda on_wake: WakeListener(detector, on_wake, gain=gain, gate=gate)
+
+
+def voice_gate() -> Any:
+    """The enrolled-voices check for wake fires (lets everyone in when nobody is enrolled)."""
+    from .voice_gate import VoiceGate
+
+    threshold = float(os.environ.get("MAC_VOICE_SPEAKER_THRESHOLD", "0.35"))
+    gate = VoiceGate(threshold=threshold)
+    if gate.active:
+        log.info("🗣️  only enrolled voices start it: %s", ", ".join(gate.profiles))
+        gate.preload()
+    else:
+        log.info("🗣️  no voice profiles — anyone can start it (mac-voice -V builds them)")
+    return gate
 
 
 def daemon_main(session_factory: Callable[[], Session], *, wake: bool = True) -> int:

@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             print("❌ No audio captured — nothing saved.")
             return 1
         print(f"✅ recorded {recorded}× '{args.word}' — enrolling from all saved clips …")
+        _update_voice_profile(args.who)
 
     # Clips accumulate: always enroll from EVERY saved clip of the word (all speakers).
     result = enroll_word(args.word, clips=None)
@@ -107,6 +108,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  FEWSHOT_THRESHOLD={thr}   # cosine 0..1; higher = stricter")
     print(f"  FEWSHOT_PATIENCE={pat}    # consecutive windows to fire; 2 = fewer false-accepts")
     return 0
+
+
+def _update_voice_profile(who: str) -> None:
+    """Refresh who's voice profile (mac-voice: only enrolled voices may start it)."""
+    name = re.sub(r"[^a-z0-9]+", "", who.lower())
+    if not name:
+        return
+    from my_stt_tts.voice_gate import build_profile
+
+    path, used, found = build_profile(name)
+    if path is None:
+        print(f"⚠️  voice profile for {name}: {found} clips so far, need 3")
+    else:
+        print(f"🗣️  voice profile for {name} updated from {used}/{found} clips → {path}")
 
 
 def _record_clips(args: argparse.Namespace, audio: Any) -> int:
