@@ -200,6 +200,31 @@ def test_failed_start_returns_to_idle(tmp_path: Path) -> None:
     assert daemon.state == "idle" and said == ["voice on", "voice failed"]
 
 
+def test_silent_startup_failure_is_announced_with_its_reason(tmp_path: Path) -> None:
+    """The SDK died before the conversation opened (quota): "voice failed: …", not "voice off"."""
+    said: list[str] = []
+
+    class FailedSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.start_failure = "ElevenLabs quota exceeded"
+
+    session = FailedSession()
+    daemon = vc.VoiceDaemon(
+        lambda: session, announce=said.append, notify=lambda: None, state_dir=tmp_path, timing=FAST
+    )
+    daemon.handle("on")
+    _wait_for(lambda: daemon.state == "talking")
+    session.end()  # what VoiceSession does once its start watchdog saw the failure
+    _wait_for(lambda: daemon.state == "idle")
+    assert said == ["voice on", "voice failed: ElevenLabs quota exceeded"]
+
+
+def test_failure_announcement_without_a_reason() -> None:
+    assert vc.failure_announcement(None) == "voice failed"
+    assert vc.failure_announcement(FakeSession()) == "voice failed"
+
+
 def test_unknown_command_is_rejected(made) -> None:
     daemon, _s, _a = made
     assert daemon.handle("dance")["ok"] is False

@@ -25,6 +25,7 @@ Needs the ``elevenlabs`` + ``audio`` extras and ``ELEVENLABS_API_KEY`` /
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import logging
@@ -276,15 +277,82 @@ def _device(value: str | None) -> int | str | None:
     return int(value) if value.isdigit() else value
 
 
+#: Seconds the SDK gets to open the conversation (conversation id + first activity).
+START_TIMEOUT_S = 10.0
+#: A client tool never holds the SDK's thread pool longer than this (the tools self-limit).
+TOOL_GUARD_S = 30.0
+#: First word of a tool answer that may be logged (anything else is content → "answered").
+_TOOL_OUTCOMES = frozenset(
+    {"ok", "refused", "failed", "started", "confirmed", "needs", "nothing", "done", "cancelled"}
+)
+
+
+def _tool_outcome(reply: object) -> str:
+    words = str(reply).split(maxsplit=1)
+    head = words[0].rstrip(":,.").casefold() if words else ""
+    return head if head in _TOOL_OUTCOMES else "answered"
+
+
+def run_tool(name: str, fn: Callable[..., Any], args: dict[str, Any], guard: float) -> str:
+    """Call ``fn(**args)`` on its own thread; a speakable string even on error or timeout.
+
+    The SDK runs client tools in a thread pool without any timeout; this guard frees the
+    pool slot after ``guard`` seconds (the tool's own subprocess limits end the worker).
+    """
+    box: dict[str, Any] = {}
+
+    def _call() -> None:
+        try:
+            box["reply"] = fn(**args)
+        except TypeError as exc:
+            box["error"], box["bad_args"] = exc, True
+        except Exception as exc:  # pylint: disable=broad-exception-caught  # tools never raise
+            box["error"] = exc
+
+    worker = threading.Thread(target=_call, name=f"tool-{name}", daemon=True)
+    worker.start()
+    worker.join(guard)
+    if worker.is_alive():
+        log.warning("⚠️  %s: no answer within %.0f s", name, guard)
+        return f"{name} failed: it took too long"
+    if "error" in box:
+        if box.get("bad_args"):
+            log.warning("⚠️  %s: bad arguments", name)
+            return f"{name}: missing or unexpected arguments"
+        log.warning("⚠️  %s failed (%s)", name, type(box["error"]).__name__)
+        return f"{name} failed: internal error"
+    reply = box.get("reply")
+    return "done" if reply is None else str(reply)
+
+
+class _SdkErrors(logging.Handler):
+    """Keeps the SDK's last error line during startup (the close reason, e.g. 1008/3000)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.ERROR)
+        self.last = ""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.last = record.getMessage()[:300]
+
+
 class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call's state
     """One ElevenLabs conversation: ``start`` returns at once, ``end`` hangs up, ``wait`` blocks.
 
     ``idle_for`` counts from the latest of: a transcript, the user's voice reaching the mic
     (before any transcript exists) and the end of agent playback — so a supervisor can hang
     up an idle session without cutting off a long utterance; the agent bills per minute.
+
+    With a bridge (:class:`~my_stt_tts.bridge.BridgeController`) every controller tool is a
+    client tool, the call carries ``[system notice]`` messages
+    (:meth:`~my_stt_tts.bridge.BridgeController.notify_in_call`) and an open-problem
+    briefing becomes the agent's first message. A start that dies silently (the SDK's
+    receive thread ending before the conversation opened, e.g. ``3000 [quota_exceeded]``)
+    sets :attr:`start_failure`, ends the session, posts a content-free banner and files an
+    attention item — with or without a bridge.
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         agent_id: str,
         api_key: str,
@@ -294,17 +362,33 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         out_dev: str | None = None,
         echo: bool = True,
         bridge: Any = None,
+        start_timeout: float = START_TIMEOUT_S,
+        tool_guard: float = TOOL_GUARD_S,
     ) -> None:
         from elevenlabs.client import ElevenLabs
-        from elevenlabs.conversational_ai.conversation import ClientTools, Conversation
+        from elevenlabs.conversational_ai.conversation import (
+            ClientTools,
+            Conversation,
+            ConversationInitiationData,
+        )
 
         self.echo = echo
         self.agent_id, self._api_key = agent_id, api_key
         self.conversation_id: str | None = None
         self.end_reason = ""  # set when the session ends itself (e.g. "voice off" heard)
+        self.start_failure = ""  # speakable reason when the conversation never opened
         self.last_activity = time.monotonic()
         self.bridge = bridge  # bridge.BridgeController when a bridge flag is on, else None
+        self.start_timeout = start_timeout
+        self.tool_guard = tool_guard
         self._transcript_seq = itertools.count(1)
+        self._activity = threading.Event()  # an agent response or user transcript arrived
+        self._ending = threading.Event()  # end() was asked for: not a startup failure
+        self._start_error: BaseException | None = None
+        self._sdk_errors = _SdkErrors()
+        self._briefing_pending = False
+        self.client_tools = ClientTools()
+        override = self._briefing_override()
         on_frame = bridge.feed_audio if bridge is not None else None
         self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev), on_frame)
         self.conversation = Conversation(
@@ -312,14 +396,75 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             agent_id,
             requires_auth=True,
             audio_interface=self.audio,
-            client_tools=ClientTools(),  # local functions get registered here (Claude Code bridge)
+            config=ConversationInitiationData(conversation_config_override=override or {}),
+            client_tools=self.client_tools,
             callback_user_transcript=lambda t: self._said("🧑", t),
             callback_agent_response=lambda t: self._said("🤖", t),
             callback_latency_measurement=lambda ms: log.debug("latency %d ms", ms),
         )
+        self._register_tools()
 
+    # -- bridge: tools, briefing, notices ---------------------------------------------------
+    def _register_tools(self) -> None:
+        """Every controller tool becomes an SDK client tool (sync, parameters as a dict)."""
+        if self.bridge is None:
+            return
+        for name, fn in sorted(self.bridge.tools.items()):
+            self.client_tools.register(name, self._tool_handler(name, fn))
+
+    def _tool_handler(self, name: str, fn: Callable[..., Any]) -> Callable[[dict], str]:
+        bridge = self.bridge
+
+        def handler(parameters: dict) -> str:
+            args = {k: v for k, v in (parameters or {}).items() if k != "tool_call_id"}
+            started = time.monotonic()
+            bridge.tool_started(name)
+            try:
+                reply = run_tool(name, fn, args, self.tool_guard)
+            finally:
+                bridge.tool_finished(name)
+                bridge.note_context("tool result")  # every tool result voids unused rights
+            log.info("🛠️  %s → %s (%.1f s)", name, _tool_outcome(reply), time.monotonic() - started)
+            return reply
+
+        handler.__name__ = name
+        return handler
+
+    def _briefing_override(self) -> dict[str, Any] | None:
+        """``{"agent": {"first_message": …}}`` when open problems wait to be briefed."""
+        if self.bridge is None or not getattr(self.bridge, "first_message_ok", True):
+            return None
+        from .attention import first_message_override
+
+        try:
+            override = first_message_override(self.bridge.briefings)
+        except Exception:  # pylint: disable=broad-exception-caught  # never block a call
+            log.warning("⚠️  briefing unavailable", exc_info=True)
+            return None
+        self._briefing_pending = override is not None
+        return override
+
+    def _mark_briefed(self) -> None:
+        if not self._briefing_pending:
+            return
+        self._briefing_pending = False
+        mark = getattr(self.bridge.briefings, "mark_briefed", None)
+        if callable(mark):
+            try:
+                mark()
+                log.info("📣 open problems briefed")
+            except Exception:  # pylint: disable=broad-exception-caught
+                log.warning("⚠️  could not mark the briefing", exc_info=True)
+
+    def _send_notice(self, text: str) -> None:
+        self.conversation.send_user_message(text)
+
+    # -- SDK callbacks --------------------------------------------------------------------
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
+        self._activity.set()
+        if who == "🤖" and self.bridge is not None:
+            self._mark_briefed()  # the first agent turn is the briefing: it was spoken
         if who == "🧑" and self.bridge is not None:
             self._forward(text, self.last_activity)
         if who == "🧑" and is_voice_off(text) and not self.end_reason:
@@ -338,19 +483,103 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         except Exception:  # pylint: disable=broad-exception-caught
             log.warning("⚠️  bridge rejected a transcript", exc_info=True)
 
+    # -- lifecycle --------------------------------------------------------------------------
     def start(self) -> None:
         if self.bridge is not None:
             self.bridge.begin_call()
+        self._guard_sdk_thread()
+        logging.getLogger("elevenlabs").addHandler(self._sdk_errors)
         try:
             self.conversation.start_session()
-        except Exception:
+        except Exception as exc:
+            self._detach_sdk_errors()
+            self._startup_failed(exc)
             if self.bridge is not None:
                 self.bridge.end_call()
             raise
+        if self.bridge is not None:
+            self.bridge.set_notice_sink(self._send_notice)
+        threading.Thread(target=self._watch_start, name="voice-start", daemon=True).start()
         if self.echo:
             threading.Thread(target=self._print_models, name="models", daemon=True).start()
 
+    def _guard_sdk_thread(self) -> None:
+        """Catch what escapes the SDK's ``_run`` thread (it never calls end_session then)."""
+        conversation = self.conversation
+        sdk_run = conversation._run  # pylint: disable=protected-access
+
+        def _run(ws_url: str) -> None:
+            try:
+                sdk_run(ws_url)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                self._start_error = exc  # the watchdog turns it into a startup failure
+
+        conversation._run = _run  # type: ignore[method-assign]  # pylint: disable=protected-access
+
+    def _detach_sdk_errors(self) -> None:
+        logging.getLogger("elevenlabs").removeHandler(self._sdk_errors)
+
+    def _watch_start(self) -> None:
+        """Until the call has opened: a dead SDK thread or no conversation id is a failure."""
+        deadline = time.monotonic() + self.start_timeout
+        try:
+            while not self._ending.is_set() and not self._activity.is_set():
+                thread = self.conversation._thread  # pylint: disable=protected-access
+                dead = thread is not None and not thread.is_alive()
+                if self._start_error is not None or dead:
+                    if not self._activity.is_set() and not self._ending.is_set():
+                        self._fail_start(self._start_error or self._sdk_errors.last)
+                    return
+                if time.monotonic() >= deadline:
+                    if not self._conversation_open():
+                        self._fail_start(f"no conversation within {self.start_timeout:.0f} s")
+                    return
+                time.sleep(0.05)
+        finally:
+            self._detach_sdk_errors()
+
+    def _conversation_open(self) -> bool:
+        return bool(self.conversation._conversation_id)  # pylint: disable=protected-access
+
+    def _fail_start(self, cause: BaseException | str) -> None:
+        self._startup_failed(cause)
+        with contextlib.suppress(Exception):
+            self.end()  # wait() returns at once: the daemon announces the failure
+
+    def _startup_failed(self, cause: BaseException | str) -> None:
+        """Log, banner and file a failed start; the briefing stays unbriefed (retried)."""
+        from .attention import post_banner, report_startup_failure, startup_failure_reason
+
+        reason = startup_failure_reason(cause or "")
+        self._briefing_pending = False
+        log.error("❌ ElevenLabs: %s", reason.removeprefix("ElevenLabs ").strip())
+        if self.bridge is not None and "refused the start settings" in reason:
+            if getattr(self.bridge, "first_message_ok", False):
+                log.warning(
+                    "⚠️  briefings off until restart: allow the first-message override "
+                    "(scripts/eleven_agent_config.py -a)"
+                )
+            self.bridge.first_message_ok = False
+        with contextlib.suppress(Exception):
+            post_banner("voice startup failed")
+        if self.bridge is not None:
+            self._file_startup_failure(reason, report_startup_failure)
+        self.start_failure = reason  # last: whoever sees it sees a fully handled failure
+
+    def _file_startup_failure(self, reason: str, report: Callable[..., Any]) -> None:
+        store = self.bridge.problems
+        try:
+            if hasattr(store, "record"):  # the attention inbox
+                report(store, reason)
+            else:
+                from .bridge import Problem
+
+                store.report(Problem("voice_startup_failed", "voice agent", reason))
+        except Exception:  # pylint: disable=broad-exception-caught
+            log.warning("⚠️  could not file the startup failure", exc_info=True)
+
     def end(self) -> None:
+        self._ending.set()
         self.conversation.end_session()
 
     def wait(self) -> str | None:
@@ -358,6 +587,7 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             self.conversation_id = self.conversation.wait_for_session_end()
         finally:
             if self.bridge is not None:
+                self.bridge.set_notice_sink(None)
                 self.bridge.end_call()
         return self.conversation_id
 

@@ -310,6 +310,9 @@ def test_states_needs_confirmation_then_done_after_confirm(tmp_path: Path) -> No
     answer = started(call, op, "close this tab")
     assert answer.startswith("needs confirmation: press cmd+w in Safari — say confirm ")
     assert op.current is not None and op.current.state == NEEDS_CONFIRMATION
+    deadline = time.monotonic() + 2.0  # the watcher notifies right after the answer is ready
+    while not notices and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert notices and notices[0] in answer
     code = answer.rsplit(" ", 1)[1]
     call.say(f"confirm {code}")

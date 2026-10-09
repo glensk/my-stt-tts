@@ -172,6 +172,12 @@ def say(text: str) -> None:
         subprocess.run(["/usr/bin/say", text], check=False, timeout=10)
 
 
+def failure_announcement(session: Any) -> str:
+    """What ``say`` announces for a failed start: "voice failed", plus why when known."""
+    reason = str(getattr(session, "start_failure", "") or "").strip()
+    return f"voice failed: {reason}" if reason else "voice failed"
+
+
 def refresh_menu_bar() -> None:
     """Ask SwiftBar to re-run the mac-voice plugin now (no-op without SwiftBar)."""
     for url in SWIFTBAR_REFRESH:
@@ -342,13 +348,14 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             self._arm_wake()
             return
         self.announce("voice on")
+        session: Session | None = None
         try:
             session = self.session_factory()
             session.start()
         except Exception:  # pylint: disable=broad-exception-caught
             log.exception("❌ conversation failed to start")
             self._set_state("stopping")
-            self.announce("voice failed")
+            self.announce(failure_announcement(session))
             self._back_to_idle()
             return
         self._session, self._end_reason = session, ""
@@ -419,9 +426,13 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             or "remote: agent hung up or connection dropped (see costs)"
         )
         self._end_reason = ""
-        log.info("🔴 voice off — conversation ended by %s", reason)
+        failure = str(getattr(session, "start_failure", "") or "")
+        if failure:  # the SDK died before the conversation opened (e.g. quota exceeded)
+            log.info("🔴 voice off — the conversation never started (%s)", failure)
+        else:
+            log.info("🔴 voice off — conversation ended by %s", reason)
         time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
-        self.announce("voice off")
+        self.announce(failure_announcement(session) if failure else "voice off")
         self._back_to_idle()
 
     def _back_to_idle(self) -> None:

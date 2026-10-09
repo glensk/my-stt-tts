@@ -54,6 +54,7 @@ AUTH_THRESHOLD = 0.35
 CONFIRM_TTL_S = 60.0
 NOTICE_PREFIX = "[system notice]"
 BRIEFING_CAP = 600
+NOTICE_CAP = 300
 LOG_DETAIL_CAP = 80
 
 
@@ -560,7 +561,7 @@ def _default_vad() -> SpeechDetector:
     return SileroVad()
 
 
-class BridgeController:  # pylint: disable=too-many-instance-attributes  # the bridge's hub
+class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Owns authorisation state for the daemon's lifetime; one call at a time."""
 
     def __init__(
@@ -590,6 +591,13 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
         self._latest: Transcript | None = None
         self._shutdown_hooks: list[Callable[[], None]] = []
         self._feed_failed = False
+        self._notice_sink: Callable[[str], Any] | None = None
+        self._in_flight: dict[str, int] = {}
+        #: False once the agent refused the ``first_message`` override (its platform setting
+        #: is off — ``scripts/eleven_agent_config.py -a`` turns it on): no more briefings at
+        #: call start for this daemon's lifetime, so a refused override cannot break every call.
+        self.first_message_ok = True
+        self.components: dict[str, Any] = {}  # what bridge_wiring.wire registered (by name)
         self._lock = threading.Lock()
 
     # -- registries ---------------------------------------------------------------------
@@ -689,6 +697,54 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
         latest = self._latest
         self.caps.invalidate_all(reason, through_seq=latest.seq if latest else None)
 
+    # -- in-call notices ------------------------------------------------------------------
+    def set_notice_sink(self, sink: Callable[[str], Any] | None) -> None:
+        """The live call's way to make the agent speak (``send_user_message``); None = no call."""
+        with self._lock:
+            self._notice_sink = sink
+
+    def notify_in_call(self, text: str) -> bool:
+        """Speak ``text`` in the running call as ``[system notice] <text>``; False outside one.
+
+        The notice is recorded as injected (:meth:`on_injected`) BEFORE it is sent, so it
+        voids unused capabilities and can never mint one. Outside a call nothing is sent —
+        the attention inbox keeps the problem for the next "voice on".
+        """
+        with self._lock:
+            sink = self._notice_sink if self.turns is not None else None
+        if sink is None:
+            return False
+        body = redact(" ".join(str(text).split()), NOTICE_CAP)
+        if not body:
+            return False
+        notice = f"{NOTICE_PREFIX} {body}"
+        self.on_injected(notice)
+        try:
+            sink(notice)
+        except Exception:  # pylint: disable=broad-exception-caught  # the inbox keeps it
+            log.warning("⚠️  in-call notice failed", exc_info=True)
+            return False
+        log.info("📣 notice sent to the call")
+        return True
+
+    # -- client tools in flight ------------------------------------------------------------
+    def tool_started(self, name: str) -> None:
+        with self._lock:
+            self._in_flight[name] = self._in_flight.get(name, 0) + 1
+
+    def tool_finished(self, name: str) -> None:
+        with self._lock:
+            left = self._in_flight.get(name, 0) - 1
+            if left > 0:
+                self._in_flight[name] = left
+            else:
+                self._in_flight.pop(name, None)
+
+    def tool_in_flight(self, name: str) -> bool:
+        """True while a call of the client tool ``name`` has not returned to the agent."""
+        with self._lock:
+            return self._in_flight.get(name, 0) > 0
+
     # -- authorisation entry points for tools ----------------------------------------------
     @property
     def latest(self) -> Transcript | None:
@@ -729,12 +785,25 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
 
 
 def build_bridge(
-    scorer: SpeakerScorer | None, env: Mapping[str, str] | None = None
+    scorer: SpeakerScorer | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    wire: bool = True,
 ) -> BridgeController:
-    """The daemon's controller: identity from ``MAC_VOICE_AUTHORIZED`` + the voice gate."""
+    """The daemon's controller: identity from ``MAC_VOICE_AUTHORIZED`` + the voice gate.
+
+    With ``wire`` the components register themselves, each gated by its own flag
+    (:func:`my_stt_tts.bridge_wiring.wire`): attention inbox + monitor, Claude sessions,
+    Mac control and the Mac operator.
+    """
     authoriser = Authoriser.from_env(scorer, env)
     if authoriser.authorized is None:
         log.warning("⚠️  %s unset — every bridge action will be refused", AUTH_ENV)
     controller = BridgeController(authoriser)
+    if wire:
+        # pylint: disable-next=import-outside-toplevel  # it imports every component
+        from .bridge_wiring import wire as wire_components
+
+        wire_components(controller, env)
     controller.preload()
     return controller
