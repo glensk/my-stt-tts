@@ -297,10 +297,12 @@ dashboard changes before testing them here.
 Ctrl-C ends the conversation. Code: [`eleven_voice.py`](src/my_stt_tts/eleven_voice.py).
 
 **Hands-free: the daemon.** `./mac-voice -d` (or `-I` to install it as a login LaunchAgent)
-owns the mic: while idle it listens for the wake word (`WAKE_PHRASE`, default "hey jarvis");
-on the wake word, on `./mac-voice -t` (Karabiner: hold `v`, tap `o` in iTerm2) or from the
-SwiftBar item it says "voice on" and connects; the same toggle, the agent hanging up or 60 s
-of silence end it with "voice off". `-n`/`-f` force on/off, `-w on|off` toggles the wake
+owns the mic: while idle it listens for "voice on" (custom phrase via sherpa KWS,
+`MAC_VOICE_WAKE`) or "hey jarvis" (openWakeWord, threshold `MAC_VOICE_WAKE_THRESHOLD`=0.75);
+on the wake word, on `./mac-voice -t` (Karabiner: hold `v`, tap `o`, any app) or from the
+SwiftBar item it says "voice on" and connects; the same toggle, saying "voice off" (the
+agent hangs up), 60 s of silence or 15 min end it with "voice off". Every console line
+carries a HH:MM:SS timestamp. `-n`/`-f` force on/off, `-w on|off` toggles the wake
 word (remembered), `-s` prints the state. The menu-bar plugin is
 [`swiftbar/mac-voice.5s.sh`](swiftbar/mac-voice.5s.sh) — symlink it into your SwiftBar
 plugin folder. Code: [`voice_control.py`](src/my_stt_tts/voice_control.py).
