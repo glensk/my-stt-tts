@@ -25,6 +25,7 @@ LaunchAgent restarts it with a clean audio stack.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -197,8 +198,10 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
         state_dir: Path = STATE_DIR,
         wake_enabled: bool | None = None,
         timing: dict[str, float] | None = None,
+        bridge: Any = None,
     ) -> None:
         self.session_factory = session_factory
+        self.bridge = bridge  # bridge.BridgeController (opt-in), shut down with the daemon
         self.listener_factory = listener_factory
         self.announce = announce
         self.notify = notify
@@ -449,6 +452,9 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
         listener, self._listener = self._listener, None
         if listener is not None:
             listener.stop()
+        if self.bridge is not None:
+            with contextlib.suppress(Exception):
+                self.bridge.shutdown()
         self._closed.set()
 
 
@@ -521,8 +527,11 @@ def send(command: str, path: Path | None = None, timeout: float = 3.0) -> dict[s
     return reply if isinstance(reply, dict) else None
 
 
-def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
-    """Build the configured wake detector once; None when openWakeWord is unavailable."""
+def wake_listener_factory(gate: Any = None) -> Callable[[Callable[[], None]], Listener] | None:
+    """Build the configured wake detector once; None when openWakeWord is unavailable.
+
+    ``gate`` reuses an already built :func:`voice_gate` (the bridge shares it).
+    """
     try:
         from .config import Config
         from .wake import make_wake_detector
@@ -549,7 +558,7 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         log.warning("⚠️  wake word unavailable; chord + menu bar only", exc_info=True)
         return None
     gain = float(getattr(cfg, "wake_gain", 1.0))
-    gate = voice_gate()
+    gate = gate if gate is not None else voice_gate()
     return lambda on_wake: WakeListener(detector, on_wake, gain=gain, gate=gate)
 
 
@@ -567,13 +576,34 @@ def voice_gate() -> Any:
     return gate
 
 
-def daemon_main(session_factory: Callable[[], Session], *, wake: bool = True) -> int:
-    """Run the daemon in the foreground until SIGTERM / SIGINT."""
+def _build_bridge() -> tuple[Any, Any]:
+    """(controller, voice gate) when a bridge flag is on, else (None, None)."""
+    from .bridge import bridge_enabled, build_bridge
+
+    if not bridge_enabled():
+        return None, None
+    gate = voice_gate()
+    return build_bridge(gate), gate
+
+
+def daemon_main(session_factory: Callable[..., Session], *, wake: bool = True) -> int:
+    """Run the daemon in the foreground until SIGTERM / SIGINT.
+
+    With a bridge flag on, the :class:`~my_stt_tts.bridge.BridgeController` is built here
+    once and handed to every session as ``session_factory(bridge=controller)``.
+    """
     logging.getLogger("my_stt_tts").setLevel(logging.INFO)
     stop = threading.Event()
-    daemon = VoiceDaemon(
-        session_factory, listener_factory=wake_listener_factory() if wake else None
+    bridge, gate = _build_bridge()
+    if bridge is not None:
+        session_factory = functools.partial(session_factory, bridge=bridge)
+        log.info("🌉 Claude bridge on (authorised voice: %s)", bridge.authoriser.authorized or "-")
+    listeners = (
+        (wake_listener_factory(gate) if gate is not None else wake_listener_factory())
+        if wake
+        else None
     )
+    daemon = VoiceDaemon(session_factory, listener_factory=listeners, bridge=bridge)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     daemon.submit("arm")

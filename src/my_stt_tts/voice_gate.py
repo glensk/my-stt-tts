@@ -158,3 +158,17 @@ class VoiceGate:
             ((n, float(emb @ c)) for n, c in self.profiles.items()), key=lambda kv: kv[1]
         )
         return score >= self.threshold, name, score
+
+    def score_against(self, audio: Any, name: str, *, timeout: float = 5.0) -> float | None:
+        """Cosine of ``audio`` against ONE profile; None when it cannot be judged.
+
+        Unlike :meth:`check` this never lets anyone through: no such profile, the model
+        not loaded within ``timeout`` (or failed to load) or a clip under 0.25 s → None.
+        """
+        profile = self.profiles.get(name)
+        if profile is None or not self._ready.wait(timeout) or self._embed is None:
+            return None
+        clip = np.asarray(audio, dtype=np.float32).ravel()
+        if clip.size < 4000:
+            return None
+        return float(_l2(self._embed(clip)) @ profile)

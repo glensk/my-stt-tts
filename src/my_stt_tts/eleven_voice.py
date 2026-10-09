@@ -25,6 +25,7 @@ Needs the ``elevenlabs`` + ``audio`` extras and ``ELEVENLABS_API_KEY`` /
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
 import os
@@ -113,11 +114,16 @@ class _Playback:
 
 
 def make_audio_interface(  # pylint: disable=too-many-statements  # one nested class
-    mode: str, in_dev: int | str | None, out_dev: int | str | None
+    mode: str,
+    in_dev: int | str | None,
+    out_dev: int | str | None,
+    on_frame: Callable[[np.ndarray], None] | None = None,
 ) -> Any:
     """Build an SDK ``AudioInterface`` for ``mode`` (see module docstring).
 
-    The class is nested so the optional ``elevenlabs`` base class is imported lazily.
+    ``on_frame`` (optional, the Claude bridge's turn source) also receives every mic frame
+    sent to the agent, as 16 kHz float32. The class is nested so the optional
+    ``elevenlabs`` base class is imported lazily.
     """
     from elevenlabs.conversational_ai.conversation import AudioInterface
 
@@ -139,6 +145,8 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
                 pcm = b"\x00" * len(pcm)  # gate the mic while the agent talks
             self._note_level(pcm)
             cb(pcm)
+            if on_frame is not None:
+                on_frame(np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0)
 
         def _note_level(self, pcm: bytes) -> None:
             samples = np.frombuffer(pcm, dtype="<i2")
@@ -184,6 +192,8 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
                     pcm = (np.clip(frame, -1.0, 1.0) * 32767).astype("<i2").tobytes()
                     self._note_level(pcm)
                     input_callback(pcm)
+                    if on_frame is not None:
+                        on_frame(frame)
 
             self._thread = threading.Thread(target=_pump, name="vp-capture", daemon=True)
             self._thread.start()
@@ -283,6 +293,7 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         in_dev: str | None = None,
         out_dev: str | None = None,
         echo: bool = True,
+        bridge: Any = None,
     ) -> None:
         from elevenlabs.client import ElevenLabs
         from elevenlabs.conversational_ai.conversation import ClientTools, Conversation
@@ -292,7 +303,10 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         self.conversation_id: str | None = None
         self.end_reason = ""  # set when the session ends itself (e.g. "voice off" heard)
         self.last_activity = time.monotonic()
-        self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev))
+        self.bridge = bridge  # bridge.BridgeController when a bridge flag is on, else None
+        self._transcript_seq = itertools.count(1)
+        on_frame = bridge.feed_audio if bridge is not None else None
+        self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev), on_frame)
         self.conversation = Conversation(
             ElevenLabs(api_key=api_key),
             agent_id,
@@ -306,6 +320,8 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
 
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
+        if who == "🧑" and self.bridge is not None:
+            self._forward(text, self.last_activity)
         if who == "🧑" and is_voice_off(text) and not self.end_reason:
             self.end_reason = f"you said {text.strip()!r}"
             # end off the SDK's receive thread: end_session() tears that thread down
@@ -313,8 +329,24 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
             stamp(f"{who} │ {text}")  # both emoji are 2 columns wide: transcripts line up
 
+    def _forward(self, text: str, received_at: float) -> None:
+        """Hand a user transcript to the bridge (never breaks the SDK's receive thread)."""
+        if not text.strip(" .…"):
+            return
+        try:
+            self.bridge.on_transcript(next(self._transcript_seq), text, received_at)
+        except Exception:  # pylint: disable=broad-exception-caught
+            log.warning("⚠️  bridge rejected a transcript", exc_info=True)
+
     def start(self) -> None:
-        self.conversation.start_session()
+        if self.bridge is not None:
+            self.bridge.begin_call()
+        try:
+            self.conversation.start_session()
+        except Exception:
+            if self.bridge is not None:
+                self.bridge.end_call()
+            raise
         if self.echo:
             threading.Thread(target=self._print_models, name="models", daemon=True).start()
 
@@ -322,7 +354,11 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         self.conversation.end_session()
 
     def wait(self) -> str | None:
-        self.conversation_id = self.conversation.wait_for_session_end()
+        try:
+            self.conversation_id = self.conversation.wait_for_session_end()
+        finally:
+            if self.bridge is not None:
+                self.bridge.end_call()
         return self.conversation_id
 
     def _print_models(self) -> None:
@@ -496,9 +532,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.daemon:
             from .voice_control import daemon_main
 
-            def factory() -> VoiceSession:
+            def factory(bridge: Any = None) -> VoiceSession:
                 return VoiceSession(
-                    *creds, mode=args.mode, in_dev=args.input_device, out_dev=args.output_device
+                    *creds,
+                    mode=args.mode,
+                    in_dev=args.input_device,
+                    out_dev=args.output_device,
+                    bridge=bridge,
                 )
 
             return daemon_main(factory, wake=not args.no_wake)

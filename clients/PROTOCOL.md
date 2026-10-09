@@ -36,12 +36,14 @@ sample format:
 PROTOCOL_VERSION = 1
 _INT16_SCALE = 32767.0
 
+
 def encode_frame(pcm: np.ndarray) -> bytes:
     arr = np.asarray(pcm, dtype=np.float32).ravel()
     if arr.size == 0:
         return b""
     clipped = np.clip(arr, -1.0, 1.0)
     return (clipped * _INT16_SCALE).astype("<i2").tobytes()
+
 
 def decode_frame(data: bytes) -> np.ndarray:
     if not data:
@@ -101,7 +103,7 @@ my-stt-tts --transport websocket --transport-port 8770 --transport-token SECRET
 Endpoint / bind defaults (`config.py`):
 
 ```python
-transport_host: str = "0.0.0.0"   # binds LAN-wide so satellites can reach it
+transport_host: str = "0.0.0.0"  # binds LAN-wide so satellites can reach it
 transport_port: int = 8770
 transport_token: str | None = None
 sample_rate: int = 16000
@@ -208,7 +210,7 @@ After `ready`:
 When the client closes the socket, the server runs (`finally` in `handle`):
 
 ```python
-transport.end_mic()    # pushes EOF so the pipeline's mic_frames() ends cleanly
+transport.end_mic()  # pushes EOF so the pipeline's mic_frames() ends cleanly
 transport.close()
 out_task.cancel()
 ```
