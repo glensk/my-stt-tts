@@ -11,7 +11,8 @@ and the monotonic time it arrived.
 Authorisation (only Albert's voice may act, fail closed):
 
 * :class:`Authoriser` — the utterance a transcript binds to must match the profile named
-  by ``MAC_VOICE_AUTHORIZED`` with cosine ≥ 0.35. No such variable, no profile, a model
+  by ``MAC_VOICE_AUTHORIZED`` (its call-domain profile ``enroll/call/<name>.npy`` when there
+  is one, else the wake profile) with cosine ≥ 0.35. No such variable, no profile, a model
   failure, no / stale binding, an utterance under 0.4 s → refused. With several candidate
   utterances every one must pass. ``[system notice]`` messages never pass.
 * :class:`CapabilityStore` — an authorised transcript mints at most ONE capability; any
@@ -160,7 +161,10 @@ class Authoriser:
             ambiguous = isinstance(transcript.binding, Ambiguous)
             diag = ", ".join([refusal.code, *(["ambiguous"] if ambiguous else []), *notes])
             log_refused(f"{refusal.reason} ({diag})")
-        return refusal
+            return refusal
+        for note in notes:
+            log.info("🔓 voice verified (%s)", note)
+        return None
 
     def _precheck(self, transcript: Transcript) -> Refusal | None:
         if transcript.injected:
@@ -174,7 +178,11 @@ class Authoriser:
         return None
 
     def _check_utterance(self, utt: Utterance, notes: list[str]) -> Refusal | None:
-        """Check one utterance; append ``<duration>s[ score]`` to ``notes`` (no content)."""
+        """Check one utterance; append ``<duration>s[ score[ kind]]`` to ``notes`` (no content).
+
+        ``kind`` (``call`` / ``wake``) is the profile the scorer used, when it can tell
+        (``VoiceGate.profile_kind``); scorers without that method just omit it.
+        """
         notes.append(f"{utt.duration:.2f}s")
         if utt.duration < self.min_utterance_s:
             return _refuse("too_short")
@@ -187,9 +195,22 @@ class Authoriser:
         if score is None:
             return _refuse("no_profile")
         notes[-1] += f" {score:.2f}"
+        kind = self._profile_kind()
+        if kind:
+            notes[-1] += f" {kind}"
         if score < self.threshold:
             return _refuse("other_speaker")
         return None
+
+    def _profile_kind(self) -> str | None:
+        kind_of = getattr(self.scorer, "profile_kind", None)
+        if not callable(kind_of) or self.authorized is None:
+            return None
+        try:
+            kind = kind_of(self.authorized)
+        except Exception:  # pylint: disable=broad-exception-caught  # diagnostics only
+            return None
+        return kind if isinstance(kind, str) else None
 
 
 def _candidates(binding: Binding) -> tuple[Utterance, ...]:
@@ -512,7 +533,11 @@ class Problem:
 
 
 class ProblemSink(Protocol):
+    """Where problems go; ``resolve`` closes an open one once later evidence settled it."""
+
     def report(self, problem: Problem) -> None: ...
+
+    def resolve(self, kind: str, subject: str) -> bool: ...
 
 
 class BriefingProvider(Protocol):
@@ -530,6 +555,16 @@ class MemoryProblemSink:
         with self._lock:
             self.problems.append(problem)
         log.info("⚠️  problem: %s · %s", _detail(problem.kind), _detail(problem.subject))
+
+    def resolve(self, kind: str, subject: str) -> bool:
+        """Drop every kept problem ``kind`` · ``subject``; True when there was one."""
+        with self._lock:
+            kept = [p for p in self.problems if (p.kind, p.subject) != (kind, subject)]
+            dropped = len(self.problems) - len(kept)
+            self.problems[:] = kept
+        if dropped:
+            log.info("✅ problem resolved: %s · %s", _detail(kind), _detail(subject))
+        return dropped > 0
 
 
 class DeliveryTracker(Protocol):

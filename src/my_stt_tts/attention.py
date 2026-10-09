@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 
 # -- the inbox --------------------------------------------------------------------------------
-class AttentionStore:
+class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 sink protocols
     """The attention inbox (see module docstring). Thread-safe; one connection."""
 
     def __init__(
@@ -476,7 +476,19 @@ class AttentionStore:
         live = [item for item in self.items() if item.is_open(now)]
         return sorted(live, key=lambda i: (-i.rank, i.briefed_at is not None, -i.last_seen))
 
-    def resolve(self, dedupe_key: str) -> bool:
+    def resolve(self, kind: str, subject: str) -> bool:
+        """:class:`~my_stt_tts.bridge.ProblemSink` entry point: close ``kind`` · ``subject``.
+
+        Uses the key :meth:`report` derives without an explicit ``dedupe_key``
+        (:func:`default_dedupe_key`), so it closes what a plain ``report`` opened.
+        """
+        key = default_dedupe_key(Problem(kind, subject, ""))
+        closed = self.resolve_key(key)
+        if closed:
+            log.info("✅ problem resolved: %s · %s", clean(kind, 40), clean(subject, SUBJECT_CAP))
+        return closed
+
+    def resolve_key(self, dedupe_key: str) -> bool:
         """Close an open problem because later evidence settled it (auto-resolve)."""
         with self._lock:
             cur = self._conn.execute(
@@ -901,7 +913,7 @@ class Monitor:  # pylint: disable=too-many-instance-attributes  # the inbox's po
     def _events_ok(self) -> None:
         if self.failures:
             self.failures = 0
-            self.store.resolve("monitor:events")
+            self.store.resolve_key("monitor:events")
 
     def _handle_event(self, event: object) -> None:
         if not isinstance(event, dict):
@@ -922,7 +934,7 @@ class Monitor:  # pylint: disable=too-many-instance-attributes  # the inbox's po
             return  # not after a voice delivery: not the voice's problem
         state = str(detail.get("state") or "")
         if delivery_id and delivery.delivery_id == delivery_id and state in TERMINAL_STATES:
-            self.store.resolve(f"unconfirmed:{delivery_id}")
+            self.store.resolve_key(f"unconfirmed:{delivery_id}")
             self.store.update_delivery(delivery_id, state, close=True)  # ccc advanced it
         if state == "timed_out" and detail.get("reason") == "no_turn_end":
             return  # long-running work, not a problem
@@ -973,7 +985,7 @@ class Monitor:  # pylint: disable=too-many-instance-attributes  # the inbox's po
                     announce=True,
                 )
             return
-        self.store.resolve(unconfirmed)  # any later evidence settles the grace
+        self.store.resolve_key(unconfirmed)  # any later evidence settles the grace
         if state == "needs_input":
             self._alert(
                 delivery, _EVENT_ALERTS["needs_input"], f"needs_input:{delivery.session_id}"

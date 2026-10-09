@@ -20,7 +20,7 @@ from mac_fakes import (
 )
 
 from my_stt_tts import eleven_voice, mac_control
-from my_stt_tts.bridge import Authoriser, BridgeController, MemoryProblemSink
+from my_stt_tts.bridge import Authoriser, BridgeController, MemoryProblemSink, Problem
 from my_stt_tts.mac_control import (
     MDLS,
     OPEN,
@@ -419,6 +419,44 @@ def test_register_with_a_red_check_disables_every_tool() -> None:
     assert not fake.opened()
     sink = ctl.problems
     assert isinstance(sink, MemoryProblemSink) and sink.problems[0].kind == "mac_control"
+
+
+def test_green_doctor_resolves_the_old_disabled_problem() -> None:
+    ctl = controller()
+    sink = MemoryProblemSink()
+    sink.report(Problem("mac_control", "doctor", "disabled: Volume read"))  # an earlier run
+    sink.report(Problem("delivery_failed", "voice bridge", "session gone"))
+    ctl.problems = sink
+    mac = register(ctl, runner=green_fake(), env={"MAC_VOICE_MAC_CONTROL": "1"}, ax=lambda: True)
+    assert mac is not None and mac.disabled is None
+    assert [p.kind for p in sink.problems] == ["delivery_failed"]
+
+
+def test_red_doctor_keeps_the_problem_open() -> None:
+    ctl = controller()
+    fake = green_fake()
+    fake.fail[READ_VOLUME] = RunResult(1, "", "boom (-1)")
+    resolved: list[tuple[str, str]] = []
+
+    class Sink(MemoryProblemSink):
+        def resolve(self, kind: str, subject: str) -> bool:
+            resolved.append((kind, subject))
+            return super().resolve(kind, subject)
+
+    ctl.problems = Sink()
+    register(ctl, runner=fake, env={"MAC_VOICE_MAC_CONTROL": "1"}, ax=lambda: True)
+    assert not resolved
+
+
+def test_a_failing_resolve_keeps_the_tools() -> None:
+    class Broken(MemoryProblemSink):
+        def resolve(self, kind: str, subject: str) -> bool:
+            raise RuntimeError(kind)
+
+    ctl = controller()
+    ctl.problems = Broken()
+    mac = register(ctl, runner=green_fake(), env={"MAC_VOICE_MAC_CONTROL": "1"}, ax=lambda: True)
+    assert mac is not None and set(TOOL_NAMES) <= set(ctl.tools)
 
 
 def test_register_with_safari_closed_keeps_the_tools() -> None:

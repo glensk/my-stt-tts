@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from my_stt_tts import voice_control as vc
 from my_stt_tts import voice_gate as vg
@@ -69,6 +70,42 @@ def test_gate_without_profiles_lets_everyone_in(tmp_path: Path) -> None:
     gate = vg.VoiceGate(tmp_path, embed=_fake_embed)
     assert not gate.active
     assert gate.check(np.zeros(16000, dtype=np.float32))[0] is True
+
+
+def test_call_profiles_stay_out_of_the_wake_gate(tmp_path: Path) -> None:
+    np.save(tmp_path / "albert.npy", np.array([1.0, 0.0]))
+    (tmp_path / "call").mkdir()
+    np.save(tmp_path / "call" / "albert.npy", np.array([0.0, 1.0]))
+    np.save(tmp_path / "call" / "bob.npy", np.array([0.0, 1.0]))
+    gate = vg.VoiceGate(tmp_path, embed=_fake_embed)
+    assert set(gate.profiles) == {"albert"}  # the wake gate never sees call/
+    assert set(gate.call_profiles) == {"albert", "bob"}
+    ok, name, _sim = gate.check(np.full(16000, 0.5, dtype=np.float32))
+    assert ok and name == "albert"
+
+
+def test_score_against_prefers_the_call_profile(tmp_path: Path) -> None:
+    np.save(tmp_path / "albert.npy", np.array([1.0, 0.0]))
+    np.save(tmp_path / "carol.npy", np.array([1.0, 0.0]))
+    (tmp_path / "call").mkdir()
+    np.save(tmp_path / "call" / "albert.npy", np.array([0.0, 2.0]))  # normalised on load
+    gate = vg.VoiceGate(tmp_path, embed=_fake_embed)
+    low = np.full(16000, -0.5, dtype=np.float32)  # fake embedding [0, 1]
+    assert gate.score_against(low, "albert") == pytest.approx(1.0)  # call, not the wake one
+    assert gate.profile_kind("albert") == "call"
+    assert gate.score_against(low, "carol") == pytest.approx(0.0)  # no call profile: wake
+    assert gate.profile_kind("carol") == "wake"
+    assert gate.score_against(low, "nobody") is None
+    assert gate.profile_kind("nobody") is None
+
+
+def test_call_profile_alone_still_needs_the_model(tmp_path: Path) -> None:
+    (tmp_path / "call").mkdir()
+    np.save(tmp_path / "call" / "albert.npy", np.array([1.0, 0.0]))
+    gate = vg.VoiceGate(tmp_path)  # no embedder yet: preload() would load it
+    assert not gate.active  # the wake gate still lets everyone in
+    clip = np.full(16000, 0.5, dtype=np.float32)
+    assert gate.score_against(clip, "albert", timeout=0.01) is None  # fail closed
 
 
 class _Det:

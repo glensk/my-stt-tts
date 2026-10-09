@@ -36,7 +36,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -62,6 +62,8 @@ SWIFTBAR_REFRESH = (
 LAUNCH_LABEL = "com.albert.mac-voice"
 LAUNCH_AGENT = Path.home() / "Library/LaunchAgents" / f"{LAUNCH_LABEL}.plist"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+READY_SOUND_ENV = "MAC_VOICE_READY_SOUND"
+READY_SOUND = "/System/Library/Sounds/Glass.aiff"  # played once the daemon listens
 
 
 class Session(Protocol):
@@ -581,9 +583,12 @@ def voice_gate() -> Any:
     gate = VoiceGate(threshold=threshold)
     if gate.active:
         log.info("🗣️  only enrolled voices start it: %s", ", ".join(gate.profiles))
-        gate.preload()
     else:
         log.info("🗣️  no voice profiles — anyone can start it (mac-voice -V builds them)")
+    if gate.call_profiles:
+        log.info("🗣️  call-domain voice profiles: %s", ", ".join(gate.call_profiles))
+    if gate.active or gate.call_profiles:
+        gate.preload()
     return gate
 
 
@@ -597,11 +602,50 @@ def _build_bridge() -> tuple[Any, Any]:
     return build_bridge(gate), gate
 
 
-def daemon_main(session_factory: Callable[..., Session], *, wake: bool = True) -> int:
+def ready_sound(env: Mapping[str, str] | None = None) -> str | None:
+    """The sound that says "listening" (``MAC_VOICE_READY_SOUND``); None when switched off.
+
+    Unset → :data:`READY_SOUND`; set to ``0``, ``off`` or an empty string → no sound.
+    """
+    env = os.environ if env is None else env
+    value = env.get(READY_SOUND_ENV)
+    if value is None:
+        return READY_SOUND
+    value = value.strip()
+    return None if value.casefold() in {"", "0", "off"} else value
+
+
+def play_ready_sound(
+    env: Mapping[str, str] | None = None,
+    popen: Callable[..., Any] = subprocess.Popen,
+) -> None:
+    """Play the ready sound with ``afplay`` without waiting for it; failures only log."""
+    sound = ready_sound(env)
+    if sound is None:
+        return
+    try:
+        popen(
+            ["/usr/bin/afplay", sound],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught  # a chime never matters
+        log.debug("ready sound failed", exc_info=True)
+
+
+def daemon_main(
+    session_factory: Callable[..., Session],
+    *,
+    wake: bool = True,
+    chime: Callable[[], None] = play_ready_sound,
+) -> int:
     """Run the daemon in the foreground until SIGTERM / SIGINT.
 
     With a bridge flag on, the :class:`~my_stt_tts.bridge.BridgeController` is built here
-    once and handed to every session as ``session_factory(bridge=controller)``.
+    once and handed to every session as ``session_factory(bridge=controller)``. ``chime``
+    plays once it listens (:func:`play_ready_sound`), so Albert knows he may say the wake
+    word.
     """
     logging.getLogger("my_stt_tts").setLevel(logging.INFO)
     stop = threading.Event()
@@ -620,6 +664,10 @@ def daemon_main(session_factory: Callable[..., Session], *, wake: bool = True) -
     daemon.submit("arm")
     daemon.publish()
     log.info("✅ mac-voice daemon listening on %s (wake: %s)", socket_path(), daemon.wake_enabled)
+    try:
+        chime()
+    except Exception:  # pylint: disable=broad-exception-caught  # a chime never matters
+        log.debug("ready chime failed", exc_info=True)
     try:
         serve(daemon, socket_path(), stop)
     finally:

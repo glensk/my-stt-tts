@@ -164,6 +164,16 @@ def test_report_is_the_problem_sink_and_stores_no_message_text(store: AttentionS
     assert len(item.reason) <= attention.REASON_CAP
 
 
+def test_resolve_closes_what_a_plain_report_opened(store: AttentionStore, clock: Clock) -> None:
+    store.report(Problem("mac_control", "doctor", "disabled: Volume read"))
+    store.report(problem())
+    assert store.resolve("mac_control", "Doctor") is True  # same normalised subject
+    assert [i.kind for i in store.open_items()] == ["delivery_failed"]
+    assert store.resolve("mac_control", "doctor") is False  # nothing open any more
+    clock.now += 60
+    assert store.record(Problem("mac_control", "doctor", "disabled: again")) == "reopened"
+
+
 def test_replay_of_the_same_source_is_a_noop_even_after_ack(
     store: AttentionStore, clock: Clock
 ) -> None:

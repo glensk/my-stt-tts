@@ -22,7 +22,8 @@ Successes return a short neutral ``ok: …`` (the agent stays silent), refusals
 :class:`~my_stt_tts.bridge.Problem`). One log line per call, never content.
 
 ``mac-voice -D`` runs :func:`doctor_main`; while a doctor check fails :func:`register`
-registers only stubs that answer ``Mac control disabled: <check>``.
+registers only stubs that answer ``Mac control disabled: <check>``; once it is green again
+it resolves the ``mac_control`` · ``doctor`` problem an earlier run reported.
 """
 
 from __future__ import annotations
@@ -839,7 +840,8 @@ def register(
     ``options`` go to :class:`MacControl` (``display``, ``apps``, ``sleep``,
     ``real_click``) plus ``ax`` for the doctor. While a doctor check fails, every tool
     name is registered as a stub answering ``Mac control disabled: <check>`` and one
-    problem is reported. Returns the :class:`MacControl` (None when the flag is off).
+    problem is reported; a green doctor resolves that problem. Returns the
+    :class:`MacControl` (None when the flag is off).
     """
     env = os.environ if env is None else env
     if env.get(FLAG, "").strip() != "1":
@@ -862,4 +864,8 @@ def register(
     for name, fn in mac.tools.items():
         controller.register_tool(name, fn)
     log.info("🖥️  Mac control on (%d tools)", len(TOOL_NAMES))
+    try:  # a green doctor settles a "disabled" problem an earlier run left in the inbox
+        controller.problems.resolve("mac_control", "doctor")
+    except Exception:  # pylint: disable=broad-exception-caught  # the tools stay registered
+        log.warning("⚠️  could not resolve the old Mac control problem", exc_info=True)
     return mac

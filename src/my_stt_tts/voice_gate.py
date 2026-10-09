@@ -7,6 +7,11 @@ wake-word clips a person recorded with ``scripts/enroll_wakeword.py -w <name>`` 
 clipped, someone else). :class:`VoiceGate` compares the audio around a wake fire with all
 profiles; with no profiles at all it lets everyone through (and says so).
 
+Call-domain profiles in ``enroll/call/<name>.npy`` (``scripts/enroll_call.py``) are built
+from sentences recorded through the same VoiceProcessingIO path a call uses. The wake gate
+never sees them; :meth:`VoiceGate.score_against` (the bridge's in-call check) prefers one
+over the wake profile, because a raw-mic wake profile scores in-call speech too low.
+
 Threshold 0.35 (cosine) from Albert's data, 2026-10-09: his held-out clips 0.41–0.76,
 five synthetic voices ≤ 0.23. Real family voices may sit closer than synthetic ones —
 re-check with their recordings.
@@ -30,6 +35,7 @@ log = logging.getLogger("my_stt_tts.voice_gate")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_DIR = REPO_ROOT / "enroll"
+CALL_SUBDIR = "call"  # enroll/call/<name>.npy: call-domain profiles (scripts/enroll_call.py)
 WAKE_CLIPS = REPO_ROOT / "debug" / "recordings" / "wake"
 THRESHOLD = 0.35
 OUTLIER_COS = 0.2  # a clip this far from the others' mean is not the person (or no voice)
@@ -105,6 +111,11 @@ def enrolled_speakers(clips_dir: Path = WAKE_CLIPS) -> list[str]:
     return sorted(names)
 
 
+def _load_profiles(directory: Path) -> dict[str, np.ndarray]:
+    """``{name: L2 centroid}`` for every ``*.npy`` directly in ``directory`` (none if absent)."""
+    return {p.stem: _l2(np.load(p).astype(np.float32)) for p in sorted(directory.glob("*.npy"))}
+
+
 class VoiceGate:
     """Accept a wake fire only if its audio matches an enrolled profile."""
 
@@ -116,12 +127,11 @@ class VoiceGate:
         embed: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         self.threshold = threshold
-        self.profiles = {
-            p.stem: _l2(np.load(p).astype(np.float32)) for p in sorted(profile_dir.glob("*.npy"))
-        }
+        self.profiles = _load_profiles(profile_dir)  # wake gate (non-recursive: no call/)
+        self.call_profiles = _load_profiles(profile_dir / CALL_SUBDIR)
         self._embed = embed
         self._ready = threading.Event()
-        if embed is not None or not self.profiles:
+        if embed is not None or not (self.profiles or self.call_profiles):
             self._ready.set()
 
     @property
@@ -159,13 +169,23 @@ class VoiceGate:
         )
         return score >= self.threshold, name, score
 
-    def score_against(self, audio: Any, name: str, *, timeout: float = 5.0) -> float | None:
-        """Cosine of ``audio`` against ONE profile; None when it cannot be judged.
+    def profile_kind(self, name: str) -> str | None:
+        """Which profile :meth:`score_against` uses for ``name``: ``call``, ``wake`` or None."""
+        if name in self.call_profiles:
+            return "call"
+        return "wake" if name in self.profiles else None
 
-        Unlike :meth:`check` this never lets anyone through: no such profile, the model
-        not loaded within ``timeout`` (or failed to load) or a clip under 0.25 s → None.
+    def score_against(self, audio: Any, name: str, *, timeout: float = 5.0) -> float | None:
+        """Cosine of ``audio`` against ONE person's profile; None when it cannot be judged.
+
+        Uses the call-domain profile for ``name`` when there is one, else the wake profile
+        (:meth:`profile_kind` says which). Unlike :meth:`check` this never lets anyone
+        through: no such profile, the model not loaded within ``timeout`` (or failed to
+        load) or a clip under 0.25 s → None.
         """
-        profile = self.profiles.get(name)
+        profile = self.call_profiles.get(name)
+        if profile is None:
+            profile = self.profiles.get(name)
         if profile is None or not self._ready.wait(timeout) or self._embed is None:
             return None
         clip = np.asarray(audio, dtype=np.float32).ravel()

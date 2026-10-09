@@ -242,6 +242,68 @@ def test_refusal_log_marks_an_ambiguous_binding(caplog: pytest.LogCaptureFixture
     assert "secret plan" not in caplog.text
 
 
+class KindScorer(FakeScorer):
+    """A scorer that says which profile it used (like ``VoiceGate.profile_kind``)."""
+
+    def __init__(self, kind: str = "call") -> None:
+        super().__init__()
+        self.kind = kind
+
+    def profile_kind(self, name: str) -> str | None:
+        return self.kind if name == "albert" else None
+
+
+def test_refusal_log_names_the_profile_kind(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call(KindScorer("wake"))
+    call.speak(ALBERT, 0.6)
+    call.say("open secret plan", level=OTHER, seconds=0.6)
+    refused(call.ctl.mint(), "other_speaker")
+    assert refusal_lines(caplog) == [
+        "🚫 refused: voice not verified "
+        "(other_speaker, ambiguous, 0.60s 0.52 wake, 0.60s 0.18 wake)"
+    ]
+    assert "secret plan" not in caplog.text
+
+
+def verified_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("🔓")]
+
+
+def test_success_logs_one_verified_line_per_utterance(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call(KindScorer("call"))
+    call.speak(ALBERT, 0.6)
+    call.say("open secret plan", seconds=0.6)
+    cap_or_fail(call.ctl.mint())
+    assert verified_lines(caplog) == [
+        "🔓 voice verified (0.60s 0.52 call)",
+        "🔓 voice verified (0.60s 0.52 call)",
+    ]
+    assert not refusal_lines(caplog)
+    assert "secret plan" not in caplog.text
+
+
+def test_verified_line_without_a_profile_kind(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call()  # FakeScorer cannot tell which profile it used
+    call.say("open youtube")
+    cap_or_fail(call.ctl.mint())
+    assert verified_lines(caplog) == ["🔓 voice verified (1.00s 0.52)"]
+
+
+def test_a_failing_profile_kind_is_left_out(caplog: pytest.LogCaptureFixture) -> None:
+    class Broken(FakeScorer):
+        def profile_kind(self, name: str) -> str | None:
+            raise RuntimeError(name)
+
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call(Broken())
+    call.say("open youtube", level=OTHER)
+    refused(call.ctl.mint(), "other_speaker")
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.00s 0.18)"]
+
+
 def test_no_transcript_yet_is_refused() -> None:
     refused(Call().ctl.mint(), "no_transcript")
 
@@ -594,6 +656,10 @@ def test_memory_problem_sink_and_briefing() -> None:
     sink = MemoryProblemSink()
     sink.report(Problem("delivery_failed", "voice bridge", "session gone"))
     assert sink.problems[0].subject == "voice bridge"
+    sink.report(Problem("mac_control", "doctor", "disabled: Volume read"))
+    assert sink.resolve("mac_control", "doctor") is True
+    assert sink.resolve("mac_control", "doctor") is False  # already gone
+    assert [p.kind for p in sink.problems] == ["delivery_failed"]
     assert MemoryBriefingProvider().briefing() is None
     brief = MemoryBriefingProvider("z" * 900 + " ghp_abcdefghijklmnopqrstuvwxyz0123").briefing()
     assert brief is not None and len(brief) == 600

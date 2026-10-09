@@ -609,6 +609,10 @@ class KeyedSink:
     def report(self, problem: Problem, *, dedupe_key: str | None = None) -> None:
         self.reports.append((problem, dedupe_key))
 
+    def resolve(self, kind: str, subject: str) -> bool:
+        del kind, subject
+        return False
+
 
 @pytest.mark.parametrize("code", sorted(POST_ACTION_FAILURES))
 def test_post_action_failures_reach_the_inbox_once_per_session(rig: Rig, code: str) -> None:
@@ -663,6 +667,9 @@ def test_a_sink_error_never_masks_the_outcome(rig: Rig) -> None:
     class Broken:
         def report(self, problem: Problem) -> None:
             raise RuntimeError(problem.kind)
+
+        def resolve(self, kind: str, subject: str) -> bool:
+            raise RuntimeError(kind + subject)
 
         def track_delivery(self, *args: str) -> None:
             raise RuntimeError(args[0])

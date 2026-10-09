@@ -260,3 +260,71 @@ def test_launch_agent_plist_runs_the_daemon(tmp_path: Path) -> None:
     assert data["WorkingDirectory"] == "/x"
     assert data["KeepAlive"] is True and data["RunAtLoad"] is True
     assert data["StandardErrorPath"] == str(tmp_path / "daemon.log")
+
+
+# -- ready chime -----------------------------------------------------------------------------
+def test_ready_sound_defaults_and_switches_off() -> None:
+    assert vc.ready_sound({}) == vc.READY_SOUND == "/System/Library/Sounds/Glass.aiff"
+    assert vc.ready_sound({"MAC_VOICE_READY_SOUND": " /tmp/ping.aiff "}) == "/tmp/ping.aiff"
+    for off in ("", "0", "off", "OFF", "  "):
+        assert vc.ready_sound({"MAC_VOICE_READY_SOUND": off}) is None
+
+
+def test_play_ready_sound_runs_afplay_without_waiting() -> None:
+    calls: list[list[str]] = []
+
+    def popen(argv: list[str], **_kw: object) -> None:
+        calls.append(argv)
+
+    vc.play_ready_sound({}, popen=popen)
+    assert calls == [["/usr/bin/afplay", vc.READY_SOUND]]
+    vc.play_ready_sound({"MAC_VOICE_READY_SOUND": "off"}, popen=popen)
+    assert len(calls) == 1  # switched off: nothing played
+
+
+def test_play_ready_sound_ignores_failures() -> None:
+    def popen(argv: list[str], **_kw: object) -> None:
+        raise FileNotFoundError(argv[0])
+
+    vc.play_ready_sound({}, popen=popen)  # never raises
+
+
+class _QuietDaemon:
+    """Stands in for VoiceDaemon so daemon_main touches no real state dir."""
+
+    wake_enabled = False
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.events: list[str] = []
+
+    def submit(self, event: str, arg: object = None) -> None:
+        del arg
+        self.events.append(event)
+
+    def publish(self) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_daemon_main_chimes_once_it_listens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fails: bool
+) -> None:
+    order: list[str] = []
+
+    def chime() -> None:
+        order.append("chime")
+        if fails:
+            raise RuntimeError("no audio")
+
+    monkeypatch.setattr(vc, "_build_bridge", lambda: (None, None))
+    monkeypatch.setattr(vc, "VoiceDaemon", _QuietDaemon)
+    monkeypatch.setattr(vc, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(vc, "socket_path", lambda: tmp_path / "control.sock")
+    monkeypatch.setattr(vc, "serve", lambda *_a: order.append("serve"))
+    monkeypatch.setattr(vc, "refresh_menu_bar", lambda: None)
+    monkeypatch.setattr(vc.signal, "signal", lambda *_a: None)
+    assert vc.daemon_main(lambda **_kw: FakeSession(), wake=False, chime=chime) == 0
+    assert order == ["chime", "serve"]
