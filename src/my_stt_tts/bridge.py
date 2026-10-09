@@ -150,13 +150,16 @@ class Authoriser:
     def verify(self, transcript: Transcript) -> Refusal | None:
         """None when the transcript may act, else the :class:`Refusal`."""
         refusal = self._precheck(transcript)
+        notes: list[str] = []
         if refusal is None:
             for utt in _candidates(transcript.binding):
-                refusal = self._check_utterance(utt)
+                refusal = self._check_utterance(utt, notes)
                 if refusal is not None:
                     break
         if refusal is not None:
-            log_refused(refusal.reason)
+            ambiguous = isinstance(transcript.binding, Ambiguous)
+            diag = ", ".join([refusal.code, *(["ambiguous"] if ambiguous else []), *notes])
+            log_refused(f"{refusal.reason} ({diag})")
         return refusal
 
     def _precheck(self, transcript: Transcript) -> Refusal | None:
@@ -170,7 +173,9 @@ class Authoriser:
             return _refuse("no_utterance")
         return None
 
-    def _check_utterance(self, utt: Utterance) -> Refusal | None:
+    def _check_utterance(self, utt: Utterance, notes: list[str]) -> Refusal | None:
+        """Check one utterance; append ``<duration>s[ score]`` to ``notes`` (no content)."""
+        notes.append(f"{utt.duration:.2f}s")
         if utt.duration < self.min_utterance_s:
             return _refuse("too_short")
         assert self.scorer is not None and self.authorized is not None
@@ -181,6 +186,7 @@ class Authoriser:
             return _refuse("model_failure")
         if score is None:
             return _refuse("no_profile")
+        notes[-1] += f" {score:.2f}"
         if score < self.threshold:
             return _refuse("other_speaker")
         return None

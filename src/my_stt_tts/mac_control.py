@@ -847,7 +847,11 @@ def register(
     runner = runner or run_argv
     ax = options.pop("ax", ax_trusted)
     mac = MacControl(controller, runner=runner, **options)
-    bad = [c for c in Doctor(runner=runner, ax=ax, sleep=mac.sleep).run() if c.status == "fail"]
+    doctor = Doctor(runner=runner, ax=ax, sleep=mac.sleep)
+    bad = [c for c in doctor.run() if c.status == "fail"]
+    if bad and any(c.detail == "timeout" for c in bad):
+        mac.sleep(1.0)  # a busy Safari can miss one 5 s Apple-Event timeout; ask once more
+        bad = [c for c in doctor.run() if c.status == "fail"]
     if bad:
         mac.disabled = bad[0].name
         log.warning("⚠️  Mac control disabled: %s (run mac-voice -D)", mac.disabled)
