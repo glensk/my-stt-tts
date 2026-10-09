@@ -322,6 +322,32 @@ def test_code_confirms_in_digits_and_words(said: str) -> None:
 
 
 @pytest.mark.usefixtures("code_35")
+def test_confirm_action_runs_the_executor_once() -> None:
+    call = Call()
+    ran: list[str] = []
+
+    def execute(pending: PendingAction) -> str:
+        ran.append(pending.kind)
+        return "sent"
+
+    call.ctl.register_executor("send", execute)
+    propose(call)
+    call.say("confirm 35")
+    assert call.ctl.tools["confirm_action"]("35") == "sent"
+    call.say("confirm 35 again")
+    assert call.ctl.confirm_action("35") == "refused: wrong code"
+    assert ran == ["send"]
+
+
+@pytest.mark.usefixtures("code_35")
+def test_confirm_action_without_executor_is_refused() -> None:
+    call = Call()
+    propose(call)
+    call.say("confirm 35")
+    assert call.ctl.confirm_action("35") == "refused: nothing to confirm"
+
+
+@pytest.mark.usefixtures("code_35")
 def test_code_is_single_use() -> None:
     call = Call()
     propose(call)

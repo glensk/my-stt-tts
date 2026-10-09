@@ -552,7 +552,9 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
         self.pending = PendingActions(authoriser, clock)
         self.problems: ProblemSink = problems or MemoryProblemSink()
         self.briefings: BriefingProvider = briefings or MemoryBriefingProvider()
-        self.tools: dict[str, Callable[..., Any]] = {}
+        self.tools: dict[str, Callable[..., Any]] = {"confirm_action": self.confirm_action}
+        self.executors: dict[str, Callable[[PendingAction], str]] = {}
+        self.mutation_lock = threading.Lock()  # one mutation at a time (7.7)
         self.turns: TurnSource | None = None
         self.cancel = CancellationToken()
         self._vad_factory = vad_factory
@@ -566,6 +568,10 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
     def register_tool(self, name: str, fn: Callable[..., Any]) -> None:
         """Client tools later phases add (name → callable)."""
         self.tools[name] = fn
+
+    def register_executor(self, kind: str, fn: Callable[[PendingAction], str]) -> None:
+        """What runs a confirmed :class:`PendingAction` of ``kind`` (returns speakable text)."""
+        self.executors[kind] = fn
 
     def on_shutdown(self, fn: Callable[[], None]) -> None:
         """Run ``fn`` at daemon shutdown (monitor, operator)."""
@@ -681,6 +687,17 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
             return _refuse("no_transcript", "nothing said yet")
         self.caps.consume_transcript(latest.seq)
         return self.pending.confirm(code, latest)
+
+    def confirm_action(self, code: str) -> str:
+        """The ``confirm_action`` client tool: run the proposal ``code`` names, once."""
+        result = self.confirm(code)
+        if isinstance(result, Refusal):
+            return f"refused: {result.reason}"
+        executor = self.executors.get(result.kind)
+        if executor is None:
+            log_refused(f"no executor for {result.kind}")
+            return "refused: nothing to confirm"
+        return executor(result)
 
 
 def build_bridge(
