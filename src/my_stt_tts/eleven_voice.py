@@ -257,6 +257,8 @@ class VoiceSession:
         from elevenlabs.conversational_ai.conversation import ClientTools, Conversation
 
         self.echo = echo
+        self.agent_id, self._api_key = agent_id, api_key
+        self.conversation_id: str | None = None
         self.last_activity = time.monotonic()
         self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev))
         self.conversation = Conversation(
@@ -277,12 +279,35 @@ class VoiceSession:
 
     def start(self) -> None:
         self.conversation.start_session()
+        if self.echo:
+            threading.Thread(target=self._print_models, name="models", daemon=True).start()
 
     def end(self) -> None:
         self.conversation.end_session()
 
     def wait(self) -> str | None:
-        return self.conversation.wait_for_session_end()
+        self.conversation_id = self.conversation.wait_for_session_end()
+        return self.conversation_id
+
+    def _print_models(self) -> None:
+        from .eleven_costs import agent_models
+
+        try:
+            stamp(agent_models(self._api_key, self.agent_id))
+        except Exception:  # pylint: disable=broad-exception-caught  # display only
+            log.debug("model lookup failed", exc_info=True)
+
+    def report(self) -> None:
+        """Print this conversation's models + costs once ElevenLabs has finalised it."""
+        from .eleven_costs import fetch_report
+
+        if not self.conversation_id:
+            return
+        try:
+            for line in fetch_report(self._api_key, self.conversation_id):
+                stamp(line)
+        except Exception:  # pylint: disable=broad-exception-caught  # display only
+            log.warning("⚠️  cost report failed", exc_info=True)
 
     def idle_for(self) -> float:
         """Seconds since the user or agent last did anything (0 while the agent speaks)."""
@@ -310,6 +335,7 @@ def run(agent_id: str, api_key: str, mode: str, in_dev: str | None, out_dev: str
     session.start()
     conversation_id = session.wait()
     stamp(f"✅ conversation ended (id {conversation_id}).")
+    session.report()
     return 0
 
 

@@ -302,7 +302,9 @@ owns the mic: while idle it listens for "voice on" (custom phrase via sherpa KWS
 on the wake word, on `./mac-voice -t` (Karabiner: hold `v`, tap `o`, any app) or from the
 SwiftBar item it says "voice on" and connects; the same toggle, saying "voice off" (the
 agent hangs up), 60 s of silence or 15 min end it with "voice off". Every console line
-carries a HH:MM:SS timestamp. `-n`/`-f` force on/off, `-w on|off` toggles the wake
+carries a HH:MM:SS timestamp; each conversation logs its models at the start and, a few
+seconds after it ends, the $ LLM price of every agent sentence, the call's credits and $
+(voice vs LLM) and the billing period's credits so far ([`eleven_costs.py`](src/my_stt_tts/eleven_costs.py)). `-n`/`-f` force on/off, `-w on|off` toggles the wake
 word (remembered), `-s` prints the state. The menu-bar plugin is
 [`swiftbar/mac-voice.5s.sh`](swiftbar/mac-voice.5s.sh) — symlink it into your SwiftBar
 plugin folder. Code: [`voice_control.py`](src/my_stt_tts/voice_control.py).

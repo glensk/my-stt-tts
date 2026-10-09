@@ -343,6 +343,9 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
                 with contextlib.suppress(Exception):
                     session.end()
         self.submit("finished", session)
+        report = getattr(session, "report", None)  # costs arrive seconds after the call
+        if callable(report):
+            threading.Thread(target=report, name="cost-report", daemon=True).start()
 
     def _fatal(self, why: str) -> None:
         """Unrecoverable audio/SDK state: exit so launchd restarts a clean process."""
