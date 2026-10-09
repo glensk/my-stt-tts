@@ -435,6 +435,10 @@ def _admin(args: argparse.Namespace) -> int | None:
     """Handle LaunchAgent, voice-profile and daemon-control flags; None to go on."""
     if args.voices:
         return _rebuild_voices()
+    if args.doctor:
+        from .mac_control import doctor_main
+
+        return doctor_main()
     if args.install or args.uninstall:
         from . import voice_control
 
@@ -482,7 +486,8 @@ def main(argv: list[str] | None = None) -> int:
             "  mac-voice -w off          disable the wake word (on: enable)\n"
             "  mac-voice -s              daemon status as JSON\n"
             "  mac-voice -I / -U         install / remove the login LaunchAgent\n"
-            "  mac-voice -V              rebuild voice profiles (only enrolled voices may start)"
+            "  mac-voice -V              rebuild voice profiles (only enrolled voices may start)\n"
+            "  mac-voice -D              doctor: Mac permissions for Mac control (✅/❌ + fix)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -505,6 +510,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     ctl.add_argument("-I", "--install", action="store_true", help="install the login LaunchAgent")
     ctl.add_argument("-U", "--uninstall", action="store_true", help="remove the LaunchAgent")
+    ctl.add_argument(
+        "-D", "--doctor", action="store_true", help="check the Mac permissions of Mac control"
+    )
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)
 
