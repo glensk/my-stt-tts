@@ -38,6 +38,7 @@ from my_stt_tts.mac_control import (
     resolve_app,
 )
 from my_stt_tts.mac_sites import (
+    OSASCRIPT,
     RunResult,
 )
 
@@ -427,6 +428,69 @@ def test_register_with_safari_closed_keeps_the_tools() -> None:
     mac = register(ctl, runner=fake, env={"MAC_VOICE_MAC_CONTROL": "1"}, ax=lambda: True)
     assert mac is not None and mac.disabled is None
     assert [OPEN, "-g", "-a", "Safari"] not in fake.calls  # never launches Safari itself
+
+
+TIMEOUT = RunResult(124, "", "timeout")  # what run_argv returns on subprocess.TimeoutExpired
+
+
+class TimesOut:
+    """Wraps a :class:`FakeMac`: ``script`` times out on its first ``times`` calls."""
+
+    def __init__(self, fake: FakeMac, script: str, times: int) -> None:
+        self.fake, self.script, self.left = fake, script, times
+
+    def __call__(self, argv: Any, timeout: float) -> RunResult:
+        result = self.fake(argv, timeout)  # recorded in fake.calls either way
+        if argv[0] == OSASCRIPT and argv[2] == self.script and self.left > 0:
+            self.left -= 1
+            return TIMEOUT
+        return result
+
+
+def register_with(runner: Any) -> tuple[BridgeController, Any, list[float]]:
+    ctl = controller()
+    slept: list[float] = []
+    env = {"MAC_VOICE_MAC_CONTROL": "1"}
+    mac = register(ctl, runner=runner, env=env, ax=lambda: True, sleep=slept.append)
+    return ctl, mac, slept
+
+
+def test_register_retries_the_doctor_once_after_a_timeout() -> None:
+    fake = green_fake()
+    ctl, mac, slept = register_with(TimesOut(fake, SAFARI_JS_PROBE, 1))
+    assert mac is not None and mac.disabled is None
+    assert slept == [1.0]
+    assert len(fake.scripts(SAFARI_JS_PROBE)) == 2
+    assert getattr(ctl.tools["open_url"], "__self__", None) is mac
+    sink = ctl.problems
+    assert isinstance(sink, MemoryProblemSink) and not sink.problems
+
+
+def test_register_disables_after_two_timeouts() -> None:
+    fake = green_fake()
+    ctl, mac, slept = register_with(TimesOut(fake, SAFARI_JS_PROBE, 2))
+    name = "Safari 'Allow JavaScript from Apple Events'"
+    assert mac is not None and mac.disabled == name
+    assert slept == [1.0]
+    assert len(fake.scripts(SAFARI_JS_PROBE)) == 2  # exactly one retry
+    for tool in TOOL_NAMES:
+        assert ctl.tools[tool](target="youtube") == f"Mac control disabled: {name}"
+    sink = ctl.problems
+    assert isinstance(sink, MemoryProblemSink) and len(sink.problems) == 1
+    assert sink.problems[0].kind == "mac_control"
+
+
+def test_register_does_not_retry_a_real_failure() -> None:
+    fake = green_fake()
+    fake.fail[SAFARI_JS_PROBE] = RunResult(
+        1, "", "You must enable the 'Allow JavaScript from Apple Events' option. (8)"
+    )
+    ctl, mac, slept = register_with(fake)
+    assert mac is not None and mac.disabled == "Safari 'Allow JavaScript from Apple Events'"
+    assert not slept
+    assert len(fake.scripts(SAFARI_JS_PROBE)) == 1  # the doctor ran once
+    sink = ctl.problems
+    assert isinstance(sink, MemoryProblemSink) and len(sink.problems) == 1
 
 
 def test_mac_voice_doctor_flag(monkeypatch: pytest.MonkeyPatch) -> None:

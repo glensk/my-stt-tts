@@ -6,6 +6,7 @@ the clip's amplitude (each fake speaker talks at their own level) and a manual c
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -34,6 +35,7 @@ from my_stt_tts.bridge import (
     log_tool,
 )
 from my_stt_tts.bridge_text import derivable, normalise_host, numbers_in, redact
+from my_stt_tts.turns import Ambiguous
 
 FRAME = 1600  # 0.1 s
 ALBERT, OTHER, PHONE = 0.5, 0.3, 0.2  # speaking levels of the fake speakers
@@ -201,6 +203,43 @@ def test_ambiguous_binding_needs_every_candidate() -> None:
     call.speak(OTHER, 0.6)  # the TV right before Albert
     call.say("open youtube", level=ALBERT, seconds=0.6)
     refused(call.ctl.mint(), "other_speaker")
+
+
+def refusal_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("🚫 refused:")]
+
+
+def test_refusal_log_names_too_short_and_the_length(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call()
+    call.say("louder secret plan", seconds=0.3)
+    refused(call.ctl.mint(), "too_short")
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (too_short, 0.30s)"]
+    assert "secret plan" not in caplog.text
+
+
+def test_refusal_log_names_other_speaker_and_the_score(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call()
+    call.say("louder secret plan", level=OTHER)
+    refused(call.ctl.mint(), "other_speaker")
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.00s 0.18)"]
+    assert "secret plan" not in caplog.text
+
+
+def test_refusal_log_marks_an_ambiguous_binding(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call()
+    call.speak(ALBERT, 0.6)
+    transcript = call.say("open secret plan", level=OTHER, seconds=0.6)
+    assert isinstance(transcript.binding, Ambiguous)
+    refused(call.ctl.mint(), "other_speaker")
+    assert refusal_lines(caplog) == [
+        "🚫 refused: voice not verified (other_speaker, ambiguous, 0.60s 0.52, 0.60s 0.18)"
+    ]
+    assert "secret plan" not in caplog.text
 
 
 def test_no_transcript_yet_is_refused() -> None:
