@@ -225,6 +225,21 @@ def names_free(names):
     return 0 if not live else 1
 
 
+def ccc_name(sid, name):
+    # ccc keeps `claude -n` as an observation, never as its own name, so the voice
+    # bridge would not find the session by NAME without this
+    import subprocess
+    ccc = os.environ.get("CCC_BIN", "ccc")
+    for _ in range(10):  # the SessionStart hook may not have written ccc's row yet
+        res = subprocess.run([ccc, "name", "-s", sid, name], capture_output=True, text=True)
+        if res.returncode == 0:
+            say(True, f"{name}: named in ccc")
+            return True
+        time.sleep(1.0)
+    say(False, f"{name}: ccc name failed: {(res.stderr or res.stdout).strip()[-160:]}")
+    return False
+
+
 def wait_session(name, iterm, timeout):
     end = time.monotonic() + timeout
     sess = None
@@ -249,6 +264,8 @@ def wait_session(name, iterm, timeout):
     status = "idle" if idle else lib.session_status(sess.session_id)
     say(bool(idle), f"{name}: registered as {sess.session_id} (pid {sess.pid}), {status}")
     if not idle:
+        return 1
+    if not ccc_name(sess.session_id, name):
         return 1
     transcript = lib.transcript_for(sess.session_id) or lib.expected_transcript(sess)
     print(json.dumps({
