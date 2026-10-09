@@ -81,7 +81,7 @@ def settings_dict(
     from .platform import host_app_name
 
     kws_ok = kws_available(cfg)
-    fewshot_on = getattr(cfg, "fewshot_wake_enabled", True)
+    fewshot_on = getattr(cfg, "fewshot_wake_enabled", False)
     # Per-word sensitivity + guidance: pass the config's resolver so each word shows its
     # effective 0..1 knob (per-word override else global) and a short actionable hint.
     word_info = wake_word_info(sensitivity_for=cfg.sensitivity_for)
@@ -191,7 +191,7 @@ def settings_dict(
         # is enabled, plus its operating knobs. A custom word gains the "fewshot" detector tag
         # (in wake_word_info[word]["detector"]) once it has saved references under
         # models/wake_embeddings/. Official words never use it.
-        "fewshot_wake_enabled": getattr(cfg, "fewshot_wake_enabled", True),
+        "fewshot_wake_enabled": getattr(cfg, "fewshot_wake_enabled", False),
         "fewshot_threshold": getattr(cfg, "fewshot_threshold", 0.96),
         "fewshot_patience": getattr(cfg, "fewshot_patience", 2),
         # Software input gain applied to SERVER mic captures (mic_check / wake_test),

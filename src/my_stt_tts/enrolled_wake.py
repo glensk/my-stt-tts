@@ -318,7 +318,7 @@ class EnrolledWake:
         from .config import is_official_wake_word
 
         target = word or cfg.wake_phrase
-        if not getattr(cfg, "fewshot_wake_enabled", True):
+        if not getattr(cfg, "fewshot_wake_enabled", False):
             return None
         if is_official_wake_word(target):
             return None  # official words stay openWakeWord-only (byte-identical)

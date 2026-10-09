@@ -939,8 +939,12 @@ class Config:
     # Albert's maziko clips (d-prime 5.41 whole-clip / 2.52 streaming) — see
     # PLAN_wake_checker_loop.md; uses the embedding ALREADY loaded, so ZERO new dependency
     # (we do NOT pull EWN's 88 MB ResNet). For an OFFICIAL word it is NEVER used (official
-    # stays openWakeWord-only, byte-identical). Env: FEWSHOT_WAKE_ENABLED (default true). ---
-    fewshot_wake_enabled: bool = True
+    # stays openWakeWord-only, byte-identical). OPT-IN (default off): the mean-pooled 2-3 s
+    # embeddings capture the speaker and the room more than the phrase — with 8 enrolled
+    # clips of one speaker it fired on 34 of 43 recordings of that speaker's ordinary speech
+    # at thr 0.96 / patience 2. Enable only for a word whose false-accepts you have measured.
+    # Env: FEWSHOT_WAKE_ENABLED (default false). ---
+    fewshot_wake_enabled: bool = False
     # Cosine-similarity (0..1) a rolling window's mean-pooled embedding must reach to count as
     # a hit. Tuned against the NEGATIVES set (not positives alone): on Albert's maziko clips
     # (leave-one-out, ~1.75 s window) 0.96 gives 100% recall with ZERO of the 23 hard negatives
@@ -1295,7 +1299,7 @@ class Config:
             kws_enabled=_env_bool("KWS_ENABLED", default=True),
             kws_auto_download=_env_bool("KWS_AUTO_DOWNLOAD", default=True),
             kws_spellings=_parse_kws_spellings(env.get("KWS_SPELLINGS")),
-            fewshot_wake_enabled=_env_bool("FEWSHOT_WAKE_ENABLED", default=True),
+            fewshot_wake_enabled=_env_bool("FEWSHOT_WAKE_ENABLED", default=False),
             wake_calibration=_env_bool("WAKE_CALIBRATION", default=False),
             speaker_diarize_enabled=_env_bool("SPEAKER_DIARIZE", default=False),
             diarize_auto_download=_env_bool("DIARIZE_AUTO_DOWNLOAD", default=True),

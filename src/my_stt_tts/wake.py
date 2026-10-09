@@ -508,7 +508,7 @@ def make_wake_detector(cfg: Config) -> WakeWord | OrCombinedWake:
 
         kws = SherpaKws.from_config(cfg, cfg.wake_phrase)
     fewshot = None
-    if getattr(cfg, "fewshot_wake_enabled", True):
+    if getattr(cfg, "fewshot_wake_enabled", False):
         from .enrolled_wake import EnrolledWake
 
         fewshot = EnrolledWake.from_config(cfg, cfg.wake_phrase)
@@ -865,7 +865,7 @@ def score_wake_clip_combined(
     # few-shot enrolled detector (each gated + fully defensive — a miss leaves oWW intact).
     if getattr(cfg, "kws_enabled", True) and _kws_fires_on_clip(clip, sample_rate, word, cfg):
         return (conf, True, "kws", trace)
-    if getattr(cfg, "fewshot_wake_enabled", True) and _fewshot_fires_on_clip(
+    if getattr(cfg, "fewshot_wake_enabled", False) and _fewshot_fires_on_clip(
         clip, sample_rate, word, cfg
     ):
         return (conf, True, "fewshot", trace)

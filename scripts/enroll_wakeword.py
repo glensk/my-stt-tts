@@ -6,9 +6,9 @@ Records N short clips of the word (or reuses every clip already saved under
 reference vector, and saves the per-clip references to the gitignored
 ``models/wake_embeddings/<word>.npz``. The live detector then fires on the MAX cosine
 similarity of streaming audio to those references — no GPU retrain, the few-shot path
-openWakeWord lacks. OR'd with openWakeWord + sherpa-KWS for that custom word; OFFICIAL words
-(hey_jarvis/alexa/hey_mycroft) are never enrolled (they already fire 99-100%). Needs the
-``audio`` + ``wake`` extras.
+openWakeWord lacks. OR'd with openWakeWord + sherpa-KWS for that custom word once opted in
+with ``FEWSHOT_WAKE_ENABLED=1`` (off by default); OFFICIAL words (hey_jarvis/alexa/hey_mycroft)
+are never enrolled (they already fire 99-100%). Needs the ``audio`` + ``wake`` extras.
 
 Recording is hands-free: after each prompt just say the word; a voice detector notices
 the start and the end (no Enter key). Clips ACCUMULATE: every run adds its clips to the
@@ -99,11 +99,13 @@ def main(argv: list[str] | None = None) -> int:
     if not result["enrolled"]:
         return 1
     print(
-        f"\nThe few-shot detector is now wired for '{args.word}' (OR'd with openWakeWord + KWS).\n"
-        f"It is enabled by default; tune via .env:"
+        f"\nThe few-shot detector is ready for '{args.word}' (OR'd with openWakeWord + KWS).\n"
+        "It is opt-in (off by default: it tends to fire on the speaker's voice, not the "
+        "phrase); enable + tune via .env:"
     )
     thr = args.threshold if args.threshold is not None else 0.96
     pat = args.patience if args.patience is not None else 2
+    print("  FEWSHOT_WAKE_ENABLED=1")
     print(f"  WAKE_PHRASE={args.word}")
     print(f"  FEWSHOT_THRESHOLD={thr}   # cosine 0..1; higher = stricter")
     print(f"  FEWSHOT_PATIENCE={pat}    # consecutive windows to fire; 2 = fewer false-accepts")

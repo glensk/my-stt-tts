@@ -13,7 +13,8 @@ pin:
 * enrollment store/load round-trip (per-clip refs, NOT a centroid) + the >= N-clips gate;
 * max-cosine detect (a window matching a reference fires; an orthogonal one does not);
 * the rolling-window + patience de-bounce (N consecutive hits required);
-* OR-routing: official word -> oWW-only (no fewshot branch); custom word -> fewshot OR'd;
+* OR-routing: official word -> oWW-only (no fewshot branch); custom word -> fewshot OR'd
+  only when opted in (``fewshot_wake_enabled`` defaults to off);
 * the detector contract ("fewshot") on the combined clip path + settings_dict;
 * threshold tuned against NEGATIVES (a low threshold accepts a negative; a high one rejects);
 * config (env parse, validate, defaults) + graceful degradation (oWW absent -> no-op).
@@ -271,9 +272,54 @@ def test_combined_clip_path_reports_fewshot(monkeypatch: pytest.MonkeyPatch, tmp
 # --------------------------------------------------------------------------- #
 def test_config_defaults():
     cfg = Config()
-    assert cfg.fewshot_wake_enabled is True
+    # Opt-in: the few-shot path false-accepts on the enrolled speaker's ordinary speech.
+    assert cfg.fewshot_wake_enabled is False
     assert cfg.fewshot_threshold == pytest.approx(0.96)
     assert cfg.fewshot_patience == 2
+
+
+def test_config_from_env_fewshot_default_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("FEWSHOT_WAKE_ENABLED", raising=False)
+    cfg = Config.from_env(tmp_path / "absent.env")
+    assert cfg.fewshot_wake_enabled is False
+
+
+def test_config_from_env_fewshot_opt_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("FEWSHOT_WAKE_ENABLED", "1")
+    cfg = Config.from_env(tmp_path / "absent.env")
+    assert cfg.fewshot_wake_enabled is True
+
+
+def _bind_refs_to(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Enroll maziko into tmp_path and make the default-dir load_references read it."""
+    enroll_word("maziko", clips=[_pos_clip()] * 4, embeddings_dir=str(tmp_path))
+    real_load = ew.load_references
+    monkeypatch.setattr(
+        ew, "load_references", lambda w, **_k: real_load(w, embeddings_dir=str(tmp_path))
+    )
+
+
+def test_make_wake_detector_custom_enrolled_skips_fewshot_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_oww(monkeypatch)
+    _bind_refs_to(monkeypatch, tmp_path)
+    # Enrolled references exist, but the flag is at its default (off) -> no few-shot branch.
+    cfg = Config(wake_phrase="maziko", kws_enabled=False)
+    det = make_wake_detector(cfg)
+    assert not isinstance(det, OrCombinedWake)
+    assert isinstance(det, WakeWord)
+
+
+def test_make_wake_detector_custom_enrolled_fewshot_when_opted_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_oww(monkeypatch)
+    _bind_refs_to(monkeypatch, tmp_path)
+    cfg = Config(wake_phrase="maziko", kws_enabled=False, fewshot_wake_enabled=True)
+    det = make_wake_detector(cfg)
+    assert isinstance(det, OrCombinedWake)
+    assert isinstance(det.fewshot, EnrolledWake)
 
 
 def test_config_env_parse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -301,7 +347,7 @@ def test_config_validate_rejects_bad_values():
 def test_settings_dict_exposes_fewshot(monkeypatch: pytest.MonkeyPatch):
     from my_stt_tts.webui import settings_dict
 
-    cfg = Config(wake_phrase="maziko")
+    cfg = Config(wake_phrase="maziko", fewshot_wake_enabled=True)
     sd = settings_dict(cfg)
     assert sd["fewshot_wake_enabled"] is True
     assert sd["fewshot_threshold"] == pytest.approx(0.96)
@@ -311,7 +357,7 @@ def test_settings_dict_exposes_fewshot(monkeypatch: pytest.MonkeyPatch):
 def test_apply_settings_fewshot():
     from my_stt_tts.webui import apply_settings
 
-    cfg = Config()
+    cfg = Config(fewshot_wake_enabled=True)
     apply_settings(
         cfg, {"fewshot_wake_enabled": False, "fewshot_threshold": 0.5, "fewshot_patience": 4}
     )
