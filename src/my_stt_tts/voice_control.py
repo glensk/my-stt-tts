@@ -51,6 +51,7 @@ STOP_DEADLINE_S = 10.0
 SETTLE_S = 0.3  # CoreAudio hands a released input device over asynchronously
 REARM_COOLDOWN_S = 1.5  # room echo of "voice off" fades before the wake word listens
 WAKE_PHRASE = "voice on"  # custom phrase (sherpa KWS); "hey jarvis" stays active too
+WAKE_PHASES = 2  # see wake_listener_factory
 WAKE_THRESHOLD = 0.75  # openWakeWord floor for the daemon (Albert scores 0.97+; noise 0.61)
 SAMPLE_RATE = 16000
 SWIFTBAR_REFRESH = (
@@ -376,7 +377,11 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             return
         self._session = None
         self._set_state("stopping")
-        reason = self._end_reason or "remote: agent hung up or connection dropped (see costs)"
+        reason = (
+            self._end_reason
+            or getattr(session, "end_reason", "")
+            or "remote: agent hung up or connection dropped (see costs)"
+        )
         self._end_reason = ""
         log.info("🔴 voice off — conversation ended by %s", reason)
         time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
@@ -492,6 +497,9 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         # is OR'd in via sherpa KWS. Both are overridable per machine.
         cfg.wake_phrase = os.environ.get("MAC_VOICE_WAKE", WAKE_PHRASE)
         cfg.wake_threshold = float(os.environ.get("MAC_VOICE_WAKE_THRESHOLD", WAKE_THRESHOLD))
+        # 2 staggered openWakeWord copies instead of the pipeline's 8: ~12 % instead of
+        # ~41 % of a core while idle, same hits on the test clips (measured 2026-10-09).
+        cfg.wake_phases = int(os.environ.get("MAC_VOICE_WAKE_PHASES", WAKE_PHASES))
         detector = make_wake_detector(cfg)
         if not detector.available():
             return None

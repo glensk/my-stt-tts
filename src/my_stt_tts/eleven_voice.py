@@ -28,6 +28,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -44,6 +45,12 @@ import numpy as np
 
 log = logging.getLogger("my_stt_tts.eleven_voice")
 
+# "voice off" said to end the call, incl. how the recogniser hears it in German mode
+# ("Weiß auf", "Weis aus") — matched locally so it never depends on the LLM's end_call.
+VOICE_OFF = re.compile(
+    r"^(?:voice|voiced|vois|voise|weiß|weiss|weis|wais|boys)\s*(?:off|of|auf|aus)$"
+    r"|^stimme\s+aus$"
+)
 VOICE_RMS = 600.0  # int16 RMS (~-35 dBFS) above which the user counts as speaking
 SAMPLE_RATE = 16000  # the SDK's fixed PCM format: 16-bit mono 16 kHz, both ways
 INPUT_CHUNK = 4000  # 250 ms, the SDK's recommended input chunk
@@ -235,6 +242,12 @@ class EmojiFormatter(logging.Formatter):
         return super().format(record)
 
 
+def is_voice_off(text: str) -> bool:
+    """True when a user transcript is just the stop phrase ("Voice off.", "Weiß auf")."""
+    words = re.sub(r"[^\w\s]", " ", text.lower()).split()
+    return bool(VOICE_OFF.match(" ".join(words)))
+
+
 def stamp(text: str) -> None:
     """Print one console line prefixed with the wall-clock time (HH:MM:SS)."""
     print(f"{time.strftime('%H:%M:%S')} {text}", flush=True)
@@ -253,7 +266,7 @@ def _device(value: str | None) -> int | str | None:
     return int(value) if value.isdigit() else value
 
 
-class VoiceSession:
+class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call's state
     """One ElevenLabs conversation: ``start`` returns at once, ``end`` hangs up, ``wait`` blocks.
 
     ``idle_for`` counts from the latest of: a transcript, the user's voice reaching the mic
@@ -277,6 +290,7 @@ class VoiceSession:
         self.echo = echo
         self.agent_id, self._api_key = agent_id, api_key
         self.conversation_id: str | None = None
+        self.end_reason = ""  # set when the session ends itself (e.g. "voice off" heard)
         self.last_activity = time.monotonic()
         self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev))
         self.conversation = Conversation(
@@ -292,6 +306,10 @@ class VoiceSession:
 
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
+        if who == "🧑" and is_voice_off(text) and not self.end_reason:
+            self.end_reason = f"you said {text.strip()!r}"
+            # end off the SDK's receive thread: end_session() tears that thread down
+            threading.Thread(target=self.end, name="voice-off", daemon=True).start()
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
             stamp(f"{who} │ {text}")  # both emoji are 2 columns wide: transcripts line up
 

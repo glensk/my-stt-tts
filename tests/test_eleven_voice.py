@@ -189,3 +189,20 @@ def test_every_log_line_gets_a_symbol() -> None:
     assert line("x", logging.WARNING, "careful").startswith("⚠️")
     assert line("my_stt_tts.wake", logging.INFO, "wake detector: on") == "👂 wake detector: on"
     assert line("x", logging.INFO, "🔔 wake: hey_jarvis") == "🔔 wake: hey_jarvis"  # kept as is
+
+
+@pytest.mark.parametrize(
+    ("text", "stop"),
+    [
+        ("Voice off.", True),
+        ("voice off", True),
+        ("Weiß auf.", True),
+        ("Weis aus", True),
+        ("Stimme aus!", True),
+        ("Voice on.", False),
+        ("Can you turn the voice off later?", False),
+        ("Weiß auf dem Papier", False),
+    ],
+)
+def test_voice_off_phrase(text: str, stop: bool) -> None:
+    assert eleven_voice.is_voice_off(text) is stop
