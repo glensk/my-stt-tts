@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -346,7 +347,7 @@ class PendingActions:
             pending = PendingAction(
                 id=secrets.token_hex(8),
                 kind=kind,
-                args=dict(_norm_value(args)),
+                args=dict(args),  # executed as given; the digest is over the normalised form
                 sha256=args_digest(kind, args),
                 code=code,
                 expires=now + self.ttl,
@@ -389,6 +390,8 @@ class PendingActions:
             return _refuse("not_new", "say the code in a new sentence")
         if int(key) not in numbers_in(transcript.text):
             return _refuse("code_not_said", "code not heard")
+        if not CONFIRM_WORD.search(transcript.text):
+            return _refuse("no_confirm_word", "say confirm and the code")
         del self._by_code[key]
         return pending
 
@@ -400,6 +403,11 @@ class PendingActions:
         with self._lock:
             self._expire(self.clock())
             return list(self._by_code.values())
+
+
+#: The code only counts next to a confirm word (en/de/fr), so steering Albert into saying the
+#: number in another sentence ("set the volume to 35") confirms nothing.
+CONFIRM_WORD = re.compile(r"\b(confirm\w*|bestätig\w*|bestaetig\w*)", re.IGNORECASE)
 
 
 def _code_key(code: str | int) -> str:
@@ -517,6 +525,24 @@ class MemoryProblemSink:
         log.info("⚠️  problem: %s · %s", _detail(problem.kind), _detail(problem.subject))
 
 
+class DeliveryTracker(Protocol):
+    """Who follows a ccc delivery after the voice sent it (Phase 6's attention monitor)."""
+
+    def track_delivery(
+        self, delivery_id: str, session_id: str, subject: str, outcome: str
+    ) -> None: ...
+
+
+class MemoryDeliveryTracker:
+    """In-memory :class:`DeliveryTracker` (tests, and until the attention store is wired)."""
+
+    def __init__(self) -> None:
+        self.tracked: list[tuple[str, str, str, str]] = []
+
+    def track_delivery(self, delivery_id: str, session_id: str, subject: str, outcome: str) -> None:
+        self.tracked.append((delivery_id, session_id, subject, outcome))
+
+
 class MemoryBriefingProvider:
     """A fixed briefing (or none), redacted and capped at 600 characters."""
 
@@ -543,6 +569,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
         *,
         vad_factory: Callable[[], SpeechDetector] = _default_vad,
         problems: ProblemSink | None = None,
+        deliveries: DeliveryTracker | None = None,
         briefings: BriefingProvider | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -552,6 +579,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes  # the b
         self.pending = PendingActions(authoriser, clock)
         self.problems: ProblemSink = problems or MemoryProblemSink()
         self.briefings: BriefingProvider = briefings or MemoryBriefingProvider()
+        self.deliveries: DeliveryTracker = deliveries or MemoryDeliveryTracker()
         self.tools: dict[str, Callable[..., Any]] = {"confirm_action": self.confirm_action}
         self.executors: dict[str, Callable[[PendingAction], str]] = {}
         self.mutation_lock = threading.Lock()  # one mutation at a time (7.7)

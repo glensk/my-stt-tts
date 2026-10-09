@@ -19,12 +19,14 @@ from my_stt_tts.bridge import (
     Capability,
     Deadline,
     MemoryBriefingProvider,
+    MemoryDeliveryTracker,
     MemoryProblemSink,
     Mutation,
     PendingAction,
     Problem,
     Refusal,
     Transcript,
+    args_digest,
     before_mutation,
     bridge_enabled,
     log_confirm,
@@ -584,3 +586,25 @@ def test_feed_audio_never_raises() -> None:
     ctl.begin_call()
     ctl.feed_audio(np.ones(FRAME, dtype=np.float32))
     ctl.feed_audio(np.ones(FRAME, dtype=np.float32))
+
+
+@pytest.mark.usefixtures("code_35")
+def test_code_without_a_confirm_word_is_refused() -> None:
+    call = Call()
+    propose(call)
+    call.say("set the volume to 35")
+    refused(call.ctl.confirm("35"), "no_confirm_word")
+
+
+def test_proposal_keeps_raw_text_and_hashes_the_normalised_form() -> None:
+    call = Call()
+    pending = call.ctl.propose("send", {"text": "line one\nline  two"})
+    assert pending.args["text"] == "line one\nline  two"
+    assert pending.sha256 == args_digest("send", {"text": "line one line two"})
+
+
+def test_delivery_tracker_defaults_to_memory() -> None:
+    call = Call()
+    call.ctl.deliveries.track_delivery("d1", "s1", "scratch", "accepted")
+    assert isinstance(call.ctl.deliveries, MemoryDeliveryTracker)
+    assert call.ctl.deliveries.tracked == [("d1", "s1", "scratch", "accepted")]
