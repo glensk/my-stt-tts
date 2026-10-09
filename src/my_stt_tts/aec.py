@@ -335,13 +335,22 @@ class VoiceProcessingCapture:
                 self._residual = self._residual[self.frame_samples :]
 
     def close(self) -> None:
-        """Stop the engine and remove the tap (idempotent)."""
+        """Stop the engine, remove the tap and switch voice processing off (idempotent).
+
+        Only stopping the engine leaves VoiceProcessingIO configured, and macOS keeps
+        ducking other audio while it is — so a sound played right after (mac-voice's
+        "voice off") came out quieter than one played before the session.
+        """
         self._closed.set()
         with _suppress():
             if self._input is not None:
                 self._input.removeTapOnBus_(0)
             if self._engine is not None:
                 self._engine.stop()
+        with _suppress():
+            if self._input is not None:
+                self._input.setVoiceProcessingEnabled_error_(False, None)
+        self._input = self._engine = None
 
 
 class VoiceProcessingDuplex(VoiceProcessingCapture):
@@ -378,8 +387,22 @@ class VoiceProcessingDuplex(VoiceProcessingCapture):
     def start(self) -> bool:
         if not super().start():
             return False
+        self._duck_others_minimally()
         self._player.play()
         return True
+
+    def _duck_others_minimally(self) -> None:
+        """Ask macOS to barely duck other audio (music, announcements) during the call."""
+        import AVFoundation  # pylint: disable=import-outside-toplevel
+
+        # pylint: disable=no-member  # PyObjC populates these dynamically
+        if not hasattr(self._input, "setVoiceProcessingOtherAudioDuckingConfiguration_"):
+            return  # macOS < 14
+        config = AVFoundation.AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+            False, AVFoundation.AVAudioVoiceProcessingOtherAudioDuckingLevelMin
+        )
+        with _suppress():
+            self._input.setVoiceProcessingOtherAudioDuckingConfiguration_(config)
 
     def play(self, pcm16: bytes) -> None:
         """Queue 16-bit mono PCM for playback (non-blocking)."""
