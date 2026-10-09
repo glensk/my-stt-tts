@@ -32,6 +32,7 @@ import signal
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -216,6 +217,11 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
     return MacAudioInterface()
 
 
+def stamp(text: str) -> None:
+    """Print one console line prefixed with the wall-clock time (HH:MM:SS)."""
+    print(f"{time.strftime('%H:%M:%S')} {text}", flush=True)
+
+
 def _load_env() -> None:
     """Load the repo's ``.env`` (two levels above ``src/my_stt_tts``) if present."""
     from dotenv import load_dotenv
@@ -266,8 +272,8 @@ class VoiceSession:
 
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
-        if self.echo:
-            print(f"{who} {text}", flush=True)
+        if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
+            stamp(f"{who} {text}")
 
     def start(self) -> None:
         self.conversation.start_session()
@@ -300,10 +306,10 @@ def run(agent_id: str, api_key: str, mode: str, in_dev: str | None, out_dev: str
     """Run one conversation until Ctrl-C or until the agent ends it."""
     session = VoiceSession(agent_id, api_key, mode=mode, in_dev=in_dev, out_dev=out_dev)
     signal.signal(signal.SIGINT, lambda *_: session.end())
-    print(f"✅ connected ({mode}) — talk now; Ctrl-C ends the conversation.", flush=True)
+    stamp(f"✅ connected ({mode}) — talk now; Ctrl-C ends the conversation.")
     session.start()
     conversation_id = session.wait()
-    print(f"✅ conversation ended (id {conversation_id}).", flush=True)
+    stamp(f"✅ conversation ended (id {conversation_id}).")
     return 0
 
 
@@ -380,7 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")  # onnxruntime on macOS
     log.setLevel(logging.DEBUG if args.verbose else logging.WARNING)
     if args.list_devices:
         print(_sd().query_devices())

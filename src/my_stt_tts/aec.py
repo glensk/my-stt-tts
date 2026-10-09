@@ -32,6 +32,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from collections import deque
 from collections.abc import Iterator
 from typing import Any, Protocol, runtime_checkable
@@ -402,11 +403,20 @@ class VoiceProcessingDuplex(VoiceProcessingCapture):
         with self._pending_lock:
             self._pending = max(0, self._pending - 1)
 
-    def flush(self) -> None:
-        """Drop all queued playback immediately and keep the player ready."""
+    def flush(self, fade_s: float = 0.12) -> None:
+        """Drop all queued playback after a short fade-out; keep the player ready.
+
+        A hard stop mid-word sounds like a click/cut; a ~120 ms ramp (what browsers and
+        phone calls effectively do) reads as the speaker yielding.
+        """
         if self._player is None:
             return
+        steps = 6
+        for i in range(steps, 0, -1):
+            self._player.setVolume_((i - 1) / steps)
+            time.sleep(fade_s / steps)
         self._player.stop()
+        self._player.setVolume_(1.0)
         with self._pending_lock:
             self._pending = 0
         self._player.play()

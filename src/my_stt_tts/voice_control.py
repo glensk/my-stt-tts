@@ -49,7 +49,9 @@ IDLE_TIMEOUT_S = 60.0
 MAX_DURATION_S = 15 * 60.0  # local backstop above the agent's own 10-minute cap
 STOP_DEADLINE_S = 10.0
 SETTLE_S = 0.3  # CoreAudio hands a released input device over asynchronously
-REARM_COOLDOWN_S = 0.5  # acoustic tail after "voice off" before the wake word listens
+REARM_COOLDOWN_S = 1.5  # room echo of "voice off" fades before the wake word listens
+WAKE_PHRASE = "voice on"  # custom phrase (sherpa KWS); "hey jarvis" stays active too
+WAKE_THRESHOLD = 0.75  # openWakeWord floor for the daemon (Albert scores 0.97+; noise 0.61)
 SAMPLE_RATE = 16000
 SWIFTBAR_REFRESH = (
     "swiftbar://refreshplugin?name=mac-voice",
@@ -362,6 +364,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             return
         self._session = None
         self._set_state("stopping")
+        log.info("conversation ended — voice off")
         time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
         self.announce("voice off")
         self._back_to_idle()
@@ -374,6 +377,8 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
     # -- commands -----------------------------------------------------------------------
     def handle(self, line: str) -> dict[str, Any]:
         cmd = " ".join(line.strip().lower().split())
+        if cmd != "status":
+            log.info("⌨️  command: %s (state %s)", cmd or "<empty>", self.state)
         if cmd in ("on", "off", "toggle"):
             self.submit(cmd, "command")
             time.sleep(0.05)  # usually lets the worker flip the state before replying
@@ -467,6 +472,12 @@ def wake_listener_factory() -> Callable[[Callable[[], None]], Listener] | None:
         cfg = Config.from_env(REPO_ROOT / ".env")
         if not Path(cfg.wake_model_path).is_absolute():
             cfg.wake_model_path = str(REPO_ROOT / cfg.wake_model_path)
+        if not Path(cfg.kws_model_dir).is_absolute():
+            cfg.kws_model_dir = str(REPO_ROOT / cfg.kws_model_dir)
+        # The configured openWakeWord model ("hey jarvis") keeps working; the custom phrase
+        # is OR'd in via sherpa KWS. Both are overridable per machine.
+        cfg.wake_phrase = os.environ.get("MAC_VOICE_WAKE", WAKE_PHRASE)
+        cfg.wake_threshold = float(os.environ.get("MAC_VOICE_WAKE_THRESHOLD", WAKE_THRESHOLD))
         detector = make_wake_detector(cfg)
         if not detector.available():
             return None
@@ -488,7 +499,7 @@ def daemon_main(session_factory: Callable[[], Session], *, wake: bool = True) ->
         signal.signal(sig, lambda *_: stop.set())
     daemon.submit("arm")
     daemon.publish()
-    print(f"✅ mac-voice daemon listening on {socket_path()} (wake: {daemon.wake_enabled})")
+    log.info("✅ mac-voice daemon listening on %s (wake: %s)", socket_path(), daemon.wake_enabled)
     try:
         serve(daemon, socket_path(), stop)
     finally:

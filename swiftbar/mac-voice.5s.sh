@@ -51,4 +51,4 @@ if [[ "$state" != down && "$wake_available" == "true" ]]; then
     echo "Wake word: off — turn on | bash=$MV param1=-w param2=on terminal=false refresh=true"
   fi
 fi
-echo "Shortcut: hold v, tap o (iTerm2) | disabled=true"
+echo "Start: say \"voice on\" or \"hey jarvis\" · hold v, tap o | disabled=true"
