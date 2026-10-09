@@ -112,7 +112,11 @@ class WakeListener:
             log.exception("❌ wake listener crashed")
             return
         if fired and not self._stop.is_set():
-            log.info("wake word fired (score %.2f)", getattr(self.detector, "last_score", 0.0))
+            score = float(getattr(self.detector, "last_score", 0.0) or 0.0)
+            if score >= float(getattr(self.detector, "threshold", 1.0)):
+                log.info("wake: %s (score %.2f)", getattr(self.detector, "model_name", "?"), score)
+            else:  # the keyword spotter has no continuous score
+                log.info("wake: custom phrase (keyword spotter)")
             self.on_wake()
 
     def stop(self) -> bool:
@@ -173,6 +177,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
         self.state = "idle"
         self._lock = threading.Lock()
         self._session: Session | None = None
+        self._end_reason = ""
         self._listener: Listener | None = None
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._closed = threading.Event()
@@ -307,7 +312,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             self.announce("voice failed")
             self._back_to_idle()
             return
-        self._session = session
+        self._session, self._end_reason = session, ""
         self._set_state("talking")
         threading.Thread(target=self._supervise, args=(session,), daemon=True).start()
 
@@ -338,7 +343,8 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
                 log.warning("⚠️  idle check failed; treating the session as idle", exc_info=True)
                 idle = True
             if too_long or idle:
-                log.info("hanging up (%s)", "max duration" if too_long else "idle")
+                self._end_reason = "max duration" if too_long else "idle timeout"
+                log.info("hanging up (%s)", self._end_reason)
                 ended_at = time.monotonic()
                 with contextlib.suppress(Exception):
                     session.end()
@@ -359,6 +365,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
         if session is None or self.state != "talking":
             return
         self._set_state("stopping")
+        self._end_reason = "you (vo / menu / off)"
         with contextlib.suppress(Exception):
             session.end()  # the supervisor sees wait() return and queues "finished"
 
@@ -367,7 +374,9 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
             return
         self._session = None
         self._set_state("stopping")
-        log.info("conversation ended — voice off")
+        reason = self._end_reason or "remote: agent hung up or connection dropped (see costs)"
+        self._end_reason = ""
+        log.info("conversation ended by %s — voice off", reason)
         time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
         self.announce("voice off")
         self._back_to_idle()

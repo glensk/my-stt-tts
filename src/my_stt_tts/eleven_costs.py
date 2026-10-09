@@ -61,47 +61,53 @@ def _clock(start_unix: float | None, offset: float | None) -> str:
     return time.strftime("%H:%M:%S", time.localtime(start_unix + float(offset or 0)))
 
 
+def _ended(reason: str | None) -> str:
+    """Short, human wording for ElevenLabs' ``termination_reason``."""
+    text = (reason or "").strip()
+    low = text.lower()
+    if "1006" in low:
+        return "connection dropped (1006)"
+    if "end_call" in low or "end call" in low:
+        return "agent hung up"
+    if "1000" in low or "client disconnected" in low:
+        return "closed by mac-voice"
+    return text[:40] or "?"
+
+
 def format_report(conv: dict[str, Any], subscription: dict[str, Any] | None = None) -> list[str]:
-    """Console lines for one finished conversation (see module docstring)."""
+    """Console lines for one finished conversation (see module docstring).
+
+    One aligned line per priced agent sentence (time · $ · text), then ONE summary line.
+    """
     meta = conv.get("metadata", {})
     charging = meta.get("charging") or {}
     start = meta.get("start_time_unix_secs")
-    lines = [f"💶 costs for {conv.get('conversation_id', '?')}:"]
+    lines: list[str] = []
     for turn in conv.get("transcript", []):
         priced = _turn_price(turn) if turn.get("role") == "agent" else None
         if priced is None:
             continue
-        model, price = priced
+        _model, price = priced
         text = (turn.get("message") or "").strip().replace("\n", " ")
-        text = repr(text if len(text) <= 60 else text[:57] + "…")
-        if text == "''":  # a tool-only turn, e.g. the agent hanging up
+        if not text:  # a tool-only turn, e.g. the agent hanging up
             tools = [c.get("tool_name", "?") for c in turn.get("tool_calls") or []]
             text = f"[{', '.join(tools) or 'no speech'}]"
-        lines.append(
-            f"   {_clock(start, turn.get('time_in_call_secs'))} 🤖 {text} — {model} ${price:.5f}"
-        )
+        text = text if len(text) <= 70 else text[:69] + "…"
+        lines.append(f"💶 {_clock(start, turn.get('time_in_call_secs'))}  ${price:.4f}  {text}")
     conv_credits = meta.get("cost")
     usd = float(meta.get("cost_fiat") or 0.0)
-    voice_cr = charging.get("call_charge", charging.get("platform_charge"))
-    llm_cr = charging.get("llm_charge")
-    tts = charging.get("tts_usage") or {}
-    asr = charging.get("asr_usage") or {}
-    lines.append(
-        f"   total {meta.get('call_duration_secs', '?')} s: {conv_credits} credits = ${usd:.4f}"
-        f" (voice {voice_cr} cr ${float(charging.get('platform_price') or 0):.4f}"
-        f" · LLM {llm_cr} cr ${float(charging.get('llm_price') or 0):.4f})"
-        f" · voice model {tts.get('primary_tts_model', '?')}"
-        f" {float(tts.get('total_audio_output_seconds') or 0):.0f} s"
-        f" · speech-to-text {asr.get('asr_model', '?')}"
+    summary = (
+        f"💶 call {meta.get('call_duration_secs', '?')} s  ${usd:.4f}"
+        f" (voice ${float(charging.get('platform_price') or 0):.4f}"
+        f" + LLM ${float(charging.get('llm_price') or 0):.4f} = {conv_credits} cr)"
+        f" · ended: {_ended(meta.get('termination_reason'))}"
     )
     if subscription:
         used, limit = subscription.get("character_count"), subscription.get("character_limit")
         per_credit = usd / conv_credits if conv_credits else 0.0
-        worth = f" ≈ ${used * per_credit:.2f} at this rate" if per_credit and used else ""
-        lines.append(
-            f"   📊 this billing period: {used} / {limit} credits used"
-            f" ({subscription.get('tier', '?')} tier){worth}"
-        )
+        worth = f" ≈ ${used * per_credit:.2f}" if per_credit and used else ""
+        summary += f" · period {used}/{limit} cr{worth}"
+    lines.append(summary)
     return lines
 
 

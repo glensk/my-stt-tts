@@ -267,15 +267,15 @@ class VoiceSession:
             requires_auth=True,
             audio_interface=self.audio,
             client_tools=ClientTools(),  # local functions get registered here (Claude Code bridge)
-            callback_user_transcript=lambda t: self._said("🎙️  you:  ", t),
-            callback_agent_response=lambda t: self._said("🤖 agent:", t),
+            callback_user_transcript=lambda t: self._said("you", t),
+            callback_agent_response=lambda t: self._said("agent", t),
             callback_latency_measurement=lambda ms: log.debug("latency %d ms", ms),
         )
 
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
-            stamp(f"{who} {text}")
+            stamp(f"{who:<5} │ {text}")  # fixed-width label: both transcripts line up
 
     def start(self) -> None:
         self.conversation.start_session()

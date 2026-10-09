@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from my_stt_tts.eleven_costs import format_report
 
-CONV = {
+CONV: dict[str, Any] = {
     "conversation_id": "conv_x",
     "metadata": {
         "start_time_unix_secs": 0,
@@ -41,23 +43,26 @@ CONV = {
 
 
 def test_report_prices_each_llm_sentence_and_totals() -> None:
-    lines = format_report(CONV, {"character_count": 3347, "character_limit": 10000, "tier": "free"})
+    conv = CONV | {
+        "metadata": CONV["metadata"] | {"termination_reason": "Client disconnected: 1006"}
+    }
+    lines = format_report(conv, {"character_count": 3347, "character_limit": 10000, "tier": "free"})
     sentence = [line for line in lines if "Hello there" in line]
-    assert len(sentence) == 1 and "claude-sonnet-5-5 $0.00050" in sentence[0]
+    assert len(sentence) == 1 and "$0.0005  Hello there." in sentence[0]
     assert not any("No LLM turn" in line for line in lines)  # nothing to price
-    total = next(line for line in lines if line.strip().startswith("total"))
-    assert "579 credits = $0.0575" in total and "voice 474 cr" in total and "LLM 105 cr" in total
-    assert "eleven_v4_turbo" in total and "scribe_realtime" in total
-    period = lines[-1]
-    assert "3347 / 10000 credits used (free tier)" in period and "≈ $0.33" in period
+    summary = lines[-1]
+    assert summary.startswith("💶 call 87 s  $0.0575 (voice $0.0470 + LLM $0.0105 = 579 cr)")
+    assert "ended: connection dropped (1006)" in summary
+    assert "period 3347/10000 cr ≈ $0.33" in summary
+    assert len(lines) == 2  # one line per priced sentence + ONE summary line
 
 
 def test_report_without_subscription_has_no_period_line() -> None:
-    assert not any("billing period" in line for line in format_report(CONV, None))
+    assert not any("period" in line for line in format_report(CONV, None))
 
 
 def test_tool_only_turn_names_the_tool() -> None:
-    conv = {
+    conv: dict[str, Any] = {
         "metadata": {},
         "transcript": [
             {
@@ -68,4 +73,4 @@ def test_tool_only_turn_names_the_tool() -> None:
             }
         ],
     }
-    assert any("[end_call] — m $0.00100" in line for line in format_report(conv))
+    assert any("$0.0010  [end_call]" in line for line in format_report(conv))
