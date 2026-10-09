@@ -459,11 +459,17 @@ def serve(daemon: VoiceDaemon, path: Path, stop: threading.Event) -> None:
         if send("status", path, timeout=1.0) is not None:
             raise RuntimeError(f"another mac-voice daemon is already listening on {path}")
         path.unlink()
+    # Bind under a temporary name, lock it down and listen, THEN rename into place: the
+    # control socket only ever appears 0600 and already accepting connections.
+    staging = path.with_name(f".{path.name}.{os.getpid()}")
+    with contextlib.suppress(FileNotFoundError):
+        staging.unlink()
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(str(path))
-    path.chmod(0o600)
+    srv.bind(str(staging))
+    staging.chmod(0o600)
     srv.listen(8)
     srv.settimeout(0.5)
+    os.replace(staging, path)
     try:
         while not stop.is_set():
             try:
