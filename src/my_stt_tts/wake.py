@@ -371,6 +371,7 @@ class WakeWord:
         for model in self._models:
             if hasattr(model, "reset"):
                 model.reset()
+            _reset_oww_features(model)
         if self._models:
             self._reset_pending()
         self.last_score = 0.0
@@ -378,6 +379,32 @@ class WakeWord:
         self._verify_window = np.zeros(0, dtype=np.float32)
         self._score_window.clear()
         self._refractory_left = 0
+
+
+def _reset_oww_features(model: Any) -> None:  # model: opaque openWakeWord Model
+    """Clear openWakeWord's rolling AUDIO-FEATURE buffers, not just its predictions.
+
+    openWakeWord 0.4.0's ``Model.reset()`` only empties ``prediction_buffer``; its
+    ``AudioFeatures`` preprocessor keeps ~10 s of raw audio, mel frames and embeddings.
+    After a fire those still hold the wake word, so the next listen session re-detects it
+    from pure silence (score ~1.0) — the "turned itself on again" bug. Restore the buffers
+    to the same blank state ``AudioFeatures.__init__`` builds; the blank embedding block is
+    computed once per preprocessor and cached.
+    """
+    pre = getattr(model, "preprocessor", None)
+    if pre is None or not hasattr(pre, "feature_buffer"):
+        return
+    blank = getattr(pre, "_mst_blank_features", None)  # cached blank embeddings
+    if blank is None:
+        # pylint: disable-next=protected-access  # same call AudioFeatures.__init__ makes
+        blank = pre._get_embeddings(np.zeros(160000).astype(np.int16))
+        pre._mst_blank_features = blank  # pylint: disable=protected-access
+    pre.raw_data_buffer.clear()
+    pre.melspectrogram_buffer = np.ones((76, 32))
+    pre.accumulated_samples = 0
+    if hasattr(pre, "raw_data_remainder"):
+        pre.raw_data_remainder = np.empty(0)
+    pre.feature_buffer = blank.copy()
 
 
 class OrCombinedWake:
