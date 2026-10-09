@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, ClassVar
 
@@ -174,3 +175,17 @@ def test_loud_mic_audio_marks_the_user_as_speaking() -> None:
     assert iface.last_user_audio == 0.0
     _mic()((3000).to_bytes(2, "little", signed=True) * 4, 4, None, None)
     assert iface.last_user_audio > 0.0
+
+
+def test_every_log_line_gets_a_symbol() -> None:
+    fmt = eleven_voice.EmojiFormatter("%(message)s")
+
+    def line(name: str, level: int, msg: str) -> str:
+        return fmt.format(logging.LogRecord(name, level, __file__, 1, msg, (), None))
+
+    assert (
+        line("elevenlabs", logging.ERROR, "Error receiving message") == "❌ Error receiving message"
+    )
+    assert line("x", logging.WARNING, "careful").startswith("⚠️")
+    assert line("my_stt_tts.wake", logging.INFO, "wake detector: on") == "👂 wake detector: on"
+    assert line("x", logging.INFO, "🔔 wake: hey_jarvis") == "🔔 wake: hey_jarvis"  # kept as is

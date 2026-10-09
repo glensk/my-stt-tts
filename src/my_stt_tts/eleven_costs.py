@@ -97,7 +97,7 @@ def format_report(conv: dict[str, Any], subscription: dict[str, Any] | None = No
     conv_credits = meta.get("cost")
     usd = float(meta.get("cost_fiat") or 0.0)
     summary = (
-        f"💶 call {meta.get('call_duration_secs', '?')} s  ${usd:.4f}"
+        f"🧾 call {meta.get('call_duration_secs', '?')} s  ${usd:.4f}"
         f" (voice ${float(charging.get('platform_price') or 0):.4f}"
         f" + LLM ${float(charging.get('llm_price') or 0):.4f} = {conv_credits} cr)"
         f" · ended: {_ended(meta.get('termination_reason'))}"

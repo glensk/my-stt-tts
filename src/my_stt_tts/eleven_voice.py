@@ -35,7 +35,7 @@ import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -217,6 +217,24 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
     return MacAudioInterface()
 
 
+class EmojiFormatter(logging.Formatter):
+    """Give every log line a leading symbol: keep the caller's emoji, else pick by level."""
+
+    BY_LOGGER: ClassVar[dict[str, str]] = {"my_stt_tts.wake": "👂", "my_stt_tts.kws": "👂"}
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = record.getMessage()
+        if msg[:1].isascii():  # no emoji of its own (e.g. the SDK's "Error receiving …")
+            if record.levelno >= logging.ERROR:
+                prefix = "❌"
+            elif record.levelno >= logging.WARNING:
+                prefix = "⚠️ "
+            else:
+                prefix = self.BY_LOGGER.get(record.name, "ℹ️ ")
+            record = logging.makeLogRecord(record.__dict__ | {"msg": f"{prefix} {msg}", "args": ()})
+        return super().format(record)
+
+
 def stamp(text: str) -> None:
     """Print one console line prefixed with the wall-clock time (HH:MM:SS)."""
     print(f"{time.strftime('%H:%M:%S')} {text}", flush=True)
@@ -267,15 +285,15 @@ class VoiceSession:
             requires_auth=True,
             audio_interface=self.audio,
             client_tools=ClientTools(),  # local functions get registered here (Claude Code bridge)
-            callback_user_transcript=lambda t: self._said("you", t),
-            callback_agent_response=lambda t: self._said("agent", t),
+            callback_user_transcript=lambda t: self._said("🧑", t),
+            callback_agent_response=lambda t: self._said("🤖", t),
             callback_latency_measurement=lambda ms: log.debug("latency %d ms", ms),
         )
 
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
-            stamp(f"{who:<5} │ {text}")  # fixed-width label: both transcripts line up
+            stamp(f"{who} │ {text}")  # both emoji are 2 columns wide: transcripts line up
 
     def start(self) -> None:
         self.conversation.start_session()
@@ -306,6 +324,7 @@ class VoiceSession:
         try:
             for line in fetch_report(self._api_key, self.conversation_id):
                 stamp(line)
+            print(flush=True)  # blank line: the cost summary closes a session's block
         except Exception:  # pylint: disable=broad-exception-caught  # display only
             log.warning("⚠️  cost report failed", exc_info=True)
 
@@ -412,7 +431,9 @@ def main(argv: list[str] | None = None) -> int:
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    handler = logging.StreamHandler()
+    handler.setFormatter(EmojiFormatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler])
     warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")  # onnxruntime on macOS
     log.setLevel(logging.DEBUG if args.verbose else logging.WARNING)
     if args.list_devices:

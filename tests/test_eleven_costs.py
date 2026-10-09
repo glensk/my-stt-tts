@@ -51,7 +51,7 @@ def test_report_prices_each_llm_sentence_and_totals() -> None:
     assert len(sentence) == 1 and "$0.0005  Hello there." in sentence[0]
     assert not any("No LLM turn" in line for line in lines)  # nothing to price
     summary = lines[-1]
-    assert summary.startswith("💶 call 87 s  $0.0575 (voice $0.0470 + LLM $0.0105 = 579 cr)")
+    assert summary.startswith("🧾 call 87 s  $0.0575 (voice $0.0470 + LLM $0.0105 = 579 cr)")
     assert "ended: connection dropped (1006)" in summary
     assert "period 3347/10000 cr ≈ $0.33" in summary
     assert len(lines) == 2  # one line per priced sentence + ONE summary line

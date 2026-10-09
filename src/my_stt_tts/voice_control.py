@@ -114,9 +114,11 @@ class WakeListener:
         if fired and not self._stop.is_set():
             score = float(getattr(self.detector, "last_score", 0.0) or 0.0)
             if score >= float(getattr(self.detector, "threshold", 1.0)):
-                log.info("wake: %s (score %.2f)", getattr(self.detector, "model_name", "?"), score)
+                log.info(
+                    "🔔 wake: %s (score %.2f)", getattr(self.detector, "model_name", "?"), score
+                )
             else:  # the keyword spotter has no continuous score
-                log.info("wake: custom phrase (keyword spotter)")
+                log.info("🔔 wake: custom phrase (keyword spotter)")
             self.on_wake()
 
     def stop(self) -> bool:
@@ -295,7 +297,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
     def _start_talking(self, reason: str) -> None:
         if self.state != "idle":
             return
-        log.info("starting conversation (%s)", reason)
+        log.info("🟢 voice on — starting conversation (%s)", reason)
         self._set_state("starting")
         if not self._disarm_wake():
             log.error("❌ wake listener did not release the mic; not starting")
@@ -344,7 +346,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
                 idle = True
             if too_long or idle:
                 self._end_reason = "max duration" if too_long else "idle timeout"
-                log.info("hanging up (%s)", self._end_reason)
+                log.info("⏳ hanging up (%s)", self._end_reason)
                 ended_at = time.monotonic()
                 with contextlib.suppress(Exception):
                     session.end()
@@ -376,7 +378,7 @@ class VoiceDaemon:  # pylint: disable=too-many-instance-attributes
         self._set_state("stopping")
         reason = self._end_reason or "remote: agent hung up or connection dropped (see costs)"
         self._end_reason = ""
-        log.info("conversation ended by %s — voice off", reason)
+        log.info("🔴 voice off — conversation ended by %s", reason)
         time.sleep(self.timing["settle"])  # VoiceProcessingIO released before we speak
         self.announce("voice off")
         self._back_to_idle()
