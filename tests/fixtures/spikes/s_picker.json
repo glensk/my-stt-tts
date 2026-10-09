@@ -1,0 +1,313 @@
+[
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:38:50.397+00:00",
+    "keys": null,
+    "tool_use_id": "toolu_01V3iLbc71dxYCQKwn9SDytk",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which colour do you prefer?",
+        "header": "Colour",
+        "multi_select": false,
+        "options": [
+          "Red",
+          "Green",
+          "Blue"
+        ]
+      }
+    ],
+    "screens": [
+      {
+        "label": "now",
+        "lines": 37
+      }
+    ]
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:39:02.445+00:00",
+    "keys": "down,enter",
+    "tool_use_id": "toolu_01V3iLbc71dxYCQKwn9SDytk",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which colour do you prefer?",
+        "header": "Colour",
+        "multi_select": false,
+        "options": [
+          "Red",
+          "Green",
+          "Blue"
+        ]
+      }
+    ],
+    "screens": [
+      {
+        "label": "before keys",
+        "lines": 37
+      }
+    ],
+    "latency_s": 1.48,
+    "is_error": false,
+    "answers": {
+      "Which colour do you prefer?": "Green"
+    },
+    "tool_use_result_keys": [
+      "annotations",
+      "answers",
+      "questions"
+    ],
+    "expect": {
+      "0": "Green"
+    },
+    "compare": [
+      {
+        "question": "Which colour do you prefer?",
+        "want": "Green",
+        "got": "Green",
+        "match": true
+      }
+    ],
+    "match": true
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:39:24.121+00:00",
+    "keys": null,
+    "tool_use_id": "toolu_014SvP9d2xgxP3YuvKd3yA2D",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "screens": [
+      {
+        "label": "now",
+        "lines": 48
+      }
+    ]
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:39:42.539+00:00",
+    "keys": "1,3",
+    "tool_use_id": "toolu_014SvP9d2xgxP3YuvKd3yA2D",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "answers": null
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:40:09.055+00:00",
+    "keys": "down,down,down,down,enter",
+    "tool_use_id": "toolu_014SvP9d2xgxP3YuvKd3yA2D",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "answers": null
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:40:27.327+00:00",
+    "keys": "enter",
+    "tool_use_id": "toolu_014SvP9d2xgxP3YuvKd3yA2D",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "latency_s": 1.47,
+    "is_error": false,
+    "answers": {
+      "Which fruits do you like?": "Apple, Plum"
+    },
+    "tool_use_result_keys": [
+      "annotations",
+      "answers",
+      "questions"
+    ],
+    "expect": {
+      "0": [
+        "Apple",
+        "Plum"
+      ]
+    },
+    "compare": [
+      {
+        "question": "Which fruits do you like?",
+        "want": [
+          "Apple",
+          "Plum"
+        ],
+        "got": "Apple, Plum",
+        "match": true
+      }
+    ],
+    "match": true
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:40:37.075+00:00",
+    "keys": null,
+    "tool_use_id": "toolu_01T7jpN13PihBL98ne73Ckpg",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which colour do you prefer?",
+        "header": "Colour",
+        "multi_select": false,
+        "options": [
+          "Red",
+          "Green",
+          "Blue"
+        ]
+      },
+      {
+        "index": 1,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ]
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:40:57.634+00:00",
+    "keys": "down,down,enter,wait:0.6,2,3,down,down,down,down,enter,wait:0.6",
+    "tool_use_id": "toolu_01T7jpN13PihBL98ne73Ckpg",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which colour do you prefer?",
+        "header": "Colour",
+        "multi_select": false,
+        "options": [
+          "Red",
+          "Green",
+          "Blue"
+        ]
+      },
+      {
+        "index": 1,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "answers": null
+  },
+  {
+    "spike": "S-PICKER",
+    "at": "2026-10-09T14:41:16.037+00:00",
+    "keys": "enter",
+    "tool_use_id": "toolu_01T7jpN13PihBL98ne73Ckpg",
+    "questions": [
+      {
+        "index": 0,
+        "text": "Which colour do you prefer?",
+        "header": "Colour",
+        "multi_select": false,
+        "options": [
+          "Red",
+          "Green",
+          "Blue"
+        ]
+      },
+      {
+        "index": 1,
+        "text": "Which fruits do you like?",
+        "header": "Fruits",
+        "multi_select": true,
+        "options": [
+          "Apple",
+          "Pear",
+          "Plum"
+        ]
+      }
+    ],
+    "latency_s": 1.53,
+    "is_error": false,
+    "answers": {
+      "Which colour do you prefer?": "Blue",
+      "Which fruits do you like?": "Pear, Plum"
+    },
+    "tool_use_result_keys": [
+      "annotations",
+      "answers",
+      "questions"
+    ],
+    "expect": {
+      "0": "Blue",
+      "1": [
+        "Pear",
+        "Plum"
+      ]
+    },
+    "compare": [
+      {
+        "question": "Which colour do you prefer?",
+        "want": "Blue",
+        "got": "Blue",
+        "match": true
+      },
+      {
+        "question": "Which fruits do you like?",
+        "want": [
+          "Pear",
+          "Plum"
+        ],
+        "got": "Pear, Plum",
+        "match": true
+      }
+    ],
+    "match": true
+  }
+]

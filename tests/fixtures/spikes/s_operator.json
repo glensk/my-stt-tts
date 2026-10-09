@@ -1,0 +1,488 @@
+{
+  "spike": "S-OPERATOR",
+  "plan": "PLAN_claude-bridge.md 7.4 / tp#855",
+  "batches": [
+    {
+      "label": "exact-7.4",
+      "date": "2026-10-09T15:01:10+02:00",
+      "claude_version": "2.1.295 (Claude Code)",
+      "request_sha256": "4f8562a4adfc3980f650d0074e58cc5550d4a49eb3bc5ff34c9f767c2448d502",
+      "request": "open Calculator and compute 2+2",
+      "model": "sonnet",
+      "max_px": 800,
+      "no_session_persistence": false,
+      "threshold_s": 25.0,
+      "app_was_running": false,
+      "summary": {
+        "passed": 3,
+        "runs": 3,
+        "wall_s_min": 17.31,
+        "wall_s_max": 24.97,
+        "wall_s_mean": 21.85,
+        "first_run_wall_s": 17.31,
+        "cost_usd_total": 0.0751
+      },
+      "runs": [
+        {
+          "run": 1,
+          "call_id": "s-op-20261009T145953-1",
+          "exit_code": 0,
+          "stderr_tail": "",
+          "wall_s": 17.31,
+          "pass": true,
+          "claude": {
+            "is_error": false,
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "num_turns": 7,
+            "duration_ms": 11757,
+            "duration_api_ms": 9093,
+            "time_to_request_ms": 296,
+            "ttft_ms": 2083,
+            "total_cost_usd": 0.0250446
+          },
+          "usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 3514,
+            "cache_read_input_tokens": 28773,
+            "output_tokens": 521
+          },
+          "models": [
+            "claude-sonnet-5-5"
+          ],
+          "structured_status": "done",
+          "structured_evidence_matches_broker": true,
+          "broker_finishes": [
+            {
+              "requested_status": "done",
+              "recorded_status": "done",
+              "reason": "",
+              "evidence_seq": 4,
+              "last_action_seq": 3
+            }
+          ],
+          "startup_to_first_tool_s": 6.42,
+          "finish_at_s": 14.33,
+          "steps": [
+            {
+              "seq": 1,
+              "tool": "open_app",
+              "args_sha256": "5d6e6cfe38f2a31b",
+              "t_rel_s": 6.42,
+              "dur_ms": 125,
+              "ok": true
+            },
+            {
+              "seq": 2,
+              "tool": "key",
+              "args_sha256": "0389f652bbb0b96c",
+              "t_rel_s": 7.92,
+              "dur_ms": 672,
+              "ok": true
+            },
+            {
+              "seq": 3,
+              "tool": "type_text",
+              "args_sha256": "99bdc7621a8f24b2",
+              "t_rel_s": 10.05,
+              "dur_ms": 374,
+              "ok": true
+            },
+            {
+              "seq": 4,
+              "tool": "observe_screen",
+              "args_sha256": "d595128c98656e01",
+              "t_rel_s": 11.78,
+              "dur_ms": 948,
+              "ok": true,
+              "img_kb": 72.2
+            },
+            {
+              "seq": 5,
+              "tool": "finish",
+              "args_sha256": "d89c37332deafa9d",
+              "t_rel_s": 14.33,
+              "dur_ms": 1,
+              "ok": true,
+              "recorded_status": "done"
+            }
+          ],
+          "independent_display": "4",
+          "independent_display_ok": true
+        },
+        {
+          "run": 2,
+          "call_id": "s-op-20261009T150015-2",
+          "exit_code": 0,
+          "stderr_tail": "",
+          "wall_s": 23.26,
+          "pass": true,
+          "claude": {
+            "is_error": false,
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "num_turns": 7,
+            "duration_ms": 18254,
+            "duration_api_ms": 13631,
+            "time_to_request_ms": 74,
+            "ttft_ms": 1587,
+            "total_cost_usd": 0.0250164
+          },
+          "usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 3512,
+            "cache_read_input_tokens": 28772,
+            "output_tokens": 519
+          },
+          "models": [
+            "claude-sonnet-5-5"
+          ],
+          "structured_status": "done",
+          "structured_evidence_matches_broker": true,
+          "broker_finishes": [
+            {
+              "requested_status": "done",
+              "recorded_status": "done",
+              "reason": "",
+              "evidence_seq": 4,
+              "last_action_seq": 3
+            }
+          ],
+          "startup_to_first_tool_s": 4.4,
+          "finish_at_s": 18.6,
+          "steps": [
+            {
+              "seq": 1,
+              "tool": "open_app",
+              "args_sha256": "5d6e6cfe38f2a31b",
+              "t_rel_s": 4.4,
+              "dur_ms": 167,
+              "ok": true
+            },
+            {
+              "seq": 2,
+              "tool": "key",
+              "args_sha256": "0389f652bbb0b96c",
+              "t_rel_s": 5.93,
+              "dur_ms": 1178,
+              "ok": true
+            },
+            {
+              "seq": 3,
+              "tool": "type_text",
+              "args_sha256": "99bdc7621a8f24b2",
+              "t_rel_s": 9.09,
+              "dur_ms": 464,
+              "ok": true
+            },
+            {
+              "seq": 4,
+              "tool": "observe_screen",
+              "args_sha256": "d595128c98656e01",
+              "t_rel_s": 14.36,
+              "dur_ms": 2589,
+              "ok": true,
+              "img_kb": 72.1
+            },
+            {
+              "seq": 5,
+              "tool": "finish",
+              "args_sha256": "a7757595f012f4ec",
+              "t_rel_s": 18.6,
+              "dur_ms": 1,
+              "ok": true,
+              "recorded_status": "done"
+            }
+          ],
+          "independent_display": "4",
+          "independent_display_ok": true
+        },
+        {
+          "run": 3,
+          "call_id": "s-op-20261009T150041-3",
+          "exit_code": 0,
+          "stderr_tail": "",
+          "wall_s": 24.97,
+          "pass": true,
+          "claude": {
+            "is_error": false,
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "num_turns": 7,
+            "duration_ms": 18259,
+            "duration_api_ms": 9506,
+            "time_to_request_ms": 210,
+            "ttft_ms": 1736,
+            "total_cost_usd": 0.0250446
+          },
+          "usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 3514,
+            "cache_read_input_tokens": 28773,
+            "output_tokens": 521
+          },
+          "models": [
+            "claude-sonnet-5-5"
+          ],
+          "structured_status": "done",
+          "structured_evidence_matches_broker": true,
+          "broker_finishes": [
+            {
+              "requested_status": "done",
+              "recorded_status": "done",
+              "reason": "",
+              "evidence_seq": 4,
+              "last_action_seq": 3
+            }
+          ],
+          "startup_to_first_tool_s": 7.17,
+          "finish_at_s": 21.49,
+          "steps": [
+            {
+              "seq": 1,
+              "tool": "open_app",
+              "args_sha256": "5d6e6cfe38f2a31b",
+              "t_rel_s": 7.17,
+              "dur_ms": 215,
+              "ok": true
+            },
+            {
+              "seq": 2,
+              "tool": "key",
+              "args_sha256": "0389f652bbb0b96c",
+              "t_rel_s": 8.8,
+              "dur_ms": 1660,
+              "ok": true
+            },
+            {
+              "seq": 3,
+              "tool": "type_text",
+              "args_sha256": "99bdc7621a8f24b2",
+              "t_rel_s": 11.89,
+              "dur_ms": 464,
+              "ok": true
+            },
+            {
+              "seq": 4,
+              "tool": "observe_screen",
+              "args_sha256": "d595128c98656e01",
+              "t_rel_s": 13.71,
+              "dur_ms": 6015,
+              "ok": true,
+              "img_kb": 72.1
+            },
+            {
+              "seq": 5,
+              "tool": "finish",
+              "args_sha256": "4523b5040229eefb",
+              "t_rel_s": 21.49,
+              "dur_ms": 2,
+              "ok": true,
+              "recorded_status": "done"
+            }
+          ],
+          "independent_display": "4",
+          "independent_display_ok": true
+        }
+      ]
+    },
+    {
+      "label": "variant-no-session-persistence",
+      "date": "2026-10-09T15:02:55+02:00",
+      "claude_version": "2.1.295 (Claude Code)",
+      "request_sha256": "4f8562a4adfc3980f650d0074e58cc5550d4a49eb3bc5ff34c9f767c2448d502",
+      "request": "open Calculator and compute 2+2",
+      "model": "sonnet",
+      "max_px": 800,
+      "no_session_persistence": true,
+      "threshold_s": 25.0,
+      "app_was_running": false,
+      "summary": {
+        "passed": 1,
+        "runs": 1,
+        "wall_s_min": 14.32,
+        "wall_s_max": 14.32,
+        "wall_s_mean": 14.32,
+        "first_run_wall_s": 14.32,
+        "cost_usd_total": 0.0245
+      },
+      "runs": [
+        {
+          "run": 1,
+          "call_id": "s-op-20261009T150237-1",
+          "exit_code": 0,
+          "stderr_tail": "",
+          "wall_s": 14.32,
+          "pass": true,
+          "claude": {
+            "is_error": false,
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "num_turns": 7,
+            "duration_ms": 10964,
+            "duration_api_ms": 9008,
+            "time_to_request_ms": 73,
+            "ttft_ms": 1654,
+            "total_cost_usd": 0.0245448
+          },
+          "usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 3395,
+            "cache_read_input_tokens": 28654,
+            "output_tokens": 521
+          },
+          "models": [
+            "claude-sonnet-5-5"
+          ],
+          "structured_status": "done",
+          "structured_evidence_matches_broker": true,
+          "broker_finishes": [
+            {
+              "requested_status": "done",
+              "recorded_status": "done",
+              "reason": "",
+              "evidence_seq": 4,
+              "last_action_seq": 3
+            }
+          ],
+          "startup_to_first_tool_s": 3.93,
+          "finish_at_s": 11.58,
+          "steps": [
+            {
+              "seq": 1,
+              "tool": "open_app",
+              "args_sha256": "5d6e6cfe38f2a31b",
+              "t_rel_s": 3.93,
+              "dur_ms": 75,
+              "ok": true
+            },
+            {
+              "seq": 2,
+              "tool": "key",
+              "args_sha256": "0389f652bbb0b96c",
+              "t_rel_s": 5.26,
+              "dur_ms": 519,
+              "ok": true
+            },
+            {
+              "seq": 3,
+              "tool": "type_text",
+              "args_sha256": "99bdc7621a8f24b2",
+              "t_rel_s": 7.38,
+              "dur_ms": 341,
+              "ok": true
+            },
+            {
+              "seq": 4,
+              "tool": "observe_screen",
+              "args_sha256": "d595128c98656e01",
+              "t_rel_s": 9.0,
+              "dur_ms": 810,
+              "ok": true,
+              "img_kb": 72.0
+            },
+            {
+              "seq": 5,
+              "tool": "finish",
+              "args_sha256": "d04822dc35004ec7",
+              "t_rel_s": 11.58,
+              "dur_ms": 2,
+              "ok": true,
+              "recorded_status": "done"
+            }
+          ],
+          "independent_display": "4",
+          "independent_display_ok": true
+        }
+      ]
+    }
+  ],
+  "evidence_ordering_check": [
+    {
+      "case": "observation after last action",
+      "expect": "done",
+      "got": "done",
+      "ok": true
+    },
+    {
+      "case": "observation older than last action",
+      "expect": "unknown_partial",
+      "got": "unknown_partial",
+      "ok": true
+    },
+    {
+      "case": "unknown obs_id",
+      "expect": "unknown_partial",
+      "got": "unknown_partial",
+      "ok": true
+    },
+    {
+      "case": "no evidence",
+      "expect": "unknown_partial",
+      "got": "unknown_partial",
+      "ok": true
+    },
+    {
+      "case": "re-observe then finish",
+      "expect": "done",
+      "got": "done",
+      "ok": true
+    },
+    {
+      "case": "call log mode",
+      "expect": "0o600",
+      "got": "0o600",
+      "ok": true
+    }
+  ],
+  "findings": {
+    "working_argv": [
+      "~/.local/bin/claude",
+      "-p",
+      "--model",
+      "sonnet",
+      "--tools",
+      "",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "<call-dir>/broker.json",
+      "--permission-mode",
+      "bypassPermissions",
+      "--setting-sources",
+      "",
+      "--max-turns",
+      "30",
+      "--output-format",
+      "json",
+      "--json-schema",
+      "<INLINE JSON text of schemas/operator_result.json>"
+    ],
+    "env": [
+      "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+      "HOME",
+      "LANG=en_US.UTF-8",
+      "USER",
+      "CLAUDE_CONFIG_DIR=$HOME/.claude-work",
+      "AI_NO_AUTOCOMMIT=1"
+    ],
+    "deviations": [
+      "--json-schema takes inline JSON only; a file path fails with 'is not valid JSON'. The caller reads the schema file and passes its text.",
+      "The schema must not declare draft 2020-12 ($schema https://json-schema.org/draft/2020-12/schema is rejected: 'no schema with key or ref'); draft-07 works.",
+      "env needs USER in addition to the 7.4 set: without it the cwork OAuth credential is not found in the Keychain ('Not logged in'). LOGNAME, TMPDIR or SHELL alone do not help."
+    ],
+    "verified": [
+      "all flags exist in 2.1.295; --max-turns is accepted but hidden from -h",
+      "--tools '' gives tools=[] in the init event; only the 6 broker tools (mcp__mac__*) are available",
+      "--setting-sources '' is accepted",
+      "structured_output appears in the result JSON even with --tools ''; it costs one extra model turn after finish()",
+      "screencapture works from the broker (Screen Recording inherited from iTerm); window content visible"
+    ],
+    "phase5_notes": [
+      "add --no-session-persistence: without it every run writes a ~370 KB transcript with base64 screenshots to ~/.claude-work/projects/<cwd-slug>/ (violates 'screenshots deleted after use'); with it only an empty memory/ dir is created",
+      "startup: claude init is ~0.7 s without MCP and ~4.2 s with the stdio broker; the broker alone answers initialize in 0.6-1.5 s (mcp 2.x import ~1.2-1.5 s)",
+      "time after finish() to process exit is 3.0-4.7 s (StructuredOutput turn + shutdown); the broker's finish record is authoritative, so the controller can return as soon as finish.json is written",
+      "observe_screen varies 0.95-6.0 s (osascript System Events bounds + screencapture + sips)",
+      "Calculator restores its last expression/result on launch, so a fresh launch can already show the target value; the runner leaves 49 after each run and checks the display independently"
+    ]
+  }
+}

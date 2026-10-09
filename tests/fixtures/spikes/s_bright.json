@@ -1,0 +1,76 @@
+{
+  "spike": "S-BRIGHT",
+  "date": "2026-10-09T12:50:04+00:00",
+  "read_method": "ctypes DisplayServices.DisplayServicesGetBrightness(display, &float) (private framework); cross-check CoreDisplay_Display_GetUserBrightness",
+  "set_method": "DisplayServices.DisplayServicesSetBrightness(display, float)",
+  "key_method": "osascript -e 'tell application \"System Events\" to key code N'",
+  "displays": [
+    {
+      "id": 1,
+      "builtin": true,
+      "main": true
+    }
+  ],
+  "builtin_is_main": true,
+  "before": 1.0,
+  "presses": [
+    {
+      "key": 145,
+      "dir": "down",
+      "from": 1.0,
+      "to": 0.9375,
+      "coredisplay": 1.0
+    },
+    {
+      "key": 145,
+      "dir": "down",
+      "from": 0.9375,
+      "to": 0.875,
+      "coredisplay": 1.0
+    },
+    {
+      "key": 145,
+      "dir": "down",
+      "from": 0.875,
+      "to": 0.8125,
+      "coredisplay": 1.0
+    },
+    {
+      "key": 144,
+      "dir": "up",
+      "from": 0.8125,
+      "to": 0.875,
+      "coredisplay": 1.0
+    },
+    {
+      "key": 144,
+      "dir": "up",
+      "from": 0.875,
+      "to": 0.9375,
+      "coredisplay": 1.0
+    },
+    {
+      "key": 144,
+      "dir": "up",
+      "from": 0.9375,
+      "to": 1.0,
+      "coredisplay": 1.0
+    }
+  ],
+  "step_down_mean": 0.0625,
+  "step_up_mean": 0.0625,
+  "after_keys": 1.0,
+  "after_restore": 1.0,
+  "key_144_up_works": true,
+  "key_145_down_works": true,
+  "verdict": "pass",
+  "notes": [
+    "Key code 144 = brightness up, 145 = brightness down on the built-in display; one press = 1/16 (0.0625) of the DisplayServices scale; the OSD HUD appears.",
+    "Read method that tracks key presses: DisplayServicesGetBrightness (private DisplayServices.framework, ctypes). CoreDisplay_Display_GetUserBrightness stayed at 1.0 during the presses, so it is NOT a valid read-back.",
+    "Restore: DisplayServicesSetBrightness(display, before) works without key presses (after_restore == before).",
+    "At 1.0, key 144 is a no-op (already max); verify 'brighter' as value > before OR before == 1.0.",
+    "External display as main: NOT TESTED - only the built-in 'Color LCD' was connected (Samsung 'The Frame' is a Bluetooth/AirPlay device, not attached). Per plan 7.3 external displays stay operator-only.",
+    "Keys go through System Events, so the daemon needs Accessibility (iTerm has it). No Safari or app focus needed."
+  ],
+  "plan_verdict": "pass: key codes 144/145 change the built-in display -> set_brightness(step) stays on the fast path; external display -> operator."
+}

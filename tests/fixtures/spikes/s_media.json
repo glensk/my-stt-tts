@@ -1,0 +1,558 @@
+{
+  "spike": "S-MEDIA",
+  "date": "2026-10-09",
+  "plan": "PLAN_claude-bridge.md 7.3 / 9 (tp#855)",
+  "environment": {
+    "browser": "Safari (Allow JavaScript from Apple Events on), driven by osascript `do JavaScript ... in current tab of window id N`; JS passed as argv",
+    "safari_autoplay_policy": "default (no per-site overrides in ~/Library/Safari/PerSitePreferences.db)",
+    "audio_output": "Jabra Elite 8 Active (Bluetooth A2DP/AVRCP)",
+    "jellyfin": "12.2.0, Safari already logged in",
+    "youtube": "logged in (avatar present); new 'yt-lockup-view-model' home layout",
+    "helper": "scripts/spikes/s_media.py (adapter table + runner + fixture snapshotter), scripts/spikes/safari_js.py (window-id-scoped Safari driver)"
+  },
+  "autoplay_verdict": {
+    "result": "play() via Apple Events JS is NOT rejected: no NotAllowedError on youtube.com or jellyfin.dom42.space, neither after JS navigation (location.href / set URL) nor on a fresh window that never had a user gesture. YouTube watch pages also autoplay with sound by themselves after JS navigation. Jellyfin starts playback from a synthetic .btnPlay click().",
+    "real_click_needed": false,
+    "real_click_tested": false,
+    "real_click_note": "Not exercised because play() never rejected; keep the Broker real-click fallback in 7.3 for a NotAllowedError, coordinates = window bounds + (outerHeight - innerHeight) + getBoundingClientRect().",
+    "caveat": "Spurious pauses ~0.4-1 s after play() were traced (unified log, mediaremoted) to `bluetoothd` sending MediaRemote `Pause` (AVRCP from the Jabra headset, likely ear detection) -> Safari -> YouTube's navigator.mediaSession 'pause' handler. Not a WebKit policy rejection. Intermittent. The adapter must re-check `paused` after ~1.5 s and report 'paused by the system/headset' instead of retrying in a loop."
+  },
+  "sites": {
+    "youtube": {
+      "match": "location.hostname === 'www.youtube.com'",
+      "selectors": {
+        "video": "document.querySelector('#movie_player video.html5-main-video') || document.querySelector('video')",
+        "player": "document.getElementById('movie_player')",
+        "video_id": "new URL(location.href).searchParams.get('v')",
+        "first_visible_tile": "[...document.querySelectorAll('ytd-rich-item-renderer a.ytLockupViewModelContentImage[href^=\"/watch\"], ytd-rich-item-renderer a#thumbnail[href^=\"/watch\"]')].find(a => __vis(a) && !a.closest('ytd-ad-slot-renderer'))",
+        "watch_url_from_tile": "'https://www.youtube.com/watch?v=' + new URL(A.href).searchParams.get('v')",
+        "next_button": ".ytp-next-button (display:none outside playlists in the current layout, but click() still works and href = next watch URL)",
+        "prev_button": ".ytp-prev-button (only shown inside a playlist)",
+        "fullscreen_button": ".ytp-fullscreen-button",
+        "playlist_index_text": "ytd-playlist-panel-renderer .index-message ('16 / 16')"
+      },
+      "commands": {
+        "youtube_play_first": {
+          "js": "A = [...document.querySelectorAll('ytd-rich-item-renderer a.ytLockupViewModelContentImage[href^=\"/watch\"], ytd-rich-item-renderer a#thumbnail[href^=\"/watch\"]')].find(a => __vis(a) && !a.closest('ytd-ad-slot-renderer')); url = 'https://www.youtube.com/watch?v=' + new URL(A.href).searchParams.get('v'); then AppleScript `set URL of current tab` (or location.href = url)",
+          "verify": "video id == tile id AND video present AND !V.paused after 1.5 s",
+          "run": {
+            "result": "pass",
+            "target": "https://www.youtube.com/watch?v=lDrAZ1wAyVs",
+            "play_promise": "already playing",
+            "after": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 0,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          },
+          "notes": "skips ad tiles (ytd-ad-slot-renderer) and zero-size tiles; watch page autoplayed by itself, no play() needed"
+        },
+        "play": {
+          "js": "V.play()",
+          "alt": "document.getElementById('movie_player').playVideo()",
+          "verify": "promise resolved AND after 1.5 s: !V.paused (re-check: an external AVRCP/MediaSession pause can land ~0.5-1 s later)",
+          "run": {
+            "result": "pass",
+            "play_promise": "resolved",
+            "before": {
+              "id": "lDrAZ1wAyVs",
+              "paused": true,
+              "t": 2.22,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 4.58,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          }
+        },
+        "pause": {
+          "js": "P.pauseVideo ? P.pauseVideo() : V.pause()",
+          "alt": "V.pause()",
+          "verify": "V.paused within 3 s",
+          "run": {
+            "result": "pass",
+            "before": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 1.9,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "lDrAZ1wAyVs",
+              "paused": true,
+              "t": 2.22,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          },
+          "notes": "player API keeps YouTube's state machine consistent; raw V.pause() also works"
+        },
+        "seek": {
+          "js": "P.seekTo ? P.seekTo(P.getCurrentTime() + S, true) : (V.currentTime += S)   (S = seconds, may be negative)",
+          "alt": "V.currentTime += S",
+          "verify": "|(t_after - t_before) - (S + elapsed_if_playing)| <= 2 s",
+          "run": {
+            "forward_10": {
+              "result": "pass",
+              "delta": 12.41,
+              "expected": 12.8,
+              "before": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 5.58,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 17.99,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "back_10": {
+              "result": "pass",
+              "delta": -7.6,
+              "expected": -7.28,
+              "before": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 19.35,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 11.75,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            }
+          }
+        },
+        "next": {
+          "precheck": "if (() => { const u = new URL(location.href); const pl = P.getPlaylist ? P.getPlaylist() : null; return { list: u.searchParams.get('list'), index: P.getPlaylistIndex ? P.getPlaylistIndex() : -1, length: pl ? pl.length : 0 }; })() has list && index >= length-1 -> refuse 'playlist end' (nextVideo() there LEAVES the playlist for a recommendation, list param disappears)",
+          "js": "P.nextVideo()",
+          "alt": "document.querySelector('.ytp-next-button').click()",
+          "verify": "video id (v=) changed within 8 s",
+          "run": {
+            "no_playlist": {
+              "result": "pass",
+              "position": null,
+              "action": "P.nextVideo()",
+              "before": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 20.88,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "Rn4nmFRPe0s",
+                "paused": false,
+                "t": 22.77,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "in_playlist": {
+              "result": "pass",
+              "position": {
+                "list": "PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab",
+                "index": 0,
+                "length": 16
+              },
+              "action": "P.nextVideo()",
+              "before": {
+                "id": "fNk_zzaMoSs",
+                "paused": false,
+                "t": 3.86,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "k7RM-ot2NWY",
+                "paused": false,
+                "t": 4.81,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "at_playlist_end": {
+              "result": "refused",
+              "reason": "playlist end",
+              "position": {
+                "list": "PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab",
+                "index": 15,
+                "length": 16
+              },
+              "before": {
+                "id": "TgKwz5Ikpc8",
+                "paused": false,
+                "t": 4.62,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            }
+          }
+        },
+        "previous": {
+          "precheck": "in playlist && index <= 0 -> refuse 'playlist start'",
+          "js": "in playlist: P.previousVideo(); otherwise: history.back()",
+          "verify": "video id changed (outside a playlist: equals the id remembered before the last next/open)",
+          "run": {
+            "history_back": {
+              "result": "pass",
+              "position": null,
+              "action": "history.back()",
+              "before": {
+                "id": "Rn4nmFRPe0s",
+                "paused": false,
+                "t": 0,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "lDrAZ1wAyVs",
+                "paused": false,
+                "t": 5.17,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "in_playlist": {
+              "result": "pass",
+              "position": {
+                "list": "PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab",
+                "index": 1,
+                "length": 16
+              },
+              "action": "P.previousVideo()",
+              "before": {
+                "id": "k7RM-ot2NWY",
+                "paused": true,
+                "t": 0,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "fNk_zzaMoSs",
+                "paused": false,
+                "t": 0.71,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "at_playlist_start": {
+              "result": "refused",
+              "reason": "playlist start",
+              "position": {
+                "list": "PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab",
+                "index": 0,
+                "length": 16
+              },
+              "before": {
+                "id": "fNk_zzaMoSs",
+                "paused": false,
+                "t": 2.6,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            }
+          },
+          "notes": "P.previousVideo() is a no-op outside a playlist; history.back() returns to the previous watch page (SPA)"
+        },
+        "fullscreen": {
+          "js": "(P.requestFullscreen ? P.requestFullscreen() : P.webkitRequestFullscreen())",
+          "alternatives_also_pass": [
+            "document.querySelector('.ytp-fullscreen-button').click()",
+            "V.webkitEnterFullscreen()"
+          ],
+          "exit": "document.exitFullscreen()",
+          "verify": "document.fullscreenElement || V.webkitDisplayingFullscreen; exit with document.exitFullscreen() and verify fullscreenElement == null",
+          "run": {
+            "result": "pass",
+            "promise": "resolved",
+            "before": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 13.23,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "during": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 16.19,
+              "fullscreenElement": "movie_player",
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "lDrAZ1wAyVs",
+              "paused": false,
+              "t": 19.02,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          },
+          "notes": "all three methods entered fullscreen without a user gesture while Safari was NOT frontmost; requestFullscreen promise resolved; 'f' key not needed (not tested, would need focus)"
+        }
+      }
+    },
+    "jellyfin": {
+      "match": "location.hostname === 'jellyfin.dom42.space'",
+      "logged_in": true,
+      "selectors": {
+        "video": "document.querySelector('video.htmlvideoplayer') || document.querySelector('video')",
+        "item_id": "(() => { const v = document.querySelector('video.htmlvideoplayer'); const m = v && (v.currentSrc || v.src || '').match(/\\/videos\\/([0-9a-f-]{32,36})\\//i); return m ? m[1].replace(/-/g, '') : new URLSearchParams(location.hash.split('?')[1] || '').get('id'); })()   (current item id from the stream URL /videos/<guid>/; #/video has no id in the URL; details page: #/details?id=<id>)",
+        "play_on_details_page": ".itemDetailPage:not(.hide) .btnPlay (data-action resume|play)",
+        "osd_buttons": ".btnPause, .btnRewind, .btnFastForward, .btnPreviousTrack, .btnNextTrack, .btnFullscreen (present while the OSD is hidden; click() works)",
+        "queue": "ApiClient.getJSON(ApiClient.getUrl('Sessions', {DeviceId: ApiClient.deviceId()})).then(r => { const s = r[0] || {}; const q = (s.NowPlayingQueue || []).map(x => x.Id); return { queue: q, now: s.NowPlayingItem ? s.NowPlayingItem.Id : null }; })   (server session of this browser; NowPlayingItem lags a track change by seconds -> index from the page's current item id)"
+      },
+      "commands": {
+        "play_from_details": {
+          "js": "location.hash = '#/details?id=<id>'; document.querySelector('.itemDetailPage:not(.hide) .btnPlay').click()",
+          "verify": "video.htmlvideoplayer present AND currentTime > 0 AND !paused",
+          "run": {
+            "result": "pass",
+            "target": null,
+            "play_promise": "already playing",
+            "after": {
+              "id": "ef4aea3a002486c6893c60749d5d2b47",
+              "paused": false,
+              "t": 2.01,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          },
+          "notes": "synthetic click starts playback, no gesture needed"
+        },
+        "play": {
+          "js": "V.play()",
+          "alt": ".btnPause click() toggles",
+          "verify": "promise resolved AND after 1.5 s: !V.paused (re-check: an external AVRCP/MediaSession pause can land ~0.5-1 s later)",
+          "run": {
+            "result": "pass",
+            "play_promise": "resolved",
+            "before": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": true,
+              "t": 32.95,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 34.94,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          }
+        },
+        "pause": {
+          "js": "V.pause()",
+          "verify": "V.paused within 3 s",
+          "run": {
+            "result": "pass",
+            "before": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 32.78,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": true,
+              "t": 32.95,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          }
+        },
+        "seek": {
+          "js": "(V.currentTime += S)",
+          "verify": "|(t_after - t_before) - (S + elapsed_if_playing)| <= 2 s",
+          "run": {
+            "forward_10": {
+              "result": "pass",
+              "delta": 11.74,
+              "expected": 11.97,
+              "before": {
+                "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "paused": false,
+                "t": 35.84,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "paused": false,
+                "t": 47.58,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "back_10": {
+              "result": "pass",
+              "delta": -7.44,
+              "expected": -7.17,
+              "before": {
+                "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "paused": false,
+                "t": 48.2,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "paused": false,
+                "t": 40.77,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            }
+          },
+          "notes": "HLS transcode (master.m3u8); seek lands within ~0.3 s of target"
+        },
+        "next": {
+          "precheck": "queue index of current id >= length-1 -> refuse 'playlist end'",
+          "js": "document.querySelector('.btnNextTrack').click()",
+          "verify": "item id changed within 8 s",
+          "run": {
+            "result": "pass",
+            "position": {
+              "now": "ef4aea3a002486c6893c60749d5d2b47",
+              "index": 0,
+              "length": 22
+            },
+            "action": "document.querySelector('.btnNextTrack').click()",
+            "before": {
+              "id": "ef4aea3a002486c6893c60749d5d2b47",
+              "paused": false,
+              "t": 2.4,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "after": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 0,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          }
+        },
+        "previous": {
+          "precheck": "queue index <= 0 -> refuse 'playlist start' (the button is NOT disabled at index 0 and does nothing; at t=32 s it neither restarted nor moved)",
+          "js": "document.querySelector('.btnPreviousTrack').click()",
+          "verify": "item id changed within 8 s",
+          "run": {
+            "normal": {
+              "result": "pass",
+              "position": {
+                "now": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "index": 1,
+                "length": 22
+              },
+              "action": "document.querySelector('.btnPreviousTrack').click()",
+              "before": {
+                "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+                "paused": false,
+                "t": 49.71,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              },
+              "after": {
+                "id": "ef4aea3a002486c6893c60749d5d2b47",
+                "paused": false,
+                "t": 0,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            },
+            "at_queue_start": {
+              "result": "refused",
+              "reason": "playlist start",
+              "position": {
+                "now": "ef4aea3a002486c6893c60749d5d2b47",
+                "index": 0,
+                "length": 22
+              },
+              "before": {
+                "id": "ef4aea3a002486c6893c60749d5d2b47",
+                "paused": false,
+                "t": 0.8,
+                "fullscreenElement": null,
+                "webkitDisplayingFullscreen": false
+              }
+            }
+          },
+          "notes": "at t~7 s previous went to the prior item (no restart-current behaviour observed)"
+        },
+        "fullscreen": {
+          "js": "V.requestFullscreen()",
+          "alternatives_also_pass": [
+            "document.querySelector('.btnFullscreen').click()",
+            "document.documentElement.requestFullscreen()",
+            "V.webkitEnterFullscreen()"
+          ],
+          "exit": "document.exitFullscreen()",
+          "verify": "document.fullscreenElement || V.webkitDisplayingFullscreen; exit with document.exitFullscreen() and verify fullscreenElement == null",
+          "run": {
+            "result": "pass",
+            "promise": "resolved",
+            "before": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 42.75,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            },
+            "during": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 46.21,
+              "fullscreenElement": "video",
+              "webkitDisplayingFullscreen": true
+            },
+            "after": {
+              "id": "bfa78bb580de320fe4d1dd15c15c4b6a",
+              "paused": false,
+              "t": 48.8,
+              "fullscreenElement": null,
+              "webkitDisplayingFullscreen": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "operator_only": [],
+  "operator_only_note": "Every command passed its postcondition on both sites, so per the 9 blocker rule nothing becomes operator-only. Still operator-only by design: unsupported pages, a Jellyfin that is logged out, and play() rejections (Broker real click).",
+  "side_effects_and_rules_for_phase_3": [
+    "Do NOT write V.volume in production adapters: Jellyfin persists video volume into localStorage 'volume' and YouTube re-applies its own volume on load (the spike clamped to 0.03 and restored both afterwards).",
+    "Jellyfin playback bumps PlayCount/LastPlayedDate of each played item (server-side UserData) - expected for real use; the spike restored them (S2E6 LastPlayedDate could not be reset to null through POST /UserItems/{id}/UserData).",
+    "YouTube's own pauses come through navigator.mediaSession; a headset/AVRCP pause looks identical to a user pause in the page.",
+    "Target windows by `window id` (stable), never by index; the user's own Safari window was never touched.",
+    "YouTube enforces Trusted Types: innerHTML assignments from injected JS throw - use DOM methods (replaceChildren) in snippets."
+  ],
+  "fixtures": {
+    "youtube_home.html": "6 ytd-rich-item-renderer tiles (1 ad slot) - first_visible_tile",
+    "youtube_watch.html": "#movie_player of a non-playlist watch page (video, ytp controls, hidden next button with href)",
+    "youtube_watch_playlist.html": "#movie_player + playlist panel at the LAST item ('16 / 16') - playlist-end refusal",
+    "jellyfin_player.html": "videoPlayerContainer + videoOsdBottom during playback (video src /videos/<guid>/master.m3u8, OSD buttons)",
+    "sanitising": "texts -> PLACEHOLDER, non-control aria-label/title -> PLACEHOLDER, img/script/style/svg bodies removed, query strings reduced to v/list/index/id, /@handles -> /@CHANNEL, blob: URLs redacted"
+  }
+}

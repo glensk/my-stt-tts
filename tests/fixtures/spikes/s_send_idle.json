@@ -1,0 +1,251 @@
+{
+  "spike": "S-SEND",
+  "mode": "idle",
+  "at": "2026-10-09T14:38:32.763+00:00",
+  "status_before": "idle",
+  "anchor": {
+    "inode": 0,
+    "size": 0
+  },
+  "test_text": "s-send idle 2026-10-09T14:38:32.763+00:00 - reply with just: ok",
+  "expect": [
+    "user"
+  ],
+  "send_s": 0.498,
+  "channel": "python-api",
+  "appended": [
+    {
+      "type": "last-prompt",
+      "keys": [
+        "leafUuid",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "custom-title",
+      "keys": [
+        "customTitle",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "agent-name",
+      "keys": [
+        "agentName",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "mode",
+      "keys": [
+        "mode",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "permission-mode",
+      "keys": [
+        "permissionMode",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "atis-latch",
+      "keys": [
+        "atis",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "bridge-session",
+      "keys": [
+        "bridgeSessionId",
+        "lastSequenceNum",
+        "ownerAccountUuid",
+        "ownerOrganizationUuid",
+        "sessionId",
+        "type"
+      ]
+    },
+    {
+      "type": "attachment",
+      "keys": [
+        "attachment",
+        "cwd",
+        "entrypoint",
+        "gitBranch",
+        "isSidechain",
+        "parentUuid",
+        "rendered",
+        "renderedRole",
+        "sessionId",
+        "timestamp",
+        "type",
+        "userType",
+        "uuid",
+        "version"
+      ],
+      "attachment": {
+        "type": "hook_success",
+        "commandMode": null,
+        "keys": [
+          "command",
+          "content",
+          "durationMs",
+          "exitCode",
+          "hookEvent",
+          "hookName",
+          "stderr",
+          "stdout",
+          "toolUseID",
+          "type"
+        ]
+      }
+    },
+    {
+      "type": "attachment",
+      "keys": [
+        "attachment",
+        "cwd",
+        "entrypoint",
+        "gitBranch",
+        "isSidechain",
+        "parentUuid",
+        "sessionId",
+        "timestamp",
+        "type",
+        "userType",
+        "uuid",
+        "version"
+      ],
+      "attachment": {
+        "type": "hook_success",
+        "commandMode": null,
+        "keys": [
+          "command",
+          "content",
+          "durationMs",
+          "exitCode",
+          "hookEvent",
+          "hookName",
+          "stderr",
+          "stdout",
+          "toolUseID",
+          "type"
+        ]
+      }
+    },
+    {
+      "type": "attachment",
+      "keys": [
+        "attachment",
+        "cwd",
+        "entrypoint",
+        "gitBranch",
+        "isSidechain",
+        "parentUuid",
+        "rendered",
+        "renderedRole",
+        "sessionId",
+        "timestamp",
+        "type",
+        "userType",
+        "uuid",
+        "version"
+      ],
+      "attachment": {
+        "type": "hook_success",
+        "commandMode": null,
+        "keys": [
+          "command",
+          "content",
+          "durationMs",
+          "exitCode",
+          "hookEvent",
+          "hookName",
+          "stderr",
+          "stdout",
+          "toolUseID",
+          "type"
+        ]
+      }
+    },
+    {
+      "type": "attachment",
+      "keys": [
+        "attachment",
+        "cwd",
+        "entrypoint",
+        "gitBranch",
+        "isSidechain",
+        "parentUuid",
+        "rendered",
+        "renderedRole",
+        "sessionId",
+        "timestamp",
+        "type",
+        "userType",
+        "uuid",
+        "version"
+      ],
+      "attachment": {
+        "type": "hook_additional_context",
+        "commandMode": null,
+        "keys": [
+          "content",
+          "hookEvent",
+          "hookName",
+          "toolUseID",
+          "type"
+        ]
+      }
+    },
+    {
+      "type": "file-history-snapshot",
+      "keys": [
+        "isSnapshotUpdate",
+        "messageId",
+        "snapshot",
+        "type"
+      ]
+    },
+    {
+      "type": "user",
+      "keys": [
+        "cwd",
+        "entrypoint",
+        "gitBranch",
+        "isSidechain",
+        "message",
+        "origin",
+        "parentUuid",
+        "permissionMode",
+        "promptId",
+        "promptSource",
+        "sessionId",
+        "timestamp",
+        "turnOrigin",
+        "turnPosition",
+        "type",
+        "userType",
+        "uuid",
+        "version"
+      ],
+      "content_blocks": "str",
+      "prompt_kind": "user",
+      "sha_match": true,
+      "latency_s": 1.629
+    }
+  ],
+  "outcome": "accepted",
+  "matched": {
+    "prompt_kind": "user",
+    "latency_s": 1.629
+  }
+}

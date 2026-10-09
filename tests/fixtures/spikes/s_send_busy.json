@@ -1,0 +1,39 @@
+{
+  "spike": "S-SEND",
+  "mode": "busy",
+  "at": "2026-10-09T14:38:39.521+00:00",
+  "busy_after_s": 0.79,
+  "status_before": "busy",
+  "anchor": {
+    "inode": 583658302,
+    "size": 271899
+  },
+  "test_text": "s-send busy 2026-10-09T14:38:39.521+00:00 - reply with just: ok",
+  "expect": [
+    "queue-operation/enqueue",
+    "attachment/queued_command"
+  ],
+  "send_s": 0.501,
+  "channel": "python-api",
+  "appended": [
+    {
+      "type": "queue-operation",
+      "keys": [
+        "content",
+        "operation",
+        "sessionId",
+        "timestamp",
+        "type"
+      ],
+      "operation": "enqueue",
+      "prompt_kind": "queue-operation/enqueue",
+      "sha_match": true,
+      "latency_s": 1.54
+    }
+  ],
+  "outcome": "accepted",
+  "matched": {
+    "prompt_kind": "queue-operation/enqueue",
+    "latency_s": 1.54
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OperatorResult",
+  "description": "Final result of one Mac operator run (claude -p + mac broker). Mirrors the broker's finish() call.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "failed",
+        "unknown_partial",
+        "needs_confirmation"
+      ],
+      "description": "done = goal reached and verified by an observation taken after the last action; failed = could not do it; unknown_partial = some actions ran but the end state is unverified; needs_confirmation = the broker blocked a risky call."
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "One or two short sentences for the user, suitable to be spoken."
+    },
+    "evidence_obs_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "obs_id of the observe_screen call that proves the end state, or null."
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "evidence_obs_id"
+  ],
+  "additionalProperties": false
+}
