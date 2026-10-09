@@ -227,7 +227,8 @@ def _bpe_keyword_tokens(phrase: str, sp: Any) -> str:  # noqa: ANN401 — opaque
     even for pure-BPE input. Returns a space-joined piece string (empty if it can't be
     encoded into in-vocab pieces).
     """
-    pieces = sp.encode(phrase.strip().upper(), out_type=str)
+    # "voice_on" and "voice on" are the same phrase; "_" is not an in-vocab piece.
+    pieces = sp.encode(" ".join(phrase.replace("_", " ").split()).upper(), out_type=str)
     return " ".join(p for p in pieces if p)
 
 
@@ -256,7 +257,9 @@ def build_keywords(
                     "KWS: spelling %r for %r is not BPE-encodable; skipping", spelling, label
                 )
                 continue
-            lines.append(f"{toks} :{boost} #{threshold} @{label}")
+            # sherpa splits a keyword line on whitespace, so a multi-word label ("voice on")
+            # would leak its second word into the token list and fail the whole spotter.
+            lines.append(f"{toks} :{boost} #{threshold} @{'_'.join(label.split())}")
     return "\n".join(lines)
 
 

@@ -36,7 +36,8 @@ from my_stt_tts.wake import OrCombinedWake, WakeWord, make_wake_detector, score_
 class _FakeSp:
     """Stands in for sentencepiece: uppercases + splits into char pieces (deterministic)."""
 
-    def encode(self, text: str, out_type: type = str) -> list[str]:  # noqa: ARG002
+    def encode(self, text: str, out_type: type = str) -> list[str]:
+        del out_type  # mirrors sentencepiece's signature; pieces are always str here
         return ["▁" + text.upper()[0], *list(text.upper()[1:])] if text else []
 
 
@@ -135,6 +136,16 @@ def _wire_fake_sherpa(monkeypatch, spotter: _FakeSpotter) -> None:
 def test_build_keywords_encodes_boost_threshold_label():
     kw = build_keywords({"maziko": ["maziko"]}, _FakeSp(), boost=2.0, threshold=0.2)
     assert kw == "▁M A Z I K O :2.0 #0.2 @maziko"
+
+
+def test_build_keywords_multi_word_phrase_keeps_one_label_token():
+    kw = build_keywords(
+        {"voice on": ["voice_on", "voice on"]}, _FakeSp(), boost=1.5, threshold=0.25
+    )
+    for line in kw.splitlines():
+        tokens, label = line.rsplit(" @", 1)
+        assert label == "voice_on"  # no space: sherpa splits keyword lines on whitespace
+        assert "_" not in tokens.split(" :")[0]  # "_" is never sent to the model as a piece
 
 
 def test_build_keywords_multiple_spellings_one_label():
@@ -376,7 +387,7 @@ def test_score_combined_official_never_consults_kws(monkeypatch):
 
     monkeypatch.setattr("my_stt_tts.wake._kws_fires_on_clip", _spy)
     cfg = Config.from_env()
-    conf, fired, detector, _trace = score_wake_clip_combined(
+    _conf, fired, detector, _trace = score_wake_clip_combined(
         np.zeros(16000, dtype=np.float32), 16000, "hey_jarvis", cfg
     )
     assert (fired, detector) == (True, "oww")
