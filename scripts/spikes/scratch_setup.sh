@@ -93,7 +93,7 @@ PY
 	exit $?
 fi
 
-LAUNCH="cd $SCRATCH && env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR $CLAUDE_BIN -n $NAME --model $MODEL"
+LAUNCH="cd $SCRATCH && env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR CC_NO_KEEPWARM=1 AI_NO_AUTOCOMMIT=1 $CLAUDE_BIN -n $NAME --model $MODEL"
 
 if [[ $DRY -eq 1 ]]; then
 	ok "dry run: would mkdir -p $SCRATCH and write $SCRATCH/.claude/settings.local.json (allow Bash(sleep:*))"

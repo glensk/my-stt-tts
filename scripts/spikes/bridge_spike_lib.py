@@ -136,7 +136,14 @@ def find_session(
 
 
 def session_status(session_id: str, account: str = "cpriv") -> str:
-    """Raw status of *session_id* now (``busy``/``idle``/``waiting``/``blocked``/``gone``)."""
+    """Raw status of *session_id* now (``busy``/``idle``/``waiting``/``blocked``/``gone``).
+
+    A scratch session's Stop hook may arm a keep-warm timer (a background shell), which
+    keeps the session ``busy`` forever; such timers are stopped first.
+    """
+    subprocess.run(
+        ["pkill", "-f", f"cc-keepwarm.sh .*{session_id}"], check=False, capture_output=True
+    )
     for s in list_sessions(account):
         if s.session_id == session_id:
             return s.status
