@@ -157,6 +157,18 @@ SAFE_CASES = [
     ("click", {"element": "Quitter", "app": "Safari"}),
     ("applescript", {"script": 'tell application "Safari" to get URL of document 1'}),
     ("applescript", {"script": 'tell application "Safari" to close (every tab of window 1)'}),
+    # switching tabs / windows only navigates: it runs in shells too
+    ("key", {"combo": "cmd+9", "app": "iTerm"}),
+    ("key", {"combo": "cmd+1", "app": "iTerm2"}),
+    ("key", {"combo": "cmd+shift+]", "app": "iTerm2"}),
+    ("key", {"combo": "cmd+shift+[", "app": "Terminal"}),
+    ("key", {"combo": "cmd+alt+right", "app": "iTerm2"}),
+    ("key", {"combo": "cmd+option+left", "app": "iTerm2"}),
+    ("key", {"combo": "ctrl+tab", "app": "iTerm2"}),
+    ("key", {"combo": "ctrl+shift+tab", "app": "Terminal"}),
+    ("key", {"combo": "cmd+`", "app": "iTerm2"}),
+    ("list_folder", {"path": "/tmp/bridge-scratch"}),
+    ("list_folder", {"path": "~/Desktop"}),
 ]
 
 
@@ -203,6 +215,15 @@ CONFIRM_CASES = [
     ("run_shortcut", {"name": "Delete old files"}),
     ("open_app", {"name": "Install macOS Sequoia"}),
     ("teleport", {"where": "mars"}),  # unknown → CONFIRM
+    # in shells only switching tabs runs: typing, Return, closing, interrupting still wait
+    ("key", {"combo": "cmd+w", "app": "iTerm2"}),
+    ("key", {"combo": "cmd+q", "app": "iTerm2"}),
+    ("key", {"combo": "ctrl+c", "app": "iTerm2"}),
+    ("key", {"combo": "return", "app": "iTerm2"}),
+    ("key", {"combo": "cmd+k", "app": "Terminal"}),
+    ("key", {"combo": "cmd+0", "app": "iTerm2"}),
+    ("type_text", {"app": "iTerm", "text": "cd ~"}),
+    ("applescript", {"script": 'tell application "Finder" to delete POSIX file "/tmp/x.txt"'}),
 ]
 
 
@@ -700,6 +721,79 @@ def test_safe_call_runs_without_blocking(call_dir: Path) -> None:
     assert runner.actions()[-1] == ["/usr/bin/open", "-a", "Safari", "https://www.youtube.com"]
 
 
+def test_list_folder_returns_visible_names_only(
+    call_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "bridge-scratch"
+    (folder / "sub").mkdir(parents=True)
+    (folder / "delete-me.txt").write_text("x")
+    (folder / ".hidden").write_text("x")
+    monkeypatch.setattr(mac_risk, "listable_roots", lambda: (str(tmp_path.resolve()),))
+    runner = FakeRunner()
+    reply = json.loads(
+        text(make_broker(call_dir, runner).call("list_folder", {"path": str(folder)}))
+    )
+    assert reply["path"] == str(folder.resolve()) and reply["count"] == 2
+    assert reply["entries"] == [
+        {"name": "delete-me.txt", "kind": "file"},
+        {"name": "sub", "kind": "folder"},
+    ]
+    assert runner.actions() == [] and not list(call_dir.glob("blocked-*.json"))
+
+
+def test_a_failed_call_keeps_its_redacted_error_in_the_audit(call_dir: Path) -> None:
+    secret = "sk-" + "B" * 24
+
+    class Failing(FakeRunner):
+        def __call__(self, argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+            if Path(argv[0]).name == "osascript" and "Finder" in argv[2]:
+                self.calls.append(list(argv))
+                err = (
+                    f"0:70: execution error: Finder got an error: Can't get file {secret}. (-1728)"
+                )
+                return subprocess.CompletedProcess(argv, 1, "", err)
+            return super().__call__(argv, timeout)
+
+    broker = make_broker(call_dir, Failing(), confirm_timeout=3.0)
+    script = 'tell application "Finder" to delete POSIX file "/tmp/Delete Me"'
+    thread, out = _run_in_thread(broker, "applescript", {"script": script})
+    blocked = _wait_blocked(call_dir)
+    assert blocked["summary"] == "move /tmp/Delete Me to the Trash"
+    write_allow(call_dir, blocked["sha256"], blocked["nonce"])
+    thread.join(timeout=3)
+    reply = text(out[0])
+    assert reply.startswith("error: osascript failed:") and "Can't get file" in reply
+    assert secret not in reply  # the model sees why, never a secret
+    record = json.loads(broker.audit_path.read_text().splitlines()[-1])
+    assert record["outcome"] == "error"
+    assert "Can't get file" in record["error"] and "(-1728)" in record["error"]
+    assert secret not in record["error"] and len(record["error"]) <= mac_broker.ERROR_CAP
+
+
+def test_a_confirmed_trash_path_is_not_asked_for_again_in_the_same_task(call_dir: Path) -> None:
+    runner = FakeRunner()
+    broker = make_broker(call_dir, runner, confirm_timeout=3.0)
+    script = 'tell application "Finder" to delete POSIX file "/tmp/bridge-scratch/delete-me.txt"'
+    thread, _ = _run_in_thread(broker, "applescript", {"script": script})
+    blocked = _wait_blocked(call_dir)
+    write_allow(call_dir, blocked["sha256"], blocked["nonce"])
+    thread.join(timeout=3)
+    assert len(runner.actions()) == 1
+    # the same path again (e.g. the as-alias form after an error): runs without asking
+    again = (
+        'tell application "Finder" to delete'
+        ' (POSIX file "/tmp/bridge-scratch/delete-me.txt" as alias)'
+    )
+    assert '"ok": true' in text(broker.call("applescript", {"script": again}))
+    assert len(runner.actions()) == 2
+    # another path, or any other risky call, still waits
+    broker.confirm_timeout = 0.2
+    other = 'tell application "Finder" to delete POSIX file "/tmp/bridge-scratch/keep.txt"'
+    assert text(broker.call("applescript", {"script": other})) == DENIED
+    assert text(broker.call("applescript", {"script": "beep"})) == DENIED
+    assert len(runner.actions()) == 2
+
+
 # -- evidence ordering + finish ------------------------------------------------------------
 def _obs_id(reply: list[Any]) -> str:
     return json.loads(text(reply).splitlines()[0])["obs_id"]
@@ -869,6 +963,7 @@ def test_server_lists_the_primitives(call_dir: Path) -> None:
     assert names == {
         "observe_screen",
         "list_ui",
+        "list_folder",
         "safari_dom",
         "click",
         "type_text",

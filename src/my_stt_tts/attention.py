@@ -5,8 +5,11 @@
   directory 0700, db / -wal / -shm 0600, checked and fixed on every open). One row per
   problem, keyed by a dedupe key (the id is derived from it); a repeat bumps ``last_seen``.
   Items stay until a voice-verified per-item acknowledgement, or expire 7 days after they
-  were last seen. It is the bridge's :class:`~my_stt_tts.bridge.ProblemSink`,
-  :class:`~my_stt_tts.bridge.DeliveryTracker` and
+  were last seen. A problem already spoken in a running call (a tool result or a
+  ``[system notice]`` reached the agent: ``report(…, spoken=True)``, or the monitor's
+  in-call notice) is briefed AND acknowledged at once — a later "voice on" never briefs it
+  again; a repeat within :data:`SPOKEN_QUIET_S` only bumps its count. It is the bridge's
+  :class:`~my_stt_tts.bridge.ProblemSink`, :class:`~my_stt_tts.bridge.DeliveryTracker` and
   :class:`~my_stt_tts.bridge.BriefingProvider`. A corrupt db (never a locked one) is
   renamed ``attention.db.corrupt-<ts>``, rebuilt, and that is logged as one problem.
 * :class:`Monitor` — a thread for the daemon's lifetime: every 15 s it reads
@@ -49,7 +52,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .bridge import (
-    BRIEFING_CAP,
     BriefingProvider,
     Problem,
     Refusal,
@@ -57,6 +59,7 @@ from .bridge import (
     log_refused,
     log_tool,
 )
+from .bridge_problems import BRIEFING_CAP
 from .bridge_text import normalise, redact
 from .claude_sessions import resolve_ccc, run_group
 
@@ -79,6 +82,8 @@ JOIN_TIMEOUT_S = EVENTS_TIMEOUT_S + BANNER_TIMEOUT_S + 1.0
 ACCEPTED_POLL_S = 300.0  # accepted deliveries: only to learn they completed
 DELIVERY_WINDOW_S = 6 * 3600.0  # a delivery is timed_out after 6 h without a Stop
 CLOCK_SKEW_S = 60.0
+#: A repeat of a problem spoken (and so acknowledged) this recently stays quiet.
+SPOKEN_QUIET_S = 60.0
 FAILURES_BEFORE_PROBLEM = 3
 EVENT_PAGES_PER_TICK = 20
 SUBJECT_CAP = 60
@@ -356,10 +361,16 @@ class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 si
         source_cursor: str | None = None,
         at: float | None = None,
         announce: bool = False,
+        spoken: bool = False,
     ) -> None:
         """:class:`~my_stt_tts.bridge.ProblemSink` entry point (see :meth:`record`)."""
         self.record(
-            problem, dedupe_key=dedupe_key, source_cursor=source_cursor, at=at, announce=announce
+            problem,
+            dedupe_key=dedupe_key,
+            source_cursor=source_cursor,
+            at=at,
+            announce=announce,
+            spoken=spoken,
         )
 
     def record(  # pylint: disable=too-many-arguments
@@ -370,11 +381,14 @@ class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 si
         source_cursor: str | None = None,
         at: float | None = None,
         announce: bool = False,
+        spoken: bool = False,
     ) -> str:
         """Record ``problem``: ``opened`` / ``reopened`` / ``bumped`` / ``noop`` (a replay).
 
         ``announce`` asks for the problem to be spoken in a running call; direct reports
         from a tool default to False because the failing tool already tells the agent.
+        ``spoken``: it already reached the agent in the running call — briefed and
+        acknowledged at once (:meth:`mark_spoken`), no listener runs.
         A replayed source event never reopens an item: the same ``source_cursor``, a ccc
         events cursor at or below the item's highest one, or an event time ``at`` at or
         before its acknowledgement / resolution.
@@ -383,7 +397,10 @@ class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 si
         now = self.clock()
         with self._lock:
             status, item = self._upsert(problem, key, _Source(source_cursor, at), now)
-        if status in {"opened", "reopened"}:
+        if spoken and status != "noop":
+            self.mark_spoken([item.id])
+            log.info("⚠️  problem (spoken in the call): %s · %s", item.kind, item.subject)
+        elif status in {"opened", "reopened"}:
             log.info("⚠️  problem: %s · %s", item.kind, item.subject)
             self._emit(item, announce)
         return status
@@ -419,7 +436,7 @@ class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 si
         else:
             events = [n for n in (current.event_cursor, src.event) if n is not None]
             event_cursor = max(events) if events else None
-            if current.is_open(now):
+            if current.is_open(now) or _recently_spoken(current, now):
                 rank = max(current.rank, SEVERITY_RANK[severity])
                 worst = next(name for name, r in SEVERITY_RANK.items() if r == rank)
                 last = max(current.last_seen, seen)
@@ -513,6 +530,32 @@ class AttentionStore:  # pylint: disable=too-many-public-methods  # inbox + 3 si
                 )
             self._conn.commit()
         return len(ids)
+
+    def acknowledge_all(self, kind: str | None = None) -> int:
+        """Acknowledge every open item (only ``kind``, normalised match, when given); count."""
+        wanted = normalise(kind) if kind else None
+        now = self.clock()
+        ids = [i.id for i in self.open_items() if wanted is None or normalise(i.kind) == wanted]
+        with self._lock:
+            for item_id in ids:
+                self._conn.execute(
+                    "UPDATE problems SET acknowledged_at=? WHERE id=?", (now, item_id)
+                )
+            self._conn.commit()
+        return len(ids)
+
+    def mark_spoken(self, ids: Iterable[str]) -> int:
+        """The items reached the agent in the running call: briefed + acknowledged now."""
+        chosen = tuple(ids)
+        now = self.clock()
+        with self._lock:
+            for item_id in chosen:
+                self._conn.execute(
+                    "UPDATE problems SET briefed_at=?, acknowledged_at=? WHERE id=?",
+                    (now, now, item_id),
+                )
+            self._conn.commit()
+        return len(chosen)
 
     def expire(self) -> int:
         """Delete items not seen for 7 days (acknowledged or not); count."""
@@ -637,6 +680,14 @@ class _Source:
     @property
     def event(self) -> int | None:
         return _event_number(self.cursor)
+
+
+def _recently_spoken(current: Item, now: float) -> bool:
+    """Acknowledged by being spoken in a call (:meth:`AttentionStore.mark_spoken`) just now."""
+    acked = current.acknowledged_at
+    if acked is None or current.resolved_at is not None or current.briefed_at != acked:
+        return False
+    return now - acked < SPOKEN_QUIET_S
 
 
 def _replayed(current: Item, src: _Source, now: float) -> bool:
@@ -1007,7 +1058,7 @@ class Monitor:  # pylint: disable=too-many-instance-attributes  # the inbox's po
     def _on_new(self, item: Item, announce: bool) -> None:
         if self.call_active():
             if announce and self._notify(item):
-                self.store.mark_briefed([item.id])
+                self.store.mark_spoken([item.id])  # spoken now: never briefed again
             return
         banners = self._tick_banners
         if banners is not None and self._tick_owner == threading.get_ident():
@@ -1079,6 +1130,22 @@ def report_startup_failure(
     if banner:
         post_banner("voice startup failed", runner)
     return status
+
+
+def clear_problems_main(kind: str | None = None, path: Path | None = None) -> int:
+    """``mac-voice -K [KIND]``: acknowledge every open problem (of ``kind``); prints ✅ + count."""
+    try:
+        store = AttentionStore(path or default_path())
+    except (sqlite3.Error, OSError) as exc:
+        print(f"❌ attention inbox not readable: {type(exc).__name__}")
+        return 1
+    try:
+        count = store.acknowledge_all(kind)
+    finally:
+        store.close()
+    which = f" of kind {clean(kind, 40)}" if kind else ""
+    print(f"✅ cleared {count} open problem(s){which}")
+    return 0
 
 
 # -- the acknowledge tool + wiring -------------------------------------------------------------

@@ -124,6 +124,8 @@ def test_open_url_failure_is_reported() -> None:
     call.say("open jellyfin")
     assert call.mac.open_url("jellyfin").startswith("failed:")
     assert [p.kind for p in call.problems] == ["mac_action"]
+    # the tool result told the agent: spoken in the call, never briefed at a later voice-on
+    assert call.ctl.problems.spoken == call.problems  # type: ignore[attr-defined]
 
 
 def test_log_line_names_the_host_only(caplog: pytest.LogCaptureFixture) -> None:

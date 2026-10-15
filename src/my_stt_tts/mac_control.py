@@ -10,7 +10,8 @@ Client tools (PLAN_claude-bridge 7.3), registered on the
 ``set_volume(…)``          ``level`` 0–100 / max / min, ``step`` up / down / ±N, or ``mute``
 ``set_brightness(…)``      built-in display only: ``step`` up / down / ±N key presses (1/16
                            each) or ``level`` max / min / 0–100 percent
-``media(command, s?)``     play | pause | seek ±s | next | previous | fullscreen (YouTube, Jellyfin)
+``media(command, s?)``     play | pause | seek ±s | next | previous | fullscreen |
+                           exit_fullscreen (YouTube, Jellyfin)
 ``youtube_play_first()``   open + play the first visible video on a YouTube page
 =========================  =====================================================================
 
@@ -25,7 +26,8 @@ monotonic deadline, capability consumed) under the controller's mutation lock, r
 before acting. Subprocesses are argv lists with timeouts through an injectable runner.
 Successes return a short neutral ``ok: …`` (the agent stays silent), refusals
 ``refused: …`` and failures ``failed: …`` (also reported as a
-:class:`~my_stt_tts.bridge.Problem`). One log line per call, never content.
+:class:`~my_stt_tts.bridge.Problem` that counts as spoken: the inbox never briefs it again
+at a later "voice on"). One log line per call, never content.
 
 ``mac-voice -D`` runs :func:`doctor_main`; while a doctor check fails :func:`register`
 registers only stubs that answer ``Mac control disabled: <check>``; once it is green again
@@ -609,8 +611,10 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
         return self._finish(mutation.action, outcome)
 
     def _finish(self, subject: str, outcome: Outcome) -> str:
-        if outcome.status == "failed":
-            self.controller.problems.report(Problem("mac_action", subject, outcome.message))
+        if outcome.status == "failed":  # the tool result tells the agent: spoken in the call
+            self.controller.report_problem(
+                Problem("mac_action", subject, outcome.message), spoken=True
+            )
         return speak(outcome)
 
     def _fail(self, subject: str, message: str) -> str:
@@ -769,7 +773,8 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
 
     # -- media -------------------------------------------------------------------------
     def media(self, command: str, seconds: float | str | None = None) -> str:
-        """play | pause | seek (±seconds) | next | previous | fullscreen in the front Safari."""
+        """play | pause | seek (±seconds) | next | previous | fullscreen | exit_fullscreen
+        in the front Safari."""
         cmd = str(command).strip().casefold()
         said = _media_said(cmd, seconds)
         if isinstance(said, Refusal):

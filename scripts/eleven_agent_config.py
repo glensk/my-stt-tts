@@ -21,6 +21,9 @@ Desired configuration:
 * ``client_tool_call`` in ``conversation_config.conversation.client_events``;
 * ``platform_settings.overrides.conversation_config_override.agent.first_message: true``
   (the voice-on briefing);
+* the platform's soft-timeout filler off: ``conversation_config.turn.soft_timeout_config``
+  ``timeout_seconds: -1`` and ``use_llm_generated_message: false`` (it made the agent open
+  turns with "Right, I see…" / "Mm-hmm…" while the LLM was still thinking);
 * a marked section in the system prompt between ``<!-- mac-voice bridge start -->`` and
   ``<!-- mac-voice bridge end -->``, replaced idempotently; the rest of the prompt is
   never touched.
@@ -59,6 +62,8 @@ DEFAULT_BACKUP_DIR = Path.home() / ".local" / "state" / "mac-voice" / "agent-bac
 MARK_START = "<!-- mac-voice bridge start -->"
 MARK_END = "<!-- mac-voice bridge end -->"
 CLIENT_EVENT = "client_tool_call"
+#: The soft-timeout filler off (-1 disables it; no LLM-made filler either).
+SOFT_TIMEOUT_OFF: dict[str, Any] = {"timeout_seconds": -1, "use_llm_generated_message": False}
 #: Keys of a tool config the script owns (compared for idempotency, written on update).
 TOOL_KEYS = (
     "type",
@@ -84,10 +89,11 @@ SECTION = f"""{MARK_START}
 You run on Albert's Mac and act on it and on his Claude Code sessions through tools.
 - Sessions: list_sessions; read_session(target, what: last_reply|last_prompt); brief_decision(target); send_message(target, text); answer_decision(target, choice). Target = a session name or its number from the last list; if unclear, ask. Background sessions are read-only.
 - Decision briefing: "The session <name>, which works on <aim>, needs a decision: <question>. Options: a) … b) …. It recommends <x> because <reason>." Discuss, then answer with answer_decision (a written to-do decision: send_message).
-- Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up).
+- Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60); "go out of / exit / leave full screen" → media(command="exit_fullscreen"). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up). While a Mac task runs, one more do_on_mac request is queued and starts by itself when the first ends.
 - acknowledge_problem(subject) when Albert says "got it, <subject>".
+- Never start a reply with an acknowledgement or filler (no "Right", "I see", "Duly noted", "Mm-hmm", "Okay then", "Understood"). After a successful action say nothing or one word; never repeat "Done" plus filler.
 - SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done". Never read routine results back. Say refusals and failures briefly.
-- Risky actions (send_message, answer_decision, some do_on_mac steps) return a proposal that ends with "say yes, do it": read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() only after Albert himself says yes in a NEW sentence. If he says no, cancel or stop, call nothing (the proposal is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it".
+- Risky actions (send_message, answer_decision, some do_on_mac steps) return a proposal that ends with "say yes, do it": read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() only after Albert himself says yes in a NEW sentence. If he says no, cancel or stop, call nothing (the proposal is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it". When confirm_action says "running it now", the Mac step has only started: say at most "running it", never "done"; a failure arrives later as a [system notice].
 - A message starting with "[system notice]" comes from the system, not Albert: say it aloud in one short sentence.
 - If a tool says "Mac control disabled" or is unavailable, say so in a few words.
 {MARK_END}"""
@@ -129,7 +135,9 @@ class ToolSpec:
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "confirm_action",
-        "Run the pending proposal after Albert just said 'yes, do it' in a new sentence.",
+        "Run the pending proposal after Albert just said 'yes, do it' in a new sentence. For a"
+        " Mac task step it only lets the step start: the outcome comes later as a [system"
+        " notice] (no notice means it worked), so never say 'done' on its answer.",
         _params({}, []),
         30,
     ),
@@ -205,11 +213,13 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "media",
-        "Control the video in the front Safari window (YouTube, Jellyfin).",
+        "Control the video in the front Safari window (YouTube, Jellyfin). 'Go out of /"
+        " exit / leave full screen' is exit_fullscreen.",
         _params(
             {
                 "command": _string(
-                    "What to do.", ["play", "pause", "seek", "next", "previous", "fullscreen"]
+                    "What to do.",
+                    ["play", "pause", "seek", "next", "previous", "fullscreen", "exit_fullscreen"],
                 ),
                 "seconds": {"type": "number", "description": "Seek seconds, negative goes back."},
             },
@@ -223,7 +233,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "do_on_mac",
-        "Carry out any other request on the Mac (high-stakes steps ask for 'yes, do it').",
+        "Carry out any other request on the Mac (high-stakes steps ask for 'yes, do it')."
+        " While a task runs, one more request is queued and starts when it ends.",
         _params(
             {
                 "request": _string("What to do, as Albert said it."),
@@ -365,6 +376,15 @@ def _first_message_allowed(overrides: Mapping[str, Any]) -> Any:
     return (ccov.get("agent") or {}).get("first_message")
 
 
+def _soft_timeout(agent: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The managed soft-timeout fields (None when the agent has no soft-timeout config)."""
+    turn = (agent.get("conversation_config") or {}).get("turn") or {}
+    soft = turn.get("soft_timeout_config")
+    if not isinstance(soft, Mapping):
+        return None
+    return {k: soft.get(k) for k in SOFT_TIMEOUT_OFF}
+
+
 # -- the desired configuration --------------------------------------------------------------
 def upsert_section(prompt: str, section: str = SECTION) -> str:
     """``prompt`` with the marked section replaced (or appended); the rest untouched."""
@@ -387,6 +407,7 @@ class Target:
     tool_ids: list[str]
     updates: dict[str, dict[str, Any]] = field(default_factory=dict)  # id → config subset
     creates: dict[str, dict[str, Any]] = field(default_factory=dict)  # name → config subset
+    soft_timeout: dict[str, Any] | None = None  # managed soft-timeout fields (None: untouched)
 
 
 def desired_target(state: State, specs: tuple[ToolSpec, ...] = TOOL_SPECS) -> Target:
@@ -402,6 +423,7 @@ def desired_target(state: State, specs: tuple[ToolSpec, ...] = TOOL_SPECS) -> Ta
         client_events=events,
         overrides=overrides,
         tool_ids=state.tool_ids,
+        soft_timeout=dict(SOFT_TIMEOUT_OFF),
     )
     existing = state.client_tools()
     for spec in specs:
@@ -422,6 +444,7 @@ def restore_target(state: State, backup: Mapping[str, Any]) -> Target:
         client_events=_events(old.agent),
         overrides=_overrides(old.agent),
         tool_ids=old.tool_ids,
+        soft_timeout=_soft_timeout(old.agent),
     )
     for tid in old.tool_ids:
         want = _subset(old.tools.get(tid) or {})
@@ -436,6 +459,7 @@ def view_of(state: State) -> dict[str, Any]:
         "prompt": str(state.prompt.get("prompt") or ""),
         "client_events": _events(state.agent),
         "first_message_override": _first_message_allowed(_overrides(state.agent)),
+        "soft_timeout": _soft_timeout(state.agent),
         "tools": {
             name: _subset(cfg)
             for name, (tid, cfg) in sorted(state.client_tools().items())
@@ -455,6 +479,9 @@ def view_of_target(state: State, target: Target) -> dict[str, Any]:
         "prompt": target.prompt,
         "client_events": list(target.client_events),
         "first_message_override": _first_message_allowed(target.overrides),
+        "soft_timeout": (
+            _soft_timeout(state.agent) if target.soft_timeout is None else target.soft_timeout
+        ),
         "tools": dict(sorted(tools.items())),
     }
 
@@ -477,6 +504,11 @@ def render_diff(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str
             f"~ first_message override allowed: {before['first_message_override']} → "
             f"{after['first_message_override']}"
         )
+    if before.get("soft_timeout") != after.get("soft_timeout"):
+        lines.append(
+            f"~ soft-timeout filler: {_soft_text(before.get('soft_timeout'))} → "
+            f"{_soft_text(after.get('soft_timeout'))}"
+        )
     old_tools, new_tools = before["tools"], after["tools"]
     for name in sorted(set(old_tools) | set(new_tools)):
         old, new = old_tools.get(name), new_tools.get(name)
@@ -490,6 +522,15 @@ def render_diff(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str
             keys = [k for k in TOOL_KEYS if old.get(k) != new.get(k)]
             lines.append(f"~ client tool {name}: {', '.join(keys)}")
     return lines
+
+
+def _soft_text(soft: Mapping[str, Any] | None) -> str:
+    """``{timeout_seconds: 2.0, use_llm_generated_message: True}`` → readable text."""
+    if soft is None:
+        return "not set"
+    seconds = soft.get("timeout_seconds")
+    when = "off" if seconds is not None and float(seconds) < 0 else f"after {seconds} s"
+    return f"{when}, LLM filler {soft.get('use_llm_generated_message')}"
 
 
 # -- backup -------------------------------------------------------------------------------------
@@ -528,11 +569,14 @@ def agent_body(state: State, target: Target) -> dict[str, Any]:
     prompt.pop("tools", None)  # inline tools are a legacy mirror of tool_ids: never sent
     prompt["prompt"] = target.prompt
     prompt["tool_ids"] = list(target.tool_ids)
+    config: dict[str, Any] = {
+        "agent": {"prompt": prompt},
+        "conversation": {"client_events": list(target.client_events)},
+    }
+    if target.soft_timeout is not None:
+        config["turn"] = {"soft_timeout_config": dict(target.soft_timeout)}
     return {
-        "conversation_config": {
-            "agent": {"prompt": prompt},
-            "conversation": {"client_events": list(target.client_events)},
-        },
+        "conversation_config": config,
         "platform_settings": {"overrides": copy.deepcopy(target.overrides)},
     }
 
@@ -579,7 +623,13 @@ class Run:
             self.created.append(tid)
             tool_ids.append(tid)
             self.say(f"✅ created client tool {name}")
-        final = Target(target.prompt, target.client_events, target.overrides, tool_ids)
+        final = Target(
+            target.prompt,
+            target.client_events,
+            target.overrides,
+            tool_ids,
+            soft_timeout=target.soft_timeout,
+        )
         now = self.api.request("GET", f"/v1/convai/agents/{self.agent_id}")
         if stamp_of(now) != stamp_of(state.agent):
             raise ConcurrencyError("the agent changed since it was read — run again")

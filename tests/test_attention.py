@@ -521,7 +521,9 @@ def test_in_call_problems_are_spoken_not_bannered(store: AttentionStore) -> None
     mon.poll_once()
     assert spoken == ["scratch-dead: message failed"]
     assert not fake.banners
-    assert store.open_items()[0].briefed_at is not None  # spoken, still unacknowledged
+    [item] = store.items()  # spoken in the call: briefed and acknowledged at once
+    assert item.briefed_at is not None and item.acknowledged_at is not None
+    assert store.open_items() == [] and store.briefing() is None
 
 
 def test_without_a_call_problems_wait_in_the_inbox(store: AttentionStore) -> None:
@@ -552,6 +554,89 @@ def test_direct_reports_in_a_call_are_announced_only_on_request(store: Attention
     store.report(problem("open_url"))  # the failing tool already told the agent
     store.report(problem("operator", reason="operator request failed"), announce=True)
     assert spoken == ["operator: operator request failed"]
+
+
+def test_problems_spoken_in_a_call_are_never_briefed_later(
+    store: AttentionStore, clock: Clock
+) -> None:
+    banners = FakeCcc()
+    Monitor(store, banners, call_active=lambda: True)
+    store.report(problem("media", kind="mac_action", reason="the video did not move"), spoken=True)
+    store.report(
+        problem("youtube_play_first", kind="mac_action", reason="paused again"), spoken=True
+    )
+    assert store.open_items() == [] and store.briefing() is None
+    assert all(i.briefed_at is not None and i.acknowledged_at is not None for i in store.items())
+    assert not banners.banners
+    # the agent retries at once and it fails again: quiet, still never briefed
+    clock.now += 5
+    status = store.record(problem("media", kind="mac_action", reason="again"), spoken=False)
+    assert status == "bumped" and store.open_items() == []
+    # much later, a new failure of the same thing outside a call opens again
+    clock.now += attention.SPOKEN_QUIET_S + 1
+    assert store.record(problem("media", kind="mac_action", reason="later")) == "reopened"
+    assert [i.subject for i in store.open_items()] == ["media"]
+
+
+def test_problems_from_outside_a_call_are_briefed_at_the_next_voice_on(
+    store: AttentionStore,
+) -> None:
+    store.report(problem("Mac task", kind="operator", reason="timeout"))  # after the hang-up
+    text = store.briefing()
+    assert text is not None and "Mac task" in text
+
+
+def test_acknowledge_all_clears_every_open_problem_or_one_kind(store: AttentionStore) -> None:
+    store.record(problem("media", kind="mac_action"))
+    store.record(problem("youtube_play_first", kind="mac_action"))
+    store.record(problem("scratch-dead"))
+    assert store.acknowledge_all("mac action") == 2  # normalised kind
+    assert [i.subject for i in store.open_items()] == ["scratch-dead"]
+    assert store.acknowledge_all() == 1
+    assert store.open_items() == [] and store.acknowledge_all() == 0
+
+
+def test_clear_problems_cli(db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    store = AttentionStore(db)
+    store.record(problem("media", kind="mac_action"))
+    store.record(problem("scratch-dead"))
+    store.close()
+    assert attention.clear_problems_main("mac_action", db) == 0
+    assert capsys.readouterr().out.strip() == "✅ cleared 1 open problem(s) of kind mac_action"
+    assert attention.clear_problems_main(None, db) == 0
+    assert capsys.readouterr().out.strip() == "✅ cleared 1 open problem(s)"
+    reopened = AttentionStore(db)
+    assert reopened.open_items() == []
+    reopened.close()
+
+
+def test_mac_voice_clear_problems_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from my_stt_tts import eleven_voice  # pylint: disable=import-outside-toplevel
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = AttentionStore(attention.default_path())
+    store.record(problem("media", kind="mac_action"))
+    store.close()
+    assert eleven_voice.main(["-K"]) == 0
+    assert "✅ cleared 1 open problem(s)" in capsys.readouterr().out
+    assert eleven_voice.main(["-K", "operator"]) == 0
+    assert "✅ cleared 0 open problem(s) of kind operator" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        eleven_voice.main(["-h"])
+    assert exc.value.code == 0
+    assert "--clear-problems" in capsys.readouterr().out
+
+
+def test_controller_reports_spoken_only_inside_a_call(store: AttentionStore) -> None:
+    call = Call()
+    call.ctl.problems = store
+    call.ctl.report_problem(problem("media", kind="mac_action"), spoken=True)
+    assert store.open_items() == []
+    call.ctl.end_call()
+    call.ctl.report_problem(problem("open_url", kind="mac_action"), spoken=True)
+    assert [i.subject for i in store.open_items()] == ["open_url"]  # no call: briefed later
 
 
 def test_banner_is_content_free(store: AttentionStore) -> None:
@@ -712,17 +797,17 @@ def test_replay_after_a_crash_never_reopens_an_acknowledged_item(
     fake.add_event("stop_failure", T0 + 5)
     fake.add_event("stop_failure", T0 + 10)
     clock.now += 20
-    mon = monitor_for(store, fake, call_active=lambda: True, notify_in_call=spoken.append)
+    mon = monitor_for(store, fake, call_active=lambda: False, notify_in_call=spoken.append)
     mon.poll_once()
-    [item] = store.open_items()
-    assert item.event_cursor == 2 and spoken == ["scratch-busy: stopped with an error"]
+    [item] = store.open_items()  # no call: it waits in the inbox
+    assert item.event_cursor == 2 and not spoken
     clock.now += 60
     assert store.acknowledge("scratch-busy") == 1
     store.set_meta(attention.CURSOR_KEY, "0")  # the cursor write was lost (crash)
     mon.poll_once()
     [after] = store.items()
     assert after.acknowledged_at is not None and after.count == item.count
-    assert store.open_items() == [] and len(spoken) == 1
+    assert store.open_items() == [] and not spoken
 
 
 def test_an_event_from_before_the_acknowledgement_does_not_reopen(

@@ -41,6 +41,14 @@ def _agent() -> dict[str, Any]:
         "metadata": {"created_at_unix_secs": 1, "updated_at_unix_secs": 100},
         "conversation_config": {
             "tts": {"voice_id": "voice1"},
+            "turn": {
+                "turn_timeout": -1.0,
+                "soft_timeout_config": {
+                    "timeout_seconds": 2.0,
+                    "message": "Hhmmmm...yeah.",
+                    "use_llm_generated_message": True,
+                },
+            },
             "conversation": {"client_events": ["audio", "user_transcript"], "text_only": False},
             "agent": {
                 "first_message": "",
@@ -172,6 +180,7 @@ def test_dry_run_writes_a_backup_prints_the_diff_and_writes_nothing(tmp_path: Pa
     text = "\n".join(out)
     assert "+ client tool do_on_mac (timeout 15 s)" in text
     assert "client_tool_call" in text and "first_message override allowed: False → True" in text
+    assert "~ soft-timeout filler: after 2.0 s, LLM filler True → off, LLM filler False" in text
     assert cfg.MARK_START in text and "dry run" in text
 
 
@@ -189,6 +198,13 @@ def test_apply_patches_once_and_verifies(tmp_path: Path) -> None:
     ovr = api.agent["platform_settings"]["overrides"]["conversation_config_override"]["agent"]
     assert ovr == {"first_message": True, "language": True}
     assert _prompt(api).startswith(ORIGINAL_PROMPT)
+    turn = api.agent["conversation_config"]["turn"]
+    assert turn["soft_timeout_config"] == {
+        "timeout_seconds": -1,
+        "message": "Hhmmmm...yeah.",
+        "use_llm_generated_message": False,
+    }  # filler off, the rest of the turn config untouched
+    assert turn["turn_timeout"] == -1.0
     by_name = {c["name"]: c for c in api.tools.values()}
     assert by_name["send_message"]["response_timeout_secs"] == 30
     assert by_name["confirm_action"]["response_timeout_secs"] == 30
@@ -274,6 +290,8 @@ def test_restore_brings_the_backup_back(tmp_path: Path) -> None:
     assert api.agent["conversation_config"]["agent"]["prompt"]["tool_ids"] == ["tool_foreign"]
     ovr = api.agent["platform_settings"]["overrides"]["conversation_config_override"]["agent"]
     assert ovr["first_message"] is False
+    soft = api.agent["conversation_config"]["turn"]["soft_timeout_config"]
+    assert soft["timeout_seconds"] == 2.0 and soft["use_llm_generated_message"] is True
 
 
 def test_foreign_tools_are_never_deleted(tmp_path: Path) -> None:
@@ -345,3 +363,25 @@ def test_prompt_and_confirm_tool_ask_for_yes_do_it_and_never_for_a_code() -> Non
         "required": [],
     }
     assert "level" in specs["set_brightness"].parameters["properties"]
+
+
+def test_prompt_forbids_filler_openers_and_confirm_says_the_outcome_comes_later() -> None:
+    specs = {s.name: s for s in cfg.TOOL_SPECS}
+    assert "Never start a reply with an acknowledgement or filler" in cfg.SECTION
+    for word in ("Right", "I see", "Duly noted", "Mm-hmm", "Okay then", "Understood"):
+        assert f'"{word}"' in cfg.SECTION
+    assert 'never repeat "Done" plus filler' in cfg.SECTION
+    assert "[system notice]" in specs["confirm_action"].description
+    assert "running it now" in cfg.SECTION
+
+
+def test_media_offers_exit_fullscreen_and_do_on_mac_mentions_the_queue() -> None:
+    specs = {s.name: s for s in cfg.TOOL_SPECS}
+    media = specs["media"]
+    assert "exit_fullscreen" in media.parameters["properties"]["command"]["enum"]
+    assert "leave full screen" in media.description
+    assert 'media(command="exit_fullscreen")' in cfg.SECTION
+    assert "queued" in specs["do_on_mac"].description
+    from my_stt_tts.mac_sites import MEDIA_COMMANDS  # pylint: disable=import-outside-toplevel
+
+    assert set(media.parameters["properties"]["command"]["enum"]) == set(MEDIA_COMMANDS)

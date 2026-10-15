@@ -17,8 +17,13 @@ One run:
   ``AI_NO_AUTOCOMMIT=1`` — nothing else);
 * states: running → needs_confirmation | done | failed | cancelled | unknown_partial;
 * the tool answers within 10 s (the result, a confirmation request, or ``started``); the
-  final result reaches the controller through ``on_result`` and failures are reported
-  to ``controller.problems``;
+  final result reaches the controller through ``on_result`` (True when it was spoken in
+  the call) and failures are reported to ``controller.problems`` — as spoken when the
+  agent heard them, so a later "voice on" does not brief them again;
+* one task at a time; a request while one runs is queued (at most ONE waits): its
+  capability is checked and spent when it is asked for, it starts on its own when the
+  current task ends (dropped when the call ended first, unless it is a background
+  request), and its risky steps still wait for "yes, do it";
 * the run ends as soon as the broker writes ``finish.json`` (no waiting for the
   structured-result turn), at the 5-minute hard limit, on cancel, when the call ends
   (unless the request was explicitly background: "do it even if I hang up") or at daemon
@@ -80,6 +85,11 @@ CLAUDE = Path.home() / ".local" / "bin" / "claude"
 SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "operator_result.json"
 BROKER_PATH = Path(__file__).resolve().parent / "mac_broker.py"
 CONFIRM_KIND = "operator_confirm"
+#: confirm_action's answer for an operator step: the step only starts now.
+CONFIRMED_REPLY = (
+    "confirmed — running it now; I'll report the result (a failure comes as a "
+    "[system notice]; no notice means it worked — do not say it is done)"
+)
 
 START_WAIT_S = 10.0
 HARD_LIMIT_S = 300.0
@@ -117,6 +127,14 @@ clicking and switching tabs or windows run at once.
 To close Safari tabs or windows use the keyboard (key cmd+w, cmd+shift+w) or the File
 menu (menu_select), not AppleScript; an AppleScript that does more than open, close or
 activate Safari tabs and windows waits for a confirmation.
+Switching tabs or windows by keyboard runs at once in every app, iTerm and Terminal
+included (cmd+1..9, cmd+shift+[ / ], ctrl+tab); typing into a shell still waits.
+Files: before acting on a file, find its exact name with list_folder(path) (read-only;
+never guess a name). Delete a file with ONE applescript call:
+tell application "Finder" to delete POSIX file "/absolute/path/name.ext"
+(it moves the file to the Trash). Never type into Finder to delete or rename.
+If an action returns "error: ...", read the error, fix the call once (e.g. the exact path
+from list_folder), and do not switch to a different, riskier way.
 If a call returns "denied: not confirmed" or "refused: ...", do not retry it and do not
 work around it: finish with status needs_confirmation or failed.
 After your LAST action, look at a screenshot taken after it, then call
@@ -166,6 +184,15 @@ class OperatorCall:  # pylint: disable=too-many-instance-attributes  # one run's
     confirm_message: str = ""
     done: threading.Event = field(default_factory=threading.Event)
     changed: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
+class QueuedTask:
+    """The one request waiting for the running task to end (already authorised)."""
+
+    request: str = field(repr=False)
+    token: CancellationToken
+    background: bool
 
 
 def operator_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -282,7 +309,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
         python: str | None = None,
         env: Mapping[str, str] | None = None,
         notify: Callable[[str], None] | None = None,
-        on_result: Callable[[OperatorResult], None] | None = None,
+        on_result: Callable[[OperatorResult], bool | None] | None = None,
         start_wait: float = START_WAIT_S,
         hard_limit: float = HARD_LIMIT_S,
         kill_grace: float = KILL_GRACE_S,
@@ -305,6 +332,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
         self.clock = clock
         self.results: deque[OperatorResult] = deque(maxlen=20)
         self.current: OperatorCall | None = None
+        self.queued: QueuedTask | None = None
         self._calls: dict[str, OperatorCall] = {}
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
@@ -317,17 +345,22 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
 
     # -- the client tool --------------------------------------------------------------
     def do_on_mac(self, request: str, background: bool = False) -> str:
-        """Client tool: carry out ``request`` on the Mac (answers within ~10 s)."""
+        """Client tool: carry out ``request`` on the Mac (answers within ~10 s).
+
+        While a task runs, ONE more request is queued and starts when that one ends.
+        """
         log_tool("do_on_mac", f"{len(request or '')} chars")
         request = " ".join(str(request or "").split())
-        if not request:
-            return "refused: say what to do"
-        if len(request) > REQUEST_CAP:
-            return f"refused: request longer than {REQUEST_CAP} characters"
+        invalid = _request_refusal(request)
+        if invalid:
+            return invalid
         with self._lock:
             running = self.current is not None and not self.current.done.is_set()
             busy = self._closed or self._starting or running
             self._starting = self._starting or not busy
+            waiting = self.queued is not None
+        if busy and running and not self._closed:
+            return self._enqueue(request, background, waiting)
         if busy:
             log_refused("operator busy")
             return "refused: another Mac task is still running"
@@ -344,6 +377,67 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             return call
         return self._first_answer(call)
 
+    # -- the queue ----------------------------------------------------------------------
+    def _enqueue(self, request: str, background: bool, waiting: bool) -> str:
+        """Queue ONE follow-up request: authorised (capability spent) now, started later."""
+        if waiting:
+            log_refused("operator queue full")
+            return "refused: one Mac task is already waiting; say it again when that one is done"
+        cap = self.controller.mint()
+        if isinstance(cap, Refusal):
+            return f"refused: {cap.reason}"
+        token = self.controller.cancel
+        keep = bool(background) and background_said(cap.text)
+        refusal = before_mutation(
+            token, Deadline(3.0, self.clock), self.controller.caps, Mutation("do_on_mac", {}, cap)
+        )
+        if refusal is not None:
+            return f"refused: {refusal.reason}"
+        with self._lock:
+            if self.queued is not None:
+                log_refused("operator queue full")
+                return "refused: one Mac task is already waiting"
+            self.queued = QueuedTask(request, token, keep)
+            current = self.current
+        log_tool("operator", "queued")
+        if current is None or current.done.is_set():  # it ended meanwhile: start right away
+            self._start_queued()
+        return "queued: it starts when the current Mac task ends; the result follows"
+
+    def _start_queued(self) -> None:
+        """Start the waiting request (called when a task ends); drop it when it is stale."""
+        with self._lock:
+            task, self.queued = self.queued, None
+            running = self.current is not None and not self.current.done.is_set()
+            if task is not None and (running or self._starting):  # another one went first
+                self.queued, task = task, None
+            stale = task is not None and (
+                self._closed or (task.token.cancelled and not task.background)
+            )
+            self._starting = self._starting or (task is not None and not stale)
+        if task is None:
+            return
+        if stale:
+            log_refused("queued Mac task dropped (call ended)")
+            return
+        try:
+            call = self._launch(task.request, task.token, task.background)
+        finally:
+            with self._lock:
+                self._starting = False
+        if isinstance(call, str):
+            what = call.removeprefix("failed: ").removeprefix("refused: ")
+            self._notify_text(f"the waiting Mac task did not start: {what}")
+
+    def _notify_text(self, text: str) -> None:
+        if self.notify is None:
+            return
+        try:
+            self.notify(text)
+        except Exception:  # pylint: disable=broad-exception-caught  # never stop the operator
+            log.warning("⚠️  operator notify failed", exc_info=True)
+
+    # -- starting -----------------------------------------------------------------------
     def _start(self, request: str, cap: Capability, background: bool) -> OperatorCall | str:
         token = self.controller.cancel
         acquired = self.controller.mutation_lock.acquire(timeout=3.0)
@@ -359,14 +453,41 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             )
             if refusal is not None:
                 return f"refused: {refusal.reason}"
-            try:
-                call = self._spawn(request, token, background)
-            except (OSError, ValueError) as exc:
-                log.warning("⚠️  operator did not start: %s", type(exc).__name__)
-                self._report("did not start", "error")
-                return "failed: the Mac operator could not start"
+            call = self._spawn_or_report(request, token, background)
         finally:
             self.controller.mutation_lock.release()
+        if isinstance(call, str):
+            return call
+        self._watch_call(call)
+        return call
+
+    def _launch(
+        self, request: str, token: CancellationToken, background: bool
+    ) -> OperatorCall | str:
+        """Spawn an already-authorised (queued) request under the mutation lock."""
+        if not self.controller.mutation_lock.acquire(timeout=3.0):
+            log_refused("another action is running")
+            return "refused: another action is running"
+        try:
+            call = self._spawn_or_report(request, token, background)
+        finally:
+            self.controller.mutation_lock.release()
+        if isinstance(call, str):
+            return call
+        self._watch_call(call)
+        return call
+
+    def _spawn_or_report(
+        self, request: str, token: CancellationToken, background: bool
+    ) -> OperatorCall | str:
+        try:
+            return self._spawn(request, token, background)
+        except (OSError, ValueError) as exc:
+            log.warning("⚠️  operator did not start: %s", type(exc).__name__)
+            self._report("did not start", "error", spoken=True)
+            return "failed: the Mac operator could not start"
+
+    def _watch_call(self, call: OperatorCall) -> None:
         thread = threading.Thread(
             target=self._supervise, args=(call,), name=f"operator-{call.call_id}", daemon=True
         )
@@ -375,7 +496,6 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             self._calls[call.call_id] = call
             self._threads = [t for t in self._threads if t.is_alive()] + [thread]
         thread.start()
-        return call
 
     def _first_answer(self, call: OperatorCall) -> str:
         deadline = self.clock() + self.start_wait
@@ -579,30 +699,34 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
         self._audit(call, status, reason, duration)
         log.info("🤖 operator: %s (%d s)", status.replace("_", " "), round(duration))
         self.results.append(result)
-        self._report_result(result)
         call.done.set()
         call.changed.set()
+        spoken = False
         if self.on_result is not None:
             try:
-                self.on_result(result)
+                spoken = self.on_result(result) is True
             except Exception:  # pylint: disable=broad-exception-caught
                 log.warning("⚠️  operator result callback failed", exc_info=True)
+        self._report_result(result, spoken)
+        self._start_queued()
 
-    def _report_result(self, result: OperatorResult) -> None:
+    def _report_result(self, result: OperatorResult, spoken: bool) -> None:
+        """Failures go to the inbox; ``spoken`` = the agent already heard this result."""
         if result.status == DONE:
             return
         if result.status == CANCELLED:
             if result.reason != "daemon shutdown":
-                self._report(result.reason or "cancelled", "warning")
+                self._report(result.reason or "cancelled", "warning", spoken=spoken)
             return
         reason = result.reason or result.status.replace("_", " ")
         severity = "warning" if result.status == NEEDS_CONFIRMATION else "error"
-        self._report(reason, severity)
+        self._report(reason, severity, spoken=spoken)
 
-    def _report(self, reason: str, severity: str) -> None:
+    def _report(self, reason: str, severity: str, *, spoken: bool = False) -> None:
         try:
-            self.controller.problems.report(
-                Problem(kind="operator", subject="Mac task", reason=reason, severity=severity)
+            self.controller.report_problem(
+                Problem(kind="operator", subject="Mac task", reason=reason, severity=severity),
+                spoken=spoken,
             )
         except Exception:  # pylint: disable=broad-exception-caught
             log.warning("⚠️  problem report failed", exc_info=True)
@@ -644,7 +768,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             log_refused("operator action no longer waiting")
             return "refused: that action is no longer waiting"
         log_tool("operator", "confirmed")
-        return "confirmed"
+        return CONFIRMED_REPLY
 
     # -- ending -----------------------------------------------------------------------
     def cancel(self, reason: str = "cancelled") -> None:
@@ -658,6 +782,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
         """Daemon shutdown: end every run (background ones too) and join the watchers."""
         with self._lock:
             self._closed = True
+            self.queued = None
             calls = list(self._calls.values())
             threads = list(self._threads)
         for call in calls:
@@ -665,6 +790,15 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
                 call.cancel_reason = "daemon shutdown"
         for thread in threads:
             thread.join(timeout=timeout)
+
+
+def _request_refusal(request: str) -> str:
+    """Why ``request`` (whitespace-collapsed) cannot be run, or ""."""
+    if not request:
+        return "refused: say what to do"
+    if len(request) > REQUEST_CAP:
+        return f"refused: request longer than {REQUEST_CAP} characters"
+    return ""
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -704,13 +838,14 @@ def register(
     *,
     env: Mapping[str, str] | None = None,
     notify: Callable[[str], None] | None = None,
-    on_result: Callable[[OperatorResult], None] | None = None,
+    on_result: Callable[[OperatorResult], bool | None] | None = None,
     **options: Any,
 ) -> MacOperator | None:
     """Add ``do_on_mac`` + the ``operator_confirm`` executor when ``MAC_VOICE_OPERATOR=1``.
 
     ``notify(text)`` speaks a confirmation request in the call; ``on_result`` receives
-    every final :class:`OperatorResult`. ``options`` go to :class:`MacOperator`.
+    every final :class:`OperatorResult` and returns True when it was spoken in the call.
+    ``options`` go to :class:`MacOperator`.
     """
     if not operator_enabled(env):
         return None

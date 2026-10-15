@@ -31,7 +31,12 @@ so the operator can return without waiting for the structured-result turn.
 never called ``finish``. A failed rewrite deletes the file (fail closed).
 
 Audit: ``<call-dir>/broker_audit.jsonl`` (0600) — tool, args sha256, risk, outcome,
-duration; never content. Screenshots live only as temp files in the call dir and are
+duration, and for a failed call its error message (redacted, ≤ 200 chars: e.g. why an
+AppleScript failed); never the arguments themselves.
+
+``list_folder(path)`` (SAFE, read-only, no shell) lists a folder so the operator finds a
+file's exact path first. A Trash path Albert confirmed is not asked for again in the same
+task (``Verdict.target``). Screenshots live only as temp files in the call dir and are
 deleted right after they are read.
 
 The module imports only the standard library at import time (``mcp`` loads in
@@ -61,18 +66,21 @@ from typing import Any
 if __package__ in (None, ""):  # run by file path (python -I mac_broker.py): find the package
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from my_stt_tts.bridge_text import redact  # noqa: E402  # pylint: disable=wrong-import-position
 from my_stt_tts.mac_risk import (  # noqa: E402  # pylint: disable=wrong-import-position
     CONTROL_RE,
     NAMED_KEYS,
     REFUSE,
     SAFE,
     RiskContext,
+    Verdict,
     allow_path,
     append_0600,
     args_sha256,
     blocked_path,
     classify,
     focused_ax,
+    folder_listing,
     hit_test_ax,
     parse_combo,
     shell_script_refusal,
@@ -93,6 +101,8 @@ TEXT_CAP = 2000
 FINISH_STATUSES = ("done", "failed", "unknown_partial", "needs_confirmation")
 FINISH_SUMMARY_CAP = 300
 EVIDENCE_KEEP = 50  # observations kept in evidence.json
+ERROR_CAP = 200  # characters of a failed call's error kept in the audit
+FOLDER_CAP = 200  # entries a list_folder reply may carry
 
 DENIED = "denied: not confirmed"
 
@@ -415,6 +425,8 @@ class Broker:  # pylint: disable=too-many-instance-attributes  # the broker's wh
         self.last_action_seq = 0
         self.observations: dict[str, Observation] = {}
         self.finished: dict[str, Any] | None = None
+        #: Targets Albert confirmed in this task (``trash:<path>``): not asked again.
+        self.confirmed_targets: set[str] = set()
         self._lock = threading.Lock()
         self.t0 = clock()
 
@@ -484,31 +496,50 @@ class Broker:  # pylint: disable=too-many-instance-attributes  # the broker's wh
         if verdict.risk == REFUSE:
             self._audit_call(tool, sha, verdict.risk, "refused", start=start)
             return [f"refused: {verdict.reason}"]
-        if verdict.risk != SAFE and not self._confirmed(tool, sha, verdict.summary):
+        if verdict.risk != SAFE and not self._allowed(tool, sha, verdict):
             self._audit_call(tool, sha, verdict.risk, "denied", start=start)
             return [DENIED]
+        error = ""
         try:
             reply = self._dispatch(tool, args)
-            outcome = "ok"
         except _ERRS as exc:
-            reply, outcome = [f"error: {str(exc)[:300]}"], "error"
-        if tool in _ACTION_TOOLS and args.get("observe") and outcome == "ok":
+            error = redact(" ".join(str(exc).split()), 300)
+            reply = [f"error: {error}"]
+        if tool in _ACTION_TOOLS and args.get("observe") and not error:
             self.sleep(0.3)
             reply = [*reply, *self.observe_screen(str(args.get("app", "")))]
-        self._audit_call(tool, sha, verdict.risk, outcome, start=start)
+        outcome = "error" if error else "ok"
+        self._audit_call(tool, sha, verdict.risk, outcome, start=start, error=error)
         return reply
 
-    def _audit_call(self, tool: str, sha: str, risk: str, outcome: str, *, start: float) -> None:
-        self._audit(
-            {
-                "tool": tool,
-                "args_sha256": sha,
-                "risk": risk,
-                "outcome": outcome,
-                "t_s": round(start - self.t0, 3),
-                "dur_ms": round((self.clock() - start) * 1000),
-            }
-        )
+    def _allowed(self, tool: str, sha: str, verdict: Verdict) -> bool:
+        """A CONFIRM call runs after Albert's "yes, do it" — once per confirmed target."""
+        target = verdict.target
+        with self._lock:
+            known = bool(target) and target in self.confirmed_targets
+        if known:
+            return True
+        if not self._confirmed(tool, sha, verdict.summary):
+            return False
+        if target:
+            with self._lock:
+                self.confirmed_targets.add(target)
+        return True
+
+    def _audit_call(  # pylint: disable=too-many-arguments
+        self, tool: str, sha: str, risk: str, outcome: str, *, start: float, error: str = ""
+    ) -> None:
+        record: dict[str, Any] = {
+            "tool": tool,
+            "args_sha256": sha,
+            "risk": risk,
+            "outcome": outcome,
+            "t_s": round(start - self.t0, 3),
+            "dur_ms": round((self.clock() - start) * 1000),
+        }
+        if error:
+            record["error"] = redact(error, ERROR_CAP)
+        self._audit(record)
 
     def _confirmed(self, tool: str, sha: str, summary: str) -> bool:
         """Write the blocked file, wait for the matching allow file, consume it."""
@@ -550,6 +581,7 @@ class Broker:  # pylint: disable=too-many-instance-attributes  # the broker's wh
                 str(a.get("app", "")), bool(a.get("full_screen"))
             ),
             "list_ui": lambda a: [self._list_ui(str(a.get("app", "")))],
+            "list_folder": lambda a: [self._list_folder(str(a.get("path", "")))],
             "safari_dom": lambda a: [self._safari_dom(a.get("selector", ""), a.get("limit", 20))],
             "click": self._click,
             "type_text": lambda a: [self._type_text(str(a.get("app", "")), str(a["text"]))],
@@ -641,6 +673,11 @@ class Broker:  # pylint: disable=too-many-instance-attributes  # the broker's wh
         if len(out) > RESULT_CAP:
             out = out[:RESULT_CAP] + "\n…(truncated)"
         return f"seq={seq} (not valid as finish evidence)\n{out}"
+
+    def _list_folder(self, path: str) -> str:
+        """The visible entries of a folder (names + file / folder), read-only, capped."""
+        listing = folder_listing(path, FOLDER_CAP)
+        return json.dumps({"seq": self._next_seq(), **listing}, ensure_ascii=False)
 
     def _safari_dom(self, selector: Any, limit: Any) -> str:
         js = safari_dom_js(selector, limit)
@@ -819,6 +856,15 @@ def build_server(broker: Broker) -> Any:  # noqa: C901  # one small closure per 
         return run("list_ui", app=app)
 
     @server.tool(structured_output=False)
+    def list_folder(path: str) -> list[Any]:
+        """Names in a folder (read-only): JSON {path, count, truncated, entries: [{name, kind}]}.
+
+        Use it to find a file's exact name before acting on it. Absolute path or ~/…, under
+        the home folder, /tmp or /Volumes; hidden entries and folders are not listed.
+        """
+        return run("list_folder", path=path)
+
+    @server.tool(structured_output=False)
     def safari_dom(selector: str, limit: int = 20) -> list[Any]:
         """Read elements of the front Safari tab matching a CSS selector (read-only).
 
@@ -880,9 +926,12 @@ def build_server(broker: Broker) -> Any:  # noqa: C901  # one small closure per 
 
     @server.tool(structured_output=False)
     def applescript(script: str) -> list[Any]:
-        """Run AppleScript source (always held for the user's spoken confirmation).
+        """Run AppleScript source (held for the user's spoken confirmation, except
+        scripts that only open / close / activate Safari tabs and windows).
 
-        Shell commands (do shell script, run script) are refused.
+        Shell commands (do shell script, run script) are refused. To delete a file use
+        exactly: tell application "Finder" to delete POSIX file "/absolute/path" (to the
+        Trash; find the exact path with list_folder first). A failure returns its error.
         """
         return run("applescript", script=script)
 

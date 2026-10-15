@@ -561,15 +561,6 @@ def _tail_reply(text: str) -> str:
     return "… " + rest[1] if len(rest) > 1 else ""
 
 
-def _accepts_dedupe_key(fn: Callable[..., Any]) -> bool:
-    """True when a sink's ``report`` takes ``dedupe_key`` (the attention inbox does)."""
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(p.name == "dedupe_key" or p.kind is p.VAR_KEYWORD for p in params)
-
-
 class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + per-call caches
     """The sessions client tools + the ``send`` / ``answer`` executors."""
 
@@ -978,13 +969,13 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             log.warning("⚠️  delivery tracking failed", exc_info=True)
 
     def _report(self, problem: Problem, session_id: str) -> None:
-        """One inbox item per failing session (the monitor's ``failed:<session_id>`` key)."""
-        report: Callable[..., None] = self.ctl.problems.report
+        """One inbox item per failing session (the monitor's ``failed:<session_id>`` key).
+
+        The failure is the tool result the agent speaks: spoken in the call, never briefed
+        again at a later "voice on".
+        """
         try:
-            if _accepts_dedupe_key(report):
-                report(problem, dedupe_key=f"failed:{session_id}")
-            else:
-                report(problem)
+            self.ctl.report_problem(problem, spoken=True, dedupe_key=f"failed:{session_id}")
         except Exception:  # pylint: disable=broad-exception-caught  # the outcome stands
             log.warning("⚠️  problem report failed", exc_info=True)
 

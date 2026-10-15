@@ -224,6 +224,36 @@ def test_fullscreen_verified() -> None:
     assert "requestFullscreen" in call.fake.js_of("fullscreen")[0]
 
 
+def test_exit_fullscreen_verified() -> None:
+    call = Call()
+    call.fake.js = {
+        "state": [yt_state(fullscreen=True), yt_state(fullscreen=False)],
+        "fsx_poll": {"state": "resolved"},
+    }
+    call.say("can you go out of full screen")
+    assert call.mac.media("exit_fullscreen") == "ok: left full screen"
+    js = call.fake.js_of("exit_fullscreen")[0]
+    assert "exitFullscreen" in js and "webkitExitFullscreen" in js
+    assert "requestFullscreen" not in js
+
+
+def test_exit_fullscreen_that_stays_fails() -> None:
+    call = Call()
+    call.fake.js = {"state": yt_state(fullscreen=True), "fsx_poll": {"state": "resolved"}}
+    call.say("leave full screen")
+    assert call.mac.media("exit_fullscreen") == "failed: still full screen"
+    assert [p.kind for p in call.problems] == ["mac_action"]
+
+
+def test_exit_fullscreen_when_not_fullscreen_is_refused() -> None:
+    call = Call()
+    call.fake.js = {"state": yt_state(fullscreen=False)}
+    call.say("exit full screen")
+    out = call.mac.media("exit_fullscreen")
+    assert out.startswith("refused:") and "not in full screen" in out
+    assert "exit_fullscreen" not in call.fake.ops()
+
+
 def test_unsupported_page_is_refused() -> None:
     call = Call()
     call.fake.js = {"state": {"site": None}}
@@ -540,6 +570,9 @@ def test_snippets_use_dom_methods_and_never_write_volume() -> None:
         ("10", "seconds", "zehn Sekunden zurück", True),
         ("next", "command", "nächstes Video", True),
         ("fullscreen", "command", "plein écran", True),
+        ("exit_fullscreen", "command", "can you go out of full screen", True),
+        ("exit_fullscreen", "command", "Vollbild beenden", True),
+        ("exit_fullscreen", "command", "pause", False),
         ("seek", "command", "pause", False),
     ],
 )

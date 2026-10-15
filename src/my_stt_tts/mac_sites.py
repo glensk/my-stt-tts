@@ -14,7 +14,9 @@ Selectors, actions and verification expressions come from spike S-MEDIA
   to start (YouTube's player or a preroll starts seconds late), then re-checks once —
   polling is fine, calling ``play()`` again is not; ``next`` /
   ``previous`` → the video / item id changed; ``fullscreen`` → ``fullscreenElement`` or
-  ``webkitDisplayingFullscreen``. Playlist end / queue start are refused with a reason.
+  ``webkitDisplayingFullscreen``; ``exit_fullscreen`` (``document.exitFullscreen`` /
+  ``webkitExitFullscreen``) → neither of them any more. Playlist end / queue start are
+  refused with a reason.
 * ``play()`` rejected with ``NotAllowedError`` (autoplay policy) → the optional
   ``real_click`` hook (the Mac operator's broker, Phase 5) clicks the player; without it
   the command is refused with the reason.
@@ -53,7 +55,13 @@ NAV_WAIT_S = 8.0  # youtube_play_first: the watch page must load within this
 POLL_S = 0.3
 CALL_TIMEOUT_S = 2.0  # one osascript call after the action (verification)
 
-MEDIA_COMMANDS = ("play", "pause", "seek", "next", "previous", "fullscreen")
+MEDIA_COMMANDS = ("play", "pause", "seek", "next", "previous", "fullscreen", "exit_fullscreen")
+#: Leave full screen: the document's fullscreen element, else Safari's native video one.
+EXIT_FULLSCREEN = (
+    "((document.fullscreenElement || document.webkitFullscreenElement)"
+    " ? (document.exitFullscreen ? document.exitFullscreen() : document.webkitExitFullscreen())"
+    " : (V.webkitExitFullscreen && V.webkitExitFullscreen()))"
+)
 
 
 # -- running commands ------------------------------------------------------------------------
@@ -376,6 +384,7 @@ def every_js() -> list[str]:
                 snippets.append(action_js(a, statement))
         snippets.append(promise_js(a, "play", a.play))
         snippets.append(promise_js(a, "fullscreen", a.fullscreen))
+        snippets.append(promise_js(a, "fsx", EXIT_FULLSCREEN))
         if a.position:
             snippets.append(f"{_bind(a)} return {a.position};")
         if a.queue:
@@ -442,15 +451,9 @@ class MediaDriver:
         """A refusal / no-op before acting, else None (``timeout`` for the reads)."""
         if not page.state.get("video"):
             return refused("no video on this page")
-        if command == "play" and page.state.get("paused") is False:
-            return ok("already playing")
-        if command == "pause" and page.state.get("paused") is True:
-            return ok("already paused")
-        if command == "fullscreen" and page.state.get("fullscreen"):
-            return ok("already fullscreen")
         if command in ("next", "previous"):
             return self._boundary(page, command, timeout)
-        return None
+        return _state_precheck(page.state, command)
 
     def position(self, page: Page, timeout: float) -> dict[str, int] | None:
         """``{index, length}`` inside a playlist / queue, None outside one."""
@@ -612,6 +615,19 @@ class MediaDriver:
         name = promise.get("name") if promise.get("state") == "rejected" else None
         return failed(f"fullscreen was refused ({name})" if name else "fullscreen did not start")
 
+    def _do_exit_fullscreen(self, page: Page) -> Outcome:
+        res = self.safari.evaluate(
+            page.win, "exit_fullscreen", promise_js(page.adapter, "fsx", EXIT_FULLSCREEN)
+        )
+        if isinstance(res, dict) and res.get("error"):
+            return failed(_ACTION_ERRORS.get(str(res["error"]), "leaving full screen failed"))
+        promise = self._poll_slot(page.win, "fsx", PROMISE_WAIT_S) or {}
+        st = self._wait_state(page, lambda s: not s.get("fullscreen"), 1.0)
+        if not st.get("fullscreen"):
+            return ok("left full screen")
+        name = promise.get("name") if promise.get("state") == "rejected" else None
+        return failed(f"leaving full screen was refused ({name})" if name else "still full screen")
+
     # -- youtube_play_first ----------------------------------------------------------------
     def first_tile(self, page: Page) -> str | Outcome:
         """The first visible video's watch URL on a YouTube page, or a refusal."""
@@ -651,6 +667,22 @@ _ACTION_ERRORS = {
     "NotAllowedError": "Safari blocked it",
     "Error": "the player control is missing",
 }
+
+
+def _state_precheck(state: dict[str, Any], command: str) -> Outcome | None:
+    """The no-op / refusal a command gets in the player's current ``state``, else None."""
+    paused, full = state.get("paused"), bool(state.get("fullscreen"))
+    already = {
+        "play": (paused is False, ok("already playing")),
+        "pause": (paused is True, ok("already paused")),
+        "fullscreen": (full, ok("already fullscreen")),
+        "exit_fullscreen": (
+            not full,
+            refused("the video is not in full screen (the Safari window may be: do_on_mac)"),
+        ),
+    }
+    hit, outcome = already.get(command, (False, None))
+    return outcome if hit else None
 
 
 def _seek_landed(

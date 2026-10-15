@@ -669,6 +669,10 @@ def _admin(args: argparse.Namespace) -> int | None:
         from .mac_control import doctor_main
 
         return doctor_main()
+    if args.clear_problems is not None:
+        from .attention import clear_problems_main
+
+        return clear_problems_main(args.clear_problems or None)
     if args.install or args.uninstall:
         from . import voice_control
 
@@ -717,7 +721,9 @@ def main(argv: list[str] | None = None) -> int:
             "  mac-voice -s              daemon status as JSON\n"
             "  mac-voice -I / -U         install / remove the login LaunchAgent\n"
             "  mac-voice -V              rebuild voice profiles (only enrolled voices may start)\n"
-            "  mac-voice -D              doctor: Mac permissions for Mac control (✅/❌ + fix)"
+            "  mac-voice -D              doctor: Mac permissions for Mac control (✅/❌ + fix)\n"
+            "  mac-voice -K              clear every open problem of the voice-on briefing\n"
+            "  mac-voice -K mac_action   clear only the open problems of one kind"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -742,6 +748,14 @@ def main(argv: list[str] | None = None) -> int:
     ctl.add_argument("-U", "--uninstall", action="store_true", help="remove the LaunchAgent")
     ctl.add_argument(
         "-D", "--doctor", action="store_true", help="check the Mac permissions of Mac control"
+    )
+    ctl.add_argument(
+        "-K",
+        "--clear-problems",
+        nargs="?",
+        const="",
+        metavar="KIND",
+        help="acknowledge every open problem (only KIND, e.g. mac_action, when given)",
     )
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)

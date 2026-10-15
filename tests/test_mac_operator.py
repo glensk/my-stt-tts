@@ -316,7 +316,9 @@ def test_states_needs_confirmation_then_done_after_confirm(tmp_path: Path) -> No
         time.sleep(0.01)
     assert notices and notices[0] in answer
     call.say("yes, do it")
-    assert call.ctl.confirm_action() == "confirmed"
+    reply = call.ctl.confirm_action()
+    assert reply == mac_operator.CONFIRMED_REPLY  # the step only starts now: never "done"
+    assert reply.startswith("confirmed — running it now") and "[system notice]" in reply
     result = wait_done(op)
     assert result.status == DONE and result.summary == "Sent the mail."
 
@@ -350,6 +352,26 @@ def test_hard_limit_kills_and_reports_a_problem(tmp_path: Path) -> None:
     assert result.status == FAILED and result.reason == "timeout"
     assert [(p.kind, p.reason) for p in call.problems.problems] == [("operator", "timeout")]
     assert mac_operator.HARD_LIMIT_S == 300.0
+
+
+def test_failure_the_call_heard_is_reported_as_spoken(tmp_path: Path) -> None:
+    call = Call()
+    op = make_operator(
+        tmp_path, call, "hang", start_wait=0.2, hard_limit=1.0, on_result=lambda r: True
+    )
+    started(call, op)
+    assert wait_done(op).status == FAILED
+    assert call.problems.spoken == call.problems.problems  # never briefed again
+
+
+def test_failure_nobody_heard_waits_for_the_next_voice_on(tmp_path: Path) -> None:
+    call = Call()
+    op = make_operator(
+        tmp_path, call, "hang", start_wait=0.2, hard_limit=1.0, on_result=lambda r: False
+    )
+    started(call, op)
+    assert wait_done(op).status == FAILED
+    assert call.problems.problems and not call.problems.spoken
 
 
 def test_call_end_cancels_a_foreground_run(tmp_path: Path) -> None:
@@ -476,11 +498,64 @@ def test_capability_is_single_use_and_one_task_at_a_time(tmp_path: Path) -> None
     op = make_operator(tmp_path, call, "hang", start_wait=0.2)
     started(call, op)
     call.ctl.note_tool_result("do_on_mac")  # what the voice session does with every answer
-    assert op.do_on_mac("open Notes") == "refused: another Mac task is still running"
+    # the sentence that started the running task cannot queue another one
+    assert op.do_on_mac("open Notes") == "refused: context changed — say it again"
+    assert op.queued is None
     op.cancel()
     wait_done(op)
     # an operator result is external content: the sentence that started it cannot act again
     assert op.do_on_mac("open Notes") == "refused: context changed — say it again"
+
+
+def test_one_follow_up_task_is_queued_and_starts_when_the_current_ends(tmp_path: Path) -> None:
+    call = Call()
+    op = make_operator(tmp_path, call, "hang", start_wait=0.2)
+    started(call, op, "turn on do not disturb")
+    first = op.current
+    assert first is not None
+    call.say("open example.org and close the other Safari tabs")
+    reply = op.do_on_mac("open example.org and close the other Safari tabs")
+    assert reply.startswith("queued:")
+    assert op.queued is not None and op.current is first  # waits, nothing new started
+    call.say("and open Notes")
+    assert op.do_on_mac("open Notes") == (
+        "refused: one Mac task is already waiting; say it again when that one is done"
+    )
+    op.cancel("test")
+    assert first.done.wait(10)
+    deadline = time.monotonic() + 5
+    while op.current is first and time.monotonic() < deadline:
+        time.sleep(0.02)
+    second = op.current
+    assert second is not None and second is not first and op.queued is None
+    assert second.request_len == len("open example.org and close the other Safari tabs")
+    op.cancel("test over")
+    assert wait_done(op).status == CANCELLED
+
+
+def test_queued_task_needs_albert(tmp_path: Path) -> None:
+    call = Call()
+    op = make_operator(tmp_path, call, "hang", start_wait=0.2)
+    started(call, op)
+    call.say("open Notes", level=OTHER)  # someone else asks for a follow-up
+    assert op.do_on_mac("open Notes") == "refused: voice not verified"
+    assert op.queued is None
+    op.shutdown()
+
+
+def test_queued_task_is_dropped_when_the_call_ends(tmp_path: Path) -> None:
+    call = Call()
+    op = make_operator(tmp_path, call, "hang", start_wait=0.2)
+    started(call, op)
+    first = op.current
+    call.say("open Notes")
+    assert op.do_on_mac("open Notes").startswith("queued:")
+    call.ctl.end_call()  # cancels the running task and the waiting one with it
+    assert first is not None and first.done.wait(10)
+    deadline = time.monotonic() + 5
+    while op.queued is not None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert op.queued is None and op.current is first  # dropped, never started
 
 
 def test_executor_refuses_when_nothing_waits(tmp_path: Path) -> None:
@@ -582,3 +657,10 @@ def test_argv_helper_matches_spec_order(tmp_path: Path) -> None:
 def test_preamble_steers_tab_closing_to_keys_not_applescript() -> None:
     assert "cmd+w" in PREAMBLE and "not AppleScript" in PREAMBLE
     assert "Closing, quitting" in PREAMBLE  # they run without a confirmation
+
+
+def test_preamble_resolves_file_paths_before_one_finder_delete() -> None:
+    assert "list_folder(path)" in PREAMBLE and "never guess a name" in PREAMBLE
+    assert 'tell application "Finder" to delete POSIX file "/absolute/path/name.ext"' in PREAMBLE
+    assert "Never type into Finder" in PREAMBLE
+    assert "iTerm" in PREAMBLE and "cmd+1..9" in PREAMBLE

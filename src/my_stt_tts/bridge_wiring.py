@@ -11,7 +11,8 @@ Each component gates itself on its own flag and a failing one never stops the ot
 * :func:`my_stt_tts.mac_operator.register` (``MAC_VOICE_OPERATOR``) with
   :class:`OperatorNotices` — confirmation requests and LATE failures are spoken in the
   call; a result the ``do_on_mac`` tool already returned is never spoken twice, and
-  successes stay silent (D6).
+  successes stay silent (D6). A failure the call heard is reported as spoken, so the
+  next "voice on" does not brief it again.
 """
 
 from __future__ import annotations
@@ -73,19 +74,24 @@ class OperatorNotices:
             return  # the do_on_mac answer itself carries the request
         self.controller.notify_in_call(f"Mac task needs confirmation: {message}")
 
-    def on_result(self, result: OperatorResult) -> None:
-        """``on_result`` of the operator: failures spoken in the call, successes silent."""
+    def on_result(self, result: OperatorResult) -> bool:
+        """``on_result`` of the operator: failures spoken in the call, successes silent.
+
+        True when the agent heard (or will hear) the result in the running call — the
+        ``do_on_mac`` answer carried it, or the notice went out — so the operator reports
+        the failure as already spoken and no later "voice on" briefs it again.
+        """
         from .mac_operator import DONE  # pylint: disable=import-outside-toplevel
 
         with self._lock:
             answered = result.call_id in self._answered
             self._answered.discard(result.call_id)
-        if result.status == DONE or answered:
-            return
-        if self.controller.tool_in_flight(OPERATOR_TOOL):
-            return  # the pending do_on_mac answer returns this result
+        if result.status == DONE:
+            return False
+        if answered or self.controller.tool_in_flight(OPERATOR_TOOL):
+            return self.controller.in_call  # the do_on_mac answer returns this result
         what = result.reason or result.summary or result.status.replace("_", " ")
-        self.controller.notify_in_call(f"Mac task {result.status.replace('_', ' ')}: {what}")
+        return self.controller.notify_in_call(f"Mac task {result.status.replace('_', ' ')}: {what}")
 
 
 def _safely(name: str, fn: Callable[[], Any]) -> Any:

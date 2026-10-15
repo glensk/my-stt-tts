@@ -2,16 +2,21 @@
 
 Pure standard library and side-effect free except :func:`hit_test_ax` and
 :func:`focused_ax` (read-only Accessibility lookups of the element under a screen point and
-of the focused element). :func:`classify` answers SAFE
-(runs), CONFIRM (blocked until the user says "yes, do it") or REFUSE (never runs) for one
-broker call. Only high-stakes calls are CONFIRM: losing data (deleting / trashing files,
-emptying the trash, erasing), acting outward (sending, posting, submitting a form,
-paying), typing into password fields, installs, security / network / account settings,
-force quit, shells, unknown tools — and keys / clicks whose effect cannot be known in the
-apps where that matters (Settings, Finder, shells, messaging). Everything else runs:
-ordinary clicks, menus, navigation, opening / closing / switching tabs and windows,
-quitting apps. Summaries name the action and its target, never typed text, and are short
-enough to be spoken.
+of the focused element) and :func:`folder_listing` (a read-only directory listing).
+:func:`classify` answers SAFE (runs), CONFIRM (blocked until the user says "yes, do it") or
+REFUSE (never runs) for one broker call. Only high-stakes calls are CONFIRM: losing data
+(deleting / trashing files, emptying the trash, erasing), acting outward (sending, posting,
+submitting a form, paying), typing into password fields, installs, security / network /
+account settings, force quit, shells, unknown tools — and keys / clicks whose effect cannot
+be known in the apps where that matters (Settings, Finder, shells, messaging). Everything
+else runs: ordinary clicks, menus, navigation, opening / closing / switching tabs and
+windows, quitting apps. Switching tabs / windows runs in shells too (cmd+1..9, cmd+shift+[
+/ ], cmd+alt+left / right, ctrl+(shift+)tab, cmd+`, a click on a tab-bar tab); typing,
+Return, cmd+w / cmd+q and the like there still wait. ``list_folder`` (names in a folder
+under the home folder, /tmp or /Volumes; no hidden folders) runs; a one-line ``Finder
+delete POSIX file "<path>"`` AppleScript is summarised as "move <path> to the Trash".
+Summaries name the action and its target, never typed text, and are short enough to be
+spoken.
 
 Confirmation binding: a blocked call is identified by :func:`args_sha256` (tool + its
 normalised arguments). The broker writes ``blocked-<sha>.json`` with a fresh nonce; the
@@ -127,6 +132,12 @@ _NAV_KEYS = frozenset(
 )  # fmt: skip
 _SUBMIT_KEYS = frozenset({"return", "enter"})
 _DELETE_KEYS = frozenset({"delete", "backspace", "forwarddelete"})
+# Tab / window switching shortcuts: pure navigation, SAFE even in shells (iTerm, Terminal).
+_SWITCH_COMBOS = frozenset(
+    {*(("cmd", str(n)) for n in range(1, 10)), ("cmd", "shift", "["), ("cmd", "shift", "]"),
+     ("alt", "cmd", "left"), ("alt", "cmd", "right"), ("ctrl", "tab"), ("ctrl", "shift", "tab"),
+     ("cmd", "`")}
+)  # fmt: skip
 # Finder / settings keys that only navigate or search (everything else there is CONFIRM).
 _BROWSE_COMBOS = frozenset(
     {("cmd", "f"), ("cmd", "1"), ("cmd", "2"), ("cmd", "3"), ("cmd", "4"), ("cmd", "["),
@@ -152,11 +163,16 @@ CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 @dataclass(frozen=True)
 class Verdict:
-    """The risk table's answer for one call: ``risk`` + a one-line, content-free summary."""
+    """The risk table's answer for one call: ``risk`` + a one-line, content-free summary.
+
+    ``target``: what a CONFIRM acts on when that is known exactly (``trash:<path>`` for a
+    Finder delete); within one operator task, a confirmed target is not asked for again.
+    """
 
     risk: str
     summary: str
     reason: str = ""
+    target: str = ""
 
 
 def _label(text: str) -> str:
@@ -422,8 +438,8 @@ def _classify_key(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
         or ({"cmd", "ctrl"} <= mod_set and key == "q")  # lock screen
         or not app  # unknown target app
     )
-    if not confirm and _in(app, SHELL_APPS):
-        confirm = key not in _NAV_KEYS or bool(mods)
+    if not confirm and _in(app, SHELL_APPS):  # switching tabs / windows only navigates
+        confirm = (key not in _NAV_KEYS or bool(mods)) and (*mods, key) not in _SWITCH_COMBOS
     if not confirm and _in(app, MESSAGING_APPS):
         confirm = key in _SUBMIT_KEYS
     if not confirm and (_in(app, FILE_APPS) or _in(app, SETTINGS_APPS)):
@@ -488,6 +504,7 @@ def _classify_click(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
     app = ctx.app(str(args.get("app", "")))
     element = str(args.get("element", "") or "")
     point = args.get("_point")
+    info: Mapping[str, str] | None = None
     if element.strip():
         role, label = "", element
         summary = f"click '{_label(element)}' in {_app_label(app)}"
@@ -502,6 +519,8 @@ def _classify_click(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
         summary = f"click {what} in {_app_label(app)}"
     else:
         return Verdict(SAFE, "click (invalid arguments)", "invalid")
+    if info is not None and _in(app, SHELL_APPS) and _tab_item(info):
+        return Verdict(SAFE, summary)  # activating a tab only switches to it
     confirm = (
         risky_words(label)
         or (_in(app, SETTINGS_APPS) and not safe_topic(label))
@@ -509,6 +528,16 @@ def _classify_click(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
         or not app
     )
     return Verdict(CONFIRM if confirm else SAFE, summary)
+
+
+def _tab_item(info: Mapping[str, str]) -> bool:
+    """The hit-tested element is a tab of a tab bar (not a button inside it)."""
+    role = fold(info.get("AXRole", ""))
+    subrole = fold(info.get("AXSubrole", ""))
+    parent = fold(info.get("parent.AXRole", ""))
+    if subrole == "axtabbutton":
+        return True
+    return role == "axradiobutton" and parent in {"axtabgroup", "axtoolbar"}
 
 
 def _sensitive_app(app: str) -> bool:
@@ -555,6 +584,33 @@ def _classify_shortcut(args: Mapping[str, Any]) -> Verdict:
     return Verdict(CONFIRM, summary)
 
 
+# tell application "Finder" to delete POSIX file "/abs/path" — moves one file to the Trash.
+_FINDER_DELETE_RE = re.compile(
+    r'tell\s+application\s+"finder"\s+to\s+delete\s+(\(\s*)?posix\s+file\s+"([^"\\]+)"'
+    r"(?:\s+as\s+alias)?\s*(\))?",
+    re.IGNORECASE,
+)
+_TRASH_SUMMARY = "move {} to the Trash"
+
+
+def finder_delete_path(script: str) -> str | None:
+    """The absolute path of a one-line ``Finder delete POSIX file "<path>"`` script, or None."""
+    text = unicodedata.normalize("NFKC", script).strip()
+    match = _FINDER_DELETE_RE.fullmatch(text)
+    if match is None or bool(match.group(1)) != bool(match.group(3)):
+        return None
+    path = match.group(2)
+    if not path.startswith("/") or CONTROL_RE.search(path) or "/../" in f"{path}/":
+        return None
+    return os.path.normpath(path)
+
+
+def _short_path(path: str) -> str:
+    """``path`` cut from the left so the Trash summary fits :data:`SUMMARY_CAP`."""
+    room = SUMMARY_CAP - len(_TRASH_SUMMARY.format(""))
+    return path if len(path) <= room else "…" + path[-(room - 1) :]
+
+
 def _classify_applescript(args: Mapping[str, Any]) -> Verdict:
     script = str(args.get("script", ""))
     refusal = shell_script_refusal(script)
@@ -562,7 +618,60 @@ def _classify_applescript(args: Mapping[str, Any]) -> Verdict:
         return Verdict(REFUSE, "run an AppleScript", refusal)
     if safari_tabs_script(script):
         return Verdict(SAFE, "run a Safari tab / window AppleScript")
+    trashed = finder_delete_path(script)
+    if trashed is not None:
+        summary = _TRASH_SUMMARY.format(_short_path(trashed))
+        return Verdict(CONFIRM, summary, target=f"trash:{trashed}")
     return Verdict(CONFIRM, "run an AppleScript")
+
+
+# -- listing a folder (read-only) -------------------------------------------------------------
+def listable_roots() -> tuple[str, ...]:
+    """Where ``list_folder`` may look: the home folder, the temp folders, mounted volumes."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    return (home, "/tmp", "/private/tmp", "/Volumes")
+
+
+def validate_folder(path: str) -> str:
+    """The resolved folder ``list_folder`` may read, or ValueError (no hidden folders)."""
+    raw = str(path).strip()
+    if not raw or len(raw) > 1024 or CONTROL_RE.search(raw):
+        raise ValueError("folder path empty, too long or with control characters")
+    full = os.path.expanduser(raw)
+    if not full.startswith("/"):
+        raise ValueError("folder path must be absolute (or start with ~)")
+    resolved = os.path.realpath(full)
+    if any(part.startswith(".") for part in resolved.split("/") if part):
+        raise ValueError("hidden folders are not listed")
+    roots = listable_roots()
+    if not any(resolved == r or resolved.startswith(r.rstrip("/") + "/") for r in roots):
+        raise ValueError("only folders under the home folder, /tmp or /Volumes are listed")
+    return resolved
+
+
+def folder_listing(path: str, cap: int) -> dict[str, Any]:
+    """``{path, count, truncated, entries: [{name, kind}]}`` of the visible entries (read-only)."""
+    folder = validate_folder(path)
+    with os.scandir(folder) as found:
+        entries = sorted(
+            (e.name, "folder" if e.is_dir(follow_symlinks=False) else "file")
+            for e in found
+            if not e.name.startswith(".")
+        )
+    return {
+        "path": folder,
+        "count": len(entries),
+        "truncated": len(entries) > cap,
+        "entries": [{"name": name, "kind": kind} for name, kind in entries[:cap]],
+    }
+
+
+def _classify_list_folder(args: Mapping[str, Any]) -> Verdict:
+    try:
+        folder = validate_folder(str(args.get("path", "")))
+    except ValueError as exc:
+        return Verdict(REFUSE, "list a folder", str(exc))
+    return Verdict(SAFE, f"list {_label(folder)}")
 
 
 #: The per-tool classifiers of :func:`classify`, keyed by tool name.
@@ -577,6 +686,7 @@ _CLASSIFIERS: dict[str, Callable[[Mapping[str, Any], RiskContext], Verdict]] = {
     "open_url": lambda args, ctx: _classify_url(args),
     "open_app": lambda args, ctx: _classify_app(args),
     "run_shortcut": lambda args, ctx: _classify_shortcut(args),
+    "list_folder": lambda args, ctx: _classify_list_folder(args),
 }
 
 
@@ -593,7 +703,7 @@ def classify(tool: str, args: Mapping[str, Any], ctx: RiskContext | None = None)
         verdict = _CLASSIFIERS[tool](args, ctx)
     else:
         verdict = Verdict(CONFIRM, f"use the unknown tool {_label(tool)}")
-    return Verdict(verdict.risk, clean_summary(verdict.summary), verdict.reason)
+    return Verdict(verdict.risk, clean_summary(verdict.summary), verdict.reason, verdict.target)
 
 
 # -- confirmation binding --------------------------------------------------------------------

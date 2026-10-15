@@ -56,16 +56,16 @@ def _result(status: str, reason: str = "") -> OperatorResult:
 def test_late_failure_is_spoken_success_is_silent(ctl: BridgeController) -> None:
     notices, sent = _notices(ctl, "started: working on it; the result follows")
     assert ctl.tools["do_on_mac"]("close the tabs").startswith("started")
-    notices.on_result(_result("done"))
+    assert notices.on_result(_result("done")) is False
     assert not sent
-    notices.on_result(_result("failed", "timeout"))
+    assert notices.on_result(_result("failed", "timeout")) is True  # spoken in the call
     assert sent == ["[system notice] Mac task failed: timeout"]
 
 
 def test_result_already_returned_by_the_tool_is_not_repeated(ctl: BridgeController) -> None:
     notices, sent = _notices(ctl, "failed: could not find the window")
     ctl.tools["do_on_mac"]("do it")
-    notices.on_result(_result("failed", "no window"))
+    assert notices.on_result(_result("failed", "no window")) is True  # the tool said it
     assert not sent
 
 
@@ -84,7 +84,7 @@ def test_outside_a_call_nothing_is_sent(ctl: BridgeController) -> None:
     notices, sent = _notices(ctl, "started: working on it")
     ctl.tools["do_on_mac"]("x")
     ctl.end_call()
-    notices.on_result(_result("failed", "x"))
+    assert notices.on_result(_result("failed", "x")) is False  # briefed at the next voice-on
     assert not sent
 
 

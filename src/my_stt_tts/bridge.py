@@ -38,6 +38,10 @@ Authorisation (two risk tiers, fail closed):
   full voice check and says yes ("yes, do it" — a bare "yes" is too short to verify); a
   new transcript saying no / cancel / stop drops it.
 
+Problems (:mod:`~my_stt_tts.bridge_problems`, re-exported here): a failure the agent
+already heard in the running call is reported with ``spoken=True``
+(:meth:`BridgeController.report_problem`), so the next "voice on" never briefs it again.
+
 Every mutation ends with :func:`before_mutation` (cancellation, deadline, capability)
 right before it acts. Logging is one line per event and never carries content.
 """
@@ -60,6 +64,17 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from .bridge_problems import (
+    LOG_DETAIL_CAP,
+    BriefingProvider,
+    DeliveryTracker,
+    MemoryBriefingProvider,
+    MemoryDeliveryTracker,
+    MemoryProblemSink,
+    Problem,
+    ProblemSink,
+    report_problem,
+)
 from .bridge_text import derivable, normalise, redact
 from .turns import MIN_UTTERANCE_S, Ambiguous, Binding, SpeechDetector, TurnSource, Utterance
 
@@ -74,9 +89,7 @@ MAX_ACTIONS_PER_TRANSCRIPT = 3
 #: What Albert is asked to say to confirm (two words: long enough for the voice check).
 CONFIRM_PHRASE = "yes, do it"
 NOTICE_PREFIX = "[system notice]"
-BRIEFING_CAP = 600
 NOTICE_CAP = 300
-LOG_DETAIL_CAP = 80
 
 
 def bridge_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -613,80 +626,6 @@ def before_mutation(
     return caps.use(mutation.cap, mutation.action, mutation.args)
 
 
-# -- problems + briefings ------------------------------------------------------------------
-@dataclass(frozen=True)
-class Problem:
-    """A problem worth telling Albert about (no message text in ``reason``)."""
-
-    kind: str
-    subject: str
-    reason: str
-    severity: str = "error"
-
-
-class ProblemSink(Protocol):
-    """Where problems go; ``resolve`` closes an open one once later evidence settled it."""
-
-    def report(self, problem: Problem) -> None: ...
-
-    def resolve(self, kind: str, subject: str) -> bool: ...
-
-
-class BriefingProvider(Protocol):
-    def briefing(self) -> str | None: ...
-
-
-class MemoryProblemSink:
-    """Keeps problems in a list (Phase 6 replaces it with the attention inbox)."""
-
-    def __init__(self) -> None:
-        self.problems: list[Problem] = []
-        self._lock = threading.Lock()
-
-    def report(self, problem: Problem) -> None:
-        with self._lock:
-            self.problems.append(problem)
-        log.info("⚠️  problem: %s · %s", _detail(problem.kind), _detail(problem.subject))
-
-    def resolve(self, kind: str, subject: str) -> bool:
-        """Drop every kept problem ``kind`` · ``subject``; True when there was one."""
-        with self._lock:
-            kept = [p for p in self.problems if (p.kind, p.subject) != (kind, subject)]
-            dropped = len(self.problems) - len(kept)
-            self.problems[:] = kept
-        if dropped:
-            log.info("✅ problem resolved: %s · %s", _detail(kind), _detail(subject))
-        return dropped > 0
-
-
-class DeliveryTracker(Protocol):
-    """Who follows a ccc delivery after the voice sent it (Phase 6's attention monitor)."""
-
-    def track_delivery(
-        self, delivery_id: str, session_id: str, subject: str, outcome: str
-    ) -> None: ...
-
-
-class MemoryDeliveryTracker:
-    """In-memory :class:`DeliveryTracker` (tests, and until the attention store is wired)."""
-
-    def __init__(self) -> None:
-        self.tracked: list[tuple[str, str, str, str]] = []
-
-    def track_delivery(self, delivery_id: str, session_id: str, subject: str, outcome: str) -> None:
-        self.tracked.append((delivery_id, session_id, subject, outcome))
-
-
-class MemoryBriefingProvider:
-    """A fixed briefing (or none), redacted and capped at 600 characters."""
-
-    def __init__(self, text: str | None = None) -> None:
-        self.text = text
-
-    def briefing(self) -> str | None:
-        return redact(self.text, BRIEFING_CAP) if self.text else None
-
-
 # -- the controller --------------------------------------------------------------------------
 def _default_vad() -> SpeechDetector:
     from .vad import SileroVad  # pylint: disable=import-outside-toplevel  # torch is heavy
@@ -858,6 +797,20 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         if name in self.own_outcome_tools:
             return
         self.note_context("tool result")
+
+    # -- problems ---------------------------------------------------------------------------
+    @property
+    def in_call(self) -> bool:
+        """True while a call runs (between :meth:`begin_call` and :meth:`end_call`)."""
+        return self.turns is not None
+
+    def report_problem(
+        self, problem: Problem, *, spoken: bool = False, dedupe_key: str | None = None
+    ) -> None:
+        """Report ``problem``; ``spoken`` (it reached the agent) counts only inside a call."""
+        report_problem(
+            self.problems, problem, spoken=spoken and self.in_call, dedupe_key=dedupe_key
+        )
 
     # -- in-call notices ------------------------------------------------------------------
     def set_notice_sink(self, sink: Callable[[str], Any] | None) -> None:

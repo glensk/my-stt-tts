@@ -35,6 +35,8 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
     "next": ("next", "nachste", "weiter", "suivant"),
     "previous": ("previous", "back", "zuruck", "vorherig", "precedent"),
     "fullscreen": ("fullscreen", "full screen", "vollbild", "plein ecran"),
+    # leaving it: "go out of / exit / leave full screen" names full screen too
+    "exit fullscreen": ("fullscreen", "full screen", "vollbild", "plein ecran"),
     "seek": (
         "seek",
         "skip",
