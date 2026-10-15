@@ -9,10 +9,11 @@ Each component gates itself on its own flag and a failing one never stops the ot
 * :func:`my_stt_tts.claude_sessions.register` (``MAC_VOICE_CLAUDE_BRIDGE``);
 * :func:`my_stt_tts.mac_control.register` (``MAC_VOICE_MAC_CONTROL``);
 * :func:`my_stt_tts.mac_operator.register` (``MAC_VOICE_OPERATOR``) with
-  :class:`OperatorNotices` — confirmation requests and LATE failures are spoken in the
-  call; a result the ``do_on_mac`` tool already returned is never spoken twice, and
-  successes stay silent (D6). A failure the call heard is reported as spoken, so the
-  next "voice on" does not brief it again.
+  :class:`OperatorNotices` — confirmation requests (and their one "still waiting"
+  repeat) and every LATE final result are spoken in the call: a success as "done:
+  <summary>", a failure as "Mac task failed: <reason>". A result the ``do_on_mac`` tool
+  already returned is never spoken twice. A failure the call heard is reported as
+  spoken, so the next "voice on" does not brief it again.
 """
 
 from __future__ import annotations
@@ -31,10 +32,12 @@ log = logging.getLogger("my_stt_tts.bridge")
 OPERATOR_TOOL = "do_on_mac"
 #: Tool answers that leave the outcome open: the final result arrives later (on_result).
 _OPEN_ANSWERS = ("started", "needs confirmation")
+#: What a success says when the operator gave no summary.
+DONE_FALLBACK = "the Mac task finished"
 
 
 class OperatorNotices:
-    """Speak the Mac operator's confirmation requests and late failures in the call."""
+    """Speak the Mac operator's confirmation requests and late results in the call."""
 
     def __init__(self, controller: BridgeController) -> None:
         self.controller = controller
@@ -72,24 +75,32 @@ class OperatorNotices:
         """``notify`` of the operator: a blocked step needs Albert's "yes, do it"."""
         if self.controller.tool_in_flight(OPERATOR_TOOL):
             return  # the do_on_mac answer itself carries the request
+        from .mac_operator import STILL_WAITING  # pylint: disable=import-outside-toplevel
+
+        if message.startswith(STILL_WAITING):  # the one repeat after a silence
+            self.controller.notify_in_call(f"Mac task {message}")
+            return
         self.controller.notify_in_call(f"Mac task needs confirmation: {message}")
 
     def on_result(self, result: OperatorResult) -> bool:
-        """``on_result`` of the operator: failures spoken in the call, successes silent.
+        """``on_result`` of the operator: every final result is spoken in the running call.
 
-        True when the agent heard (or will hear) the result in the running call — the
-        ``do_on_mac`` answer carried it, or the notice went out — so the operator reports
-        the failure as already spoken and no later "voice on" briefs it again.
+        A success becomes "done: <summary>" (the operator's one-line summary; capped and
+        redacted by :meth:`~my_stt_tts.bridge.BridgeController.notify_in_call`), a failure
+        "Mac task <status>: <reason>". True when the agent heard (or will hear) the result
+        in the running call — the ``do_on_mac`` answer carried it, or the notice went out —
+        so the operator reports a failure as already spoken and no later "voice on" briefs
+        it again.
         """
         from .mac_operator import DONE  # pylint: disable=import-outside-toplevel
 
         with self._lock:
             answered = result.call_id in self._answered
             self._answered.discard(result.call_id)
-        if result.status == DONE:
-            return False
         if answered or self.controller.tool_in_flight(OPERATOR_TOOL):
             return self.controller.in_call  # the do_on_mac answer returns this result
+        if result.status == DONE:
+            return self.controller.notify_in_call(f"done: {result.summary or DONE_FALLBACK}")
         what = result.reason or result.summary or result.status.replace("_", " ")
         return self.controller.notify_in_call(f"Mac task {result.status.replace('_', ' ')}: {what}")
 

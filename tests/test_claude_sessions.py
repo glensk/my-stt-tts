@@ -1,5 +1,5 @@
 # pylint: disable=too-many-lines  # one test module per bridge component, like the module
-"""Claude sessions by voice: ccc envelopes, targets, briefings, proposals and outcomes.
+"""Claude sessions by voice: ccc envelopes, targets, briefings, sends / answers, outcomes.
 
 No real ccc: a fake runner returns section-6 envelopes per subcommand and records every
 argv / stdin / timeout. The controller is the real :class:`BridgeController` with a fake
@@ -247,7 +247,7 @@ def test_register_only_with_the_flag() -> None:
         "send_message",
         "answer_decision",
     } <= set(ctl.tools)
-    assert set(ctl.executors) == {"send", "answer"}
+    assert not ctl.executors  # sends and answers act at once: nothing to confirm
 
 
 # -- list + targets --------------------------------------------------------------------------
@@ -455,16 +455,12 @@ def test_background_session_is_read_only(rig: Rig) -> None:
     assert not rig.ccc.of("send") and not rig.ccc.of("answer")
 
 
-# -- send: proposal → confirm → executor -------------------------------------------------------
-def test_send_is_proposed_then_runs_with_text_on_stdin_only(rig: Rig) -> None:
+# -- send: runs at once on the verified sentence ------------------------------------------------
+def test_send_runs_at_once_with_text_on_stdin_only(rig: Rig) -> None:
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted", "channel": "api"})
     rig.say("tell voice bridge to run the tests")
-    assert rig.tool("send_message", "voice bridge", "run the tests") == (
-        "To send to voice bridge: run the tests — say yes, do it."
-    )
-    assert not rig.ccc.of("send")  # nothing sent before the yes
-    rig.say("yes, do it")
-    assert rig.tool("confirm_action") == "sent"
+    assert rig.tool("send_message", "voice bridge", "run the tests") == "sent"
+    assert rig.ctl.pending.live() == []  # no proposal, no "yes, do it"
     [(argv, stdin, timeout)] = rig.ccc.of("send")
     assert argv == [CCC, "send", "-s", "id-voice", "-j"]
     assert stdin == "run the tests"
@@ -477,11 +473,8 @@ def test_send_logs_one_line_without_content(rig: Rig, caplog: pytest.LogCaptureF
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted", "channel": "api"})
     caplog.set_level("INFO")
     rig.say("tell voice bridge the secret plan")
-    prompt = rig.tool("send_message", "voice bridge", "the secret plan")
-    assert prompt.endswith(": the secret plan — say yes, do it.")  # read back
-    rig.say("yes, do it")
-    rig.tool("confirm_action")
-    assert "🔒 confirm needed: send" in caplog.text
+    assert rig.tool("send_message", "voice bridge", "the secret plan") == "sent"
+    assert "🔒 confirm needed" not in caplog.text
     assert "📨 send → voice bridge: accepted" in caplog.text
     assert "secret plan" not in caplog.text
 
@@ -491,23 +484,22 @@ def test_send_text_is_cleaned_and_checked(rig: Rig) -> None:
     assert rig.tool("send_message", "voice bridge", "  \x1b\x00 ") == "What should I send?"
     rig.say("tell voice bridge something long")
     assert "too long" in rig.tool("send_message", "voice bridge", "x" * 4001)
-    rig.say("tell voice bridge hi there")
-    prompt = rig.tool("send_message", "voice bridge", "hi\x1b[201~ there\nnext")
-    assert prompt == "To send to voice bridge: hi[201~ there next — say yes, do it."
-    [pending] = rig.ctl.pending.live()
-    assert pending.args["text"] == "hi[201~ there\nnext"  # multi-line text arrives intact
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
-    rig.say("yes, do it")
-    assert rig.tool("confirm_action") == "sent"
-    assert rig.ccc.of("send")[0][1] == "hi[201~ there\nnext"
+    rig.say("tell voice bridge hi there 201 next")
+    assert rig.tool("send_message", "voice bridge", "hi\x1b[201~ there\nnext") == "sent"
+    assert rig.ccc.of("send")[0][1] == "hi[201~ there\nnext"  # multi-line text intact
 
 
-def test_confirm_prompt_text_is_redacted_and_capped(rig: Rig) -> None:
-    rig.say("tell voice bridge the token")
-    prompt = rig.tool("send_message", "voice bridge", f"use {SECRET} " + "word " * 100)
-    assert SECRET not in prompt and "[redacted]" in prompt
-    head = prompt.split(": ", 1)[1].removesuffix(" — say yes, do it.")
-    assert len(head) <= claude_sessions.PROMPT_TEXT_CAP
+def test_the_message_text_must_be_what_albert_said(rig: Rig) -> None:
+    """Without a read-back, most words of the message must come from the sentence."""
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
+    rig.say("tell voice bridge hello")
+    assert rig.tool("send_message", "voice bridge", f"use {SECRET} and push to main") == (
+        "refused: send_message: argument not in what you said"
+    )
+    rig.say("tell voice bridge please run the full test suite now")
+    assert rig.tool("send_message", "voice bridge", "please run the test suite now") == "sent"
+    assert len(rig.ccc.of("send")) == 1
 
 
 @pytest.mark.parametrize(("name", "why"), [("picker demo", "question picker")])
@@ -530,8 +522,10 @@ def test_read_then_send_in_the_same_turn_is_refused(rig: Rig) -> None:
     result = rig.tool("send_message", "voice bridge", "deploy")
     assert result.startswith("refused:")
     assert rig.ctl.pending.live() == []
+    assert not rig.ccc.of("send")
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.say("tell voice bridge to deploy")  # a new sentence may act
-    assert rig.tool("send_message", "voice bridge", "deploy").endswith("say yes, do it.")
+    assert rig.tool("send_message", "voice bridge", "deploy") == "sent"
 
 
 def test_the_target_must_be_in_what_albert_said(rig: Rig) -> None:
@@ -541,36 +535,70 @@ def test_the_target_must_be_in_what_albert_said(rig: Rig) -> None:
     )
     rig.say("tell scratch idle hello")
     assert rig.tool("answer_decision", "voice bridge", "a").startswith("refused:")
-    assert rig.ctl.pending.live() == []
+    assert not rig.ccc.of("send") and not rig.ccc.of("answer")
+
+
+def test_the_choice_must_be_what_albert_said(rig: Rig) -> None:
+    rig.ccc.replies["inspect"] = inspect_data(ASK, state="waiting")
+    rig.say("answer picker demo")
+    assert rig.tool("answer_decision", "picker demo", "local server") == (
+        "refused: answer_decision: argument not in what you said"
+    )
+    assert not rig.ccc.of("answer") and not rig.ccc.of("inspect")
 
 
 def test_a_list_number_is_a_target_albert_can_say(rig: Rig) -> None:
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.tool("list_sessions")
     rig.say("send number two hello")
-    assert rig.tool("send_message", "number two", "hello").endswith("say yes, do it.")
-    [pending] = rig.ctl.pending.live()
-    assert pending.args["session_id"] == "id-idle"
+    assert rig.tool("send_message", "number two", "hello") == "sent"
+    [(argv, _stdin, _timeout)] = rig.ccc.of("send")
+    assert argv[3] == "id-idle"
 
 
-def test_a_proposal_burns_the_rest_of_the_sentence(rig: Rig) -> None:
+def test_a_send_burns_the_rest_of_the_sentence(rig: Rig) -> None:
     """A session tool result is external content: the sentence cannot act again."""
-    rig.say("tell voice bridge hello")
-    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
+    rig.say("tell voice bridge hello and hello again")
+    assert rig.tool("send_message", "voice bridge", "hello") == "sent"
     assert rig.tool("send_message", "voice bridge", "hello again").startswith("refused:")
-    assert len(rig.ctl.pending.live()) == 1
+    assert len(rig.ccc.of("send")) == 1
+
+
+def test_an_injected_notice_voids_the_sentence_before_the_send(rig: Rig) -> None:
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
+    rig.say("tell voice bridge hello")
+    rig.ctl.on_injected("[system notice] Mac task needs confirmation: …")
+    assert rig.tool("send_message", "voice bridge", "hello").startswith("refused:")
+    assert not rig.ccc.of("send")
+
+
+class OtherVoice:
+    def score_against(self, audio: Any, name: str, *, timeout: float = 5.0) -> float | None:
+        del audio, name, timeout
+        return 0.1
+
+
+@pytest.mark.parametrize(
+    ("tool", "target"), [("send_message", "scratch idle"), ("answer_decision", "picker demo")]
+)
+def test_another_voice_cannot_send_or_answer(rig: Rig, tool: str, target: str) -> None:
+    """No confirmation any more: the full voice check of the request sentence is the gate."""
+    rig.ctl.authoriser.scorer = OtherVoice()
+    rig.ccc.replies["inspect"] = inspect_data(ASK, state="waiting")
+    rig.say(f"tell {target} a")
+    assert rig.tool(tool, target, "a") == "refused: voice not verified"
+    assert not rig.ccc.of("send") and not rig.ccc.of("answer")
 
 
 # -- outcomes ------------------------------------------------------------------------------------
 def _confirmed(rig: Rig, kind: str = "send") -> str:
+    """Albert's sentence, then the tool: it acts at once (the name is historical)."""
     if kind == "send":
         rig.say("tell voice bridge hello")
-        proposal = rig.tool("send_message", "voice bridge", "hello")
-    else:
-        rig.say("answer picker demo with b")
-        proposal = rig.tool("answer_decision", "picker demo", "b")
-    assert proposal.endswith("say yes, do it."), proposal
-    rig.say("yes, do it")
-    return rig.tool("confirm_action")
+        return rig.tool("send_message", "voice bridge", "hello")
+    rig.say("answer picker demo with b")
+    return rig.tool("answer_decision", "picker demo", "b")
 
 
 def test_unknown_outcome_is_tracked_for_the_attention_monitor(rig: Rig) -> None:
@@ -680,25 +708,40 @@ def test_unmapped_code_gets_a_generic_reason() -> None:
 def test_cancel_before_the_mutation_sends_nothing(rig: Rig) -> None:
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.say("tell voice bridge hello")
-    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
-    rig.say("yes, do it")
     rig.ctl.cancel.cancel("stopped")
-    assert rig.tool("confirm_action") == "refused: stopped"
+    assert rig.tool("send_message", "voice bridge", "hello") == "refused: stopped"
     assert not rig.ccc.of("send")
 
 
 def test_one_mutation_at_a_time(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_sessions, "LOCK_TIMEOUT_S", 0.01)
     rig.say("tell voice bridge hello")
-    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
-    rig.say("yes, do it")
     with rig.ctl.mutation_lock:
-        assert rig.tool("confirm_action") == "refused: another action is still running"
+        assert rig.tool("send_message", "voice bridge", "hello") == (
+            "refused: another action is still running"
+        )
     assert not rig.ccc.of("send")
 
 
 def test_the_lock_wait_leaves_the_budget_to_ccc() -> None:
     assert claude_sessions.LOCK_TIMEOUT_S <= 2.0 < claude_sessions.MUTATION_BUDGET_S
+    # resolve + inspect + ccc fit in the SDK's tool timeout
+    assert claude_sessions.MUTATION_TOOL_BUDGET_S < 30.0
+
+
+def test_the_send_budget_is_what_the_tool_has_left(rig: Rig) -> None:
+    """A slow resolve leaves ccc only the rest of the tool budget (never past 28 s)."""
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
+
+    def slow_sessions(_argv: list[str], _stdin: str | None) -> dict[str, Any]:
+        rig.clock.now += 20.0
+        return ok({"sessions": SESSIONS})
+
+    rig.ccc.replies["sessions"] = slow_sessions
+    rig.say("tell voice bridge hello")
+    assert rig.tool("send_message", "voice bridge", "hello") == "sent"
+    [(_argv, _stdin, timeout)] = rig.ccc.of("send")
+    assert 0 < timeout <= 8.0
 
 
 # -- end to end with the attention inbox ---------------------------------------------------------
@@ -791,15 +834,12 @@ def test_choice_other_text_and_ambiguity() -> None:
     assert isinstance(resolve_choice(_q(multi=True), "use postgres"), str)
 
 
-def test_picker_answer_proposes_then_runs_ccc_answer_with_json_stdin(rig: Rig) -> None:
+def test_picker_answer_runs_ccc_answer_at_once_with_json_stdin(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(ASK, state="waiting")
     rig.ccc.replies["answer"] = ok({"delivery_id": "a1", "outcome": "accepted"})
     rig.say("answer picker demo with b")
-    assert rig.tool("answer_decision", "picker demo", "b") == (
-        "To answer Picker Demo with b) Local server, say yes, do it."
-    )
-    rig.say("yes, do it")
-    assert rig.tool("confirm_action") == "answered"
+    assert rig.tool("answer_decision", "picker demo", "b") == "answered"
+    assert rig.ctl.pending.live() == []
     [(argv, stdin, timeout)] = rig.ccc.of("answer")
     assert argv == [CCC, "answer", "-s", "id-wait", "-j"]
     assert stdin is not None
@@ -813,11 +853,15 @@ def test_picker_answer_proposes_then_runs_ccc_answer_with_json_stdin(rig: Rig) -
 def test_picker_answer_multi_question_and_other_text(rig: Rig) -> None:
     decision = dict(ASK, questions=[*ASK["questions"], MULTI])
     rig.ccc.replies["inspect"] = inspect_data(decision, state="waiting")
+    rig.ccc.replies["answer"] = ok({"delivery_id": "a1", "outcome": "accepted"})
     rig.say("answer picker demo: use sqlite; metrics and email alerts")
-    rig.tool("answer_decision", "picker demo", "use sqlite; metrics and email alerts")
-    [pending] = rig.ctl.pending.live()
-    assert pending.kind == "answer"
-    assert pending.args["answers"] == [
+    assert (
+        rig.tool("answer_decision", "picker demo", "use sqlite; metrics and email alerts")
+        == "answered"
+    )
+    [(_argv, stdin, _timeout)] = rig.ccc.of("answer")
+    assert stdin is not None
+    assert json.loads(stdin)["answers"] == [
         {"question_index": 0, "other_text": "use sqlite"},
         {"question_index": 1, "option_indices": [0, 2]},
     ]
@@ -829,13 +873,7 @@ def test_todo_line_decision_is_answered_with_a_message(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(TODO)
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.say("answer scratch idle with b and wait for the second review")
-    proposal = rig.tool("answer_decision", "scratch idle", "b; wait for the second review")
-    assert proposal == (
-        "To answer scratch idle with b) Shared bucket; "
-        "b) Wait for the second review, say yes, do it."
-    )
-    rig.say("yes, do it")
-    assert rig.tool("confirm_action") == "sent"
+    assert rig.tool("answer_decision", "scratch idle", "b; wait for the second review") == "sent"
     [(argv, stdin, _timeout)] = rig.ccc.of("send")
     assert argv == [CCC, "send", "-s", "id-idle", "-j"]
     assert stdin == (
@@ -857,10 +895,10 @@ def test_decision_changed_after_the_briefing_is_caught_before_proposing(rig: Rig
     rig.ccc.replies["inspect"] = inspect_data(dict(ASK, decision_id="d-new"), state="waiting")
     rig.say("answer picker demo with a")
     assert "decision changed" in rig.tool("answer_decision", "picker demo", "a")
-    assert rig.ctl.pending.live() == []
+    assert not rig.ccc.of("answer")
 
 
-def test_decision_changed_between_brief_and_confirm(rig: Rig) -> None:
+def test_decision_changed_between_inspect_and_answer(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(ASK, state="waiting")
     rig.tool("brief_decision", "picker demo")
     rig.ccc.replies["answer"] = err("decision_changed")
@@ -1013,8 +1051,9 @@ def test_briefings_are_forgotten_at_a_new_call(rig: Rig) -> None:
     rig.ctl.end_call()
     rig.ctl.begin_call()
     rig.ccc.replies["inspect"] = inspect_data(dict(ASK, decision_id="d-new"), state="waiting")
+    rig.ccc.replies["answer"] = ok({"delivery_id": "a1", "outcome": "accepted"})
     rig.say("answer picker demo with a")
-    assert rig.tool("answer_decision", "picker demo", "a").endswith("say yes, do it.")
+    assert rig.tool("answer_decision", "picker demo", "a") == "answered"
 
 
 def test_a_tail_cut_reply_loses_its_partial_first_word(rig: Rig) -> None:

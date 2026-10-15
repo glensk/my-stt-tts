@@ -281,6 +281,11 @@ def _device(value: str | None) -> int | str | None:
 START_TIMEOUT_S = 10.0
 #: A client tool never holds the SDK's thread pool longer than this (the tools self-limit).
 TOOL_GUARD_S = 30.0
+#: A ``[system notice]`` waits at most this long for the agent to stop talking.
+NOTICE_WAIT_S = 3.0
+#: After an agent response arrived, its audio may not be playing yet: wait this long too.
+AGENT_AUDIO_LEAD_S = 0.8
+NOTICE_POLL_S = 0.05
 #: First word of a tool answer that may be logged (anything else is content → "answered").
 _TOOL_OUTCOMES = frozenset(
     {"ok", "refused", "failed", "started", "confirmed", "needs", "nothing", "done", "cancelled"}
@@ -345,7 +350,10 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
 
     With a bridge (:class:`~my_stt_tts.bridge.BridgeController`) every controller tool is a
     client tool, the call carries ``[system notice]`` messages
-    (:meth:`~my_stt_tts.bridge.BridgeController.notify_in_call`) and an open-problem
+    (:meth:`~my_stt_tts.bridge.BridgeController.notify_in_call`) — each one held back
+    while the agent is still talking (its audio queued or playing, or a response that
+    arrived under :data:`AGENT_AUDIO_LEAD_S` ago), at most :data:`NOTICE_WAIT_S`, so the
+    agent does not talk over it or drop it — and an open-problem
     briefing becomes the agent's first message. A start that dies silently (the SDK's
     receive thread ending before the conversation opened, e.g. ``3000 [quota_exceeded]``)
     sets :attr:`start_failure`, ends the session, posts a content-free banner and files an
@@ -364,6 +372,7 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         bridge: Any = None,
         start_timeout: float = START_TIMEOUT_S,
         tool_guard: float = TOOL_GUARD_S,
+        notice_wait: float = NOTICE_WAIT_S,
     ) -> None:
         from elevenlabs.client import ElevenLabs
         from elevenlabs.conversational_ai.conversation import (
@@ -381,6 +390,8 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         self.bridge = bridge  # bridge.BridgeController when a bridge flag is on, else None
         self.start_timeout = start_timeout
         self.tool_guard = tool_guard
+        self.notice_wait = notice_wait
+        self._agent_said_at = 0.0  # monotonic time of the last agent response
         self._transcript_seq = itertools.count(1)
         self._activity = threading.Event()  # an agent response or user transcript arrived
         self._ending = threading.Event()  # end() was asked for: not a startup failure
@@ -457,12 +468,34 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
                 log.warning("⚠️  could not mark the briefing", exc_info=True)
 
     def _send_notice(self, text: str) -> None:
+        """Send a ``[system notice]`` once the agent is quiet (at most ``notice_wait`` s)."""
+        waited = self._wait_until_quiet()
+        if waited >= NOTICE_POLL_S:
+            log.debug("notice held %.1f s while the agent talked", waited)
         self.conversation.send_user_message(text)
+
+    def _agent_talking(self) -> bool:
+        if time.monotonic() - self._agent_said_at < AGENT_AUDIO_LEAD_S:
+            return True
+        try:
+            return bool(self.audio.speaking())
+        except Exception:  # pylint: disable=broad-exception-caught  # never block a notice
+            return False
+
+    def _wait_until_quiet(self) -> float:
+        """Block while the agent talks, at most :attr:`notice_wait`; returns seconds waited."""
+        started = time.monotonic()
+        deadline = started + self.notice_wait
+        while self._agent_talking() and time.monotonic() < deadline:
+            time.sleep(NOTICE_POLL_S)
+        return time.monotonic() - started
 
     # -- SDK callbacks --------------------------------------------------------------------
     def _said(self, who: str, text: str) -> None:
         self.last_activity = time.monotonic()
         self._activity.set()
+        if who == "🤖":
+            self._agent_said_at = self.last_activity
         if who == "🤖" and self.bridge is not None:
             self._mark_briefed()  # the first agent turn is the briefing: it was spoken
         if who == "🧑" and self.bridge is not None:

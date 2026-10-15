@@ -14,8 +14,8 @@ touches the Mac:
   settings, installs, typing into shells, Return outside a search field / address bar,
   URLs with a long query, every ``applescript``, anything unrecognised. The broker
   writes ``<call-dir>/blocked-<sha>.json`` (tool, normalised-args sha256, a one-line
-  summary, a nonce; 0600) and waits up to 60 s for ``allow-<sha>.json`` carrying the same
-  nonce, which the daemon writes after a spoken ``confirm_action``. Exactly that call
+  summary, a nonce; 0600) and waits up to 120 s for ``allow-<sha>.json`` carrying the
+  same nonce, which the daemon writes after a spoken ``confirm_action``. Exactly that call
   then runs once (the allow file is consumed); a timeout returns ``denied: not
   confirmed``.
 * REFUSE never runs: ``applescript`` containing ``do shell script`` (or the ways around
@@ -90,7 +90,8 @@ from my_stt_tts.mac_risk import (  # noqa: E402  # pylint: disable=wrong-import-
 )
 
 OPERATOR_ROOT = Path.home() / ".local" / "state" / "mac-voice" / "operator"
-CONFIRM_TIMEOUT_S = 60.0
+#: How long a CONFIRM call waits for "yes, do it" (= ``bridge.CONFIRM_TTL_S``).
+CONFIRM_TIMEOUT_S = 120.0
 CONFIRM_POLL_S = 0.2
 DEFAULT_MAX_PX = 800
 RESULT_CAP = 6000

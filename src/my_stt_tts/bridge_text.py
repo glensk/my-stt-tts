@@ -9,7 +9,9 @@
   minute", "zwei Minuten", "une demi-minute") as seconds.
 * :func:`normalise_host` / :func:`host_said` — "YouTube" → ``youtube.com``; a host is
   derivable from a transcript when its main label occurs in it.
-* :func:`derivable` — the fast-path rule: an argument must come from what was said.
+* :func:`derivable` — the fast-path rule: an argument must come from what was said; a
+  message ``text`` or a decision ``choice`` counts when at least two thirds of its words
+  were said (:func:`words_said`).
 * :func:`redact` — token / key / JWT / private-key patterns replaced, text capped.
 """
 
@@ -292,6 +294,25 @@ def _looks_like_host(value: str) -> bool:
     )
 
 
+#: Arguments derivable word by word (a dictated message, a spoken decision answer).
+WORDS_KEYS = frozenset({"text", "choice"})
+#: Share of a ``text`` / ``choice`` argument's words that must be in the transcript.
+WORDS_SHARE = 2 / 3
+
+
+def words_said(value: str, text: str, share: float = WORDS_SHARE) -> bool:
+    """True when at least ``share`` of the words of ``value`` occur in ``text``.
+
+    A word counts as a keyword (:func:`keyword_said`: one of its spoken forms, or a token
+    starting with it) or, for digits, as a number said in digits or words.
+    """
+    words = normalise(value).split()
+    if not words:
+        return False
+    said = sum(1 for word in words if derivable(word, text))
+    return said >= share * len(words)
+
+
 def _number_said(number: int, text: str, key: str) -> bool:
     """``number`` is said — for ``seconds`` also as minutes ("the first minute" = 60)."""
     if number in numbers_in(text):
@@ -318,6 +339,8 @@ def _string_derivable(value: str, text: str, key: str) -> bool:
     digits = value.strip().lstrip("+-")
     if digits.isdigit():
         return _number_said(int(digits), text, key)
+    if key in WORDS_KEYS:
+        return words_said(value, text)
     if key == "level" and value in {"max", "min"}:  # "to max", "hundred percent", "zero"
         return keyword_said(value, text) or (100 if value == "max" else 0) in numbers_in(text)
     if key in {"host", "url", "target"} or _looks_like_host(value):

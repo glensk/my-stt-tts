@@ -12,8 +12,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from my_stt_tts import bridge, bridge_text
+from my_stt_tts import bridge, bridge_text, mac_broker
 from my_stt_tts.bridge import (
+    CONFIRM_TTL_S,
+    EXPIRED_GRACE_S,
     Authoriser,
     BridgeController,
     CancellationToken,
@@ -34,7 +36,7 @@ from my_stt_tts.bridge import (
     log_refused,
     log_tool,
 )
-from my_stt_tts.bridge_text import derivable, normalise_host, numbers_in, redact
+from my_stt_tts.bridge_text import derivable, normalise_host, numbers_in, redact, words_said
 from my_stt_tts.turns import Ambiguous
 
 FRAME = 1600  # 0.1 s
@@ -561,7 +563,9 @@ def test_confirm_action_runs_the_executor_once_and_ignores_a_code() -> None:
     call.say("yes, do it")
     assert call.ctl.tools["confirm_action"]("35") == "sent"  # an old agent's code: ignored
     call.say("yes, do it again")
-    assert call.ctl.confirm_action() == "refused: nothing to confirm"
+    assert call.ctl.confirm_action() == (
+        "refused: nothing is waiting for a yes — do not say it is running"
+    )
     assert ran == ["send"]
 
 
@@ -569,7 +573,18 @@ def test_confirm_action_without_executor_is_refused() -> None:
     call = Call()
     propose(call)
     call.say("yes, do it")
-    assert call.ctl.confirm_action() == "refused: nothing to confirm"
+    assert call.ctl.confirm_action() == (
+        "refused: nothing is waiting for a yes — do not say it is running"
+    )
+
+
+def test_confirm_action_on_its_own_tells_the_agent_nothing_runs() -> None:
+    """Phase 8 run 5: the agent called confirm_action unasked and then said "Running it."."""
+    call = Call()
+    call.say("delete the file with name delete me in bridge scratch")
+    reply = call.ctl.confirm_action()
+    assert reply == "refused: nothing is waiting for a yes — do not say it is running"
+    assert "running it" not in reply.split("—")[0]
 
 
 def test_confirmation_is_single_use() -> None:
@@ -581,12 +596,50 @@ def test_confirmation_is_single_use() -> None:
     refused(call.ctl.confirm(), "nothing_pending")
 
 
-def test_proposal_expires_after_sixty_seconds() -> None:
+def test_proposal_waits_as_long_as_the_broker() -> None:
+    assert CONFIRM_TTL_S == mac_broker.CONFIRM_TIMEOUT_S == 120.0
+
+
+def test_proposal_is_still_valid_after_sixty_seconds() -> None:
+    call = Call()
+    pending = propose(call)
+    call.clock.now += 100
+    call.say("yes, do it")
+    assert call.ctl.confirm() == pending
+
+
+def test_proposal_expires_after_two_minutes_and_a_late_yes_hears_why() -> None:
     call = Call()
     propose(call)
-    call.clock.now += 61
+    call.clock.now += 121
     call.say("yes, do it")
     refused(call.ctl.confirm(), "expired")
+    call.say("yes, do it")  # said again: still the expiry, not "nothing to confirm"
+    assert call.ctl.confirm_action() == (
+        "refused: the request expired — ask again with the full sentence"
+    )
+
+
+def test_a_yes_long_after_the_expiry_has_nothing_to_confirm() -> None:
+    call = Call()
+    propose(call)
+    call.clock.now += CONFIRM_TTL_S + EXPIRED_GRACE_S + 1
+    call.say("yes, do it")
+    refused(call.ctl.confirm(), "nothing_pending")
+
+
+def test_a_lapse_is_forgotten_by_a_new_proposal_or_a_no() -> None:
+    call = Call()
+    propose(call)
+    call.clock.now += 121
+    assert not call.ctl.pending.live()  # the lapse is noticed here …
+    call.say("no, leave it", level=OTHER)
+    call.say("yes, do it")
+    refused(call.ctl.confirm(), "nothing_pending")  # … and dropped by the "no"
+    pending = propose(call)
+    call.clock.now += 1
+    call.say("yes, do it")
+    assert call.ctl.confirm() == pending
 
 
 def test_without_a_yes_nothing_is_confirmed_and_nothing_burns() -> None:
@@ -649,7 +702,7 @@ def test_a_bare_yes_is_too_short_and_asks_for_yes_do_it() -> None:
     refused(result, "too_short")
     assert isinstance(result, Refusal) and "yes, do it" in result.reason
     call.say("yes, do it")
-    assert call.ctl.confirm_action().startswith("refused: nothing to confirm")  # no executor
+    assert call.ctl.confirm_action().startswith("refused: nothing is waiting")  # no executor
 
 
 def test_an_injected_notice_cannot_confirm() -> None:
@@ -920,3 +973,28 @@ def test_delivery_tracker_defaults_to_memory() -> None:
     call.ctl.deliveries.track_delivery("d1", "s1", "scratch", "accepted")
     assert isinstance(call.ctl.deliveries, MemoryDeliveryTracker)
     assert call.ctl.deliveries.tracked == [("d1", "s1", "scratch", "accepted")]
+
+
+# -- message text and decision choices: most words must have been said --------------------------
+@pytest.mark.parametrize(
+    ("value", "said", "ok"),
+    [
+        ("print hello", "Tell Scratch-idle, print hello.", True),
+        ("please run the test suite now", "please run the full test suite now", True),
+        ("run the tests and push to main", "run the tests", False),
+        ("b; wait for the second review", "answer b and wait for the second review", True),
+        ("2", "answer number two", True),
+        ("green", "answer green", True),
+        ("green", "answer red", False),
+        ("", "anything", False),
+    ],
+)
+def test_words_said(value: str, said: str, ok: bool) -> None:
+    assert words_said(value, said) is ok
+
+
+def test_text_and_choice_use_the_word_share() -> None:
+    assert derivable("print hello", "tell scratch idle print hello", "text")
+    assert not derivable("delete everything", "tell scratch idle print hello", "text")
+    assert derivable("local server", "answer picker demo with local server", "choice")
+    assert not derivable("local server", "answer picker demo", "choice")

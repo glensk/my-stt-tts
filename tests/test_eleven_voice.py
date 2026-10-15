@@ -496,3 +496,64 @@ def test_notify_in_call_sends_a_system_notice_and_voids_rights(sdk) -> None:
     session.wait()
     assert ctl.notify_in_call("after the call") is False
     assert len(sdk.last.sent) == 1
+
+
+# -- notices wait until the agent stopped talking (Phase 8 run 5: a notice went unheard) ------
+def _open_session(sdk: Any, ctl: Any, **kwargs: Any) -> eleven_voice.VoiceSession:
+    session = _session(ctl, **kwargs)
+    session.start()
+    _wait(lambda: sdk.last._conversation_id is not None)
+    return session
+
+
+def test_a_notice_waits_while_the_agent_speaks(sdk, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctl = _controller()
+    session = _open_session(sdk, ctl)
+    talking = threading.Event()
+    talking.set()
+    monkeypatch.setattr(session.audio, "speaking", talking.is_set)
+    threading.Timer(0.3, talking.clear).start()
+    started = time.monotonic()
+    assert ctl.notify_in_call("done: Do Not Disturb is on") is True
+    assert time.monotonic() - started >= 0.25  # held until the agent's audio ended
+    assert sdk.last.sent == ["[system notice] done: Do Not Disturb is on"]
+    session.end()
+    session.wait()
+
+
+def test_a_notice_waits_at_most_notice_wait(sdk, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctl = _controller()
+    session = _open_session(sdk, ctl, notice_wait=0.2)
+    monkeypatch.setattr(session.audio, "speaking", lambda: True)
+    started = time.monotonic()
+    assert ctl.notify_in_call("still waiting: move x to the Trash") is True
+    assert 0.15 <= time.monotonic() - started < 1.5
+    assert len(sdk.last.sent) == 1
+    session.end()
+    session.wait()
+
+
+def test_a_fresh_agent_response_holds_the_notice_until_its_audio_starts(
+    sdk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent's text arrives before its audio: "Running it." then a notice at once."""
+    monkeypatch.setattr(eleven_voice, "AGENT_AUDIO_LEAD_S", 0.3)
+    ctl = _controller()
+    session = _open_session(sdk, ctl)
+    sdk.last.on_agent("Running it.")
+    started = time.monotonic()
+    ctl.notify_in_call("Mac task needs confirmation: move x to the Trash — say yes, do it")
+    assert time.monotonic() - started >= 0.2
+    assert len(sdk.last.sent) == 1
+    session.end()
+    session.wait()
+
+
+def test_a_quiet_agent_gets_the_notice_at_once(sdk) -> None:
+    ctl = _controller()
+    session = _open_session(sdk, ctl)
+    started = time.monotonic()
+    ctl.notify_in_call("done: x")
+    assert time.monotonic() - started < 0.2
+    session.end()
+    session.wait()

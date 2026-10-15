@@ -1,4 +1,4 @@
-"""Bridge wiring (Phase 7): components registered, operator notices spoken only when due."""
+"""Bridge wiring (Phase 7): components registered, operator notices spoken when due."""
 
 from __future__ import annotations
 
@@ -49,17 +49,57 @@ def _notices(ctl: BridgeController, reply: str) -> tuple[bridge_wiring.OperatorN
     return notices, sent
 
 
-def _result(status: str, reason: str = "") -> OperatorResult:
-    return OperatorResult("op-1", status, "", 3.0, reason)
+def _result(status: str, reason: str = "", summary: str = "") -> OperatorResult:
+    return OperatorResult("op-1", status, summary, 3.0, reason)
 
 
-def test_late_failure_is_spoken_success_is_silent(ctl: BridgeController) -> None:
+def test_late_failure_is_spoken(ctl: BridgeController) -> None:
     notices, sent = _notices(ctl, "started: working on it; the result follows")
     assert ctl.tools["do_on_mac"]("close the tabs").startswith("started")
-    assert notices.on_result(_result("done")) is False
-    assert not sent
     assert notices.on_result(_result("failed", "timeout")) is True  # spoken in the call
     assert sent == ["[system notice] Mac task failed: timeout"]
+
+
+def test_late_success_is_spoken_with_its_summary(ctl: BridgeController) -> None:
+    """Phase 8 run 5: the Trash move finished and Albert heard nothing."""
+    notices, sent = _notices(ctl, "started: working on it; the result follows")
+    ctl.tools["do_on_mac"]("delete the file delete-me")
+    summary = "moved delete-me.txt to the Trash"
+    assert notices.on_result(_result("done", summary=summary)) is True
+    assert sent == ["[system notice] done: moved delete-me.txt to the Trash"]
+
+
+def test_a_success_notice_is_capped_and_redacted(ctl: BridgeController) -> None:
+    notices, sent = _notices(ctl, "started: working on it")
+    ctl.tools["do_on_mac"]("x")
+    secret = "ghp_" + "A" * 30
+    notices.on_result(_result("done", summary=f"used {secret} " + "word " * 200))
+    assert len(sent) == 1
+    notice = sent[0]
+    assert secret not in notice and "[redacted]" in notice
+    assert len(notice) <= len("[system notice] ") + 300
+
+
+def test_a_success_without_summary_still_says_done(ctl: BridgeController) -> None:
+    notices, sent = _notices(ctl, "started: working on it")
+    ctl.tools["do_on_mac"]("x")
+    assert notices.on_result(_result("done")) is True
+    assert sent == ["[system notice] done: the Mac task finished"]
+
+
+def test_a_success_the_tool_already_returned_is_not_repeated(ctl: BridgeController) -> None:
+    notices, sent = _notices(ctl, "done: Calculator shows 4.")
+    ctl.tools["do_on_mac"]("compute 2+2")
+    assert notices.on_result(_result("done", summary="Calculator shows 4.")) is True
+    assert not sent
+
+
+def test_the_one_repeat_of_a_confirmation_is_spoken_as_is(ctl: BridgeController) -> None:
+    notices, sent = _notices(ctl, "needs confirmation: x")
+    notices.confirm_needed("still waiting: move delete-me.txt to the Trash — say yes, do it")
+    assert sent == [
+        "[system notice] Mac task still waiting: move delete-me.txt to the Trash — say yes, do it"
+    ]
 
 
 def test_result_already_returned_by_the_tool_is_not_repeated(ctl: BridgeController) -> None:
@@ -85,6 +125,7 @@ def test_outside_a_call_nothing_is_sent(ctl: BridgeController) -> None:
     ctl.tools["do_on_mac"]("x")
     ctl.end_call()
     assert notices.on_result(_result("failed", "x")) is False  # briefed at the next voice-on
+    assert notices.on_result(_result("done", summary="ok")) is False
     assert not sent
 
 

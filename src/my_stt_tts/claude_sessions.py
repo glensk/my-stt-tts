@@ -12,12 +12,12 @@ Tools (the voice agent's client tools):
   numbering is remembered so "number 2" works as a target afterwards.
 * ``read_session(target, what)`` — the last reply or the last prompt, redacted + capped.
 * ``brief_decision(target)`` — the spoken decision briefing (decision D5).
-* ``send_message(target, text)`` / ``answer_decision(target, choice)`` — only a proposal,
-  and only with the capability of what Albert just said (the target — name or list
-  number — must be in it; a read or briefing since then voids it). The confirm prompt
-  reads the message (redacted, ≤ 200 chars) or the chosen options back and asks for "yes,
-  do it". The action runs after ``confirm_action()`` through the ``send`` / ``answer``
-  executors (one mutation at a time, final cancellation + deadline check).
+* ``send_message(target, text)`` / ``answer_decision(target, choice)`` — run at once, no
+  "yes, do it", but only with the capability of what Albert just said: that sentence
+  passes the full voice check, the target (name or list number) is in it, and so are most
+  words of the message text or of the choice (:func:`~my_stt_tts.bridge_text.derivable`);
+  a read, briefing or injected notice since then voids it. One mutation at a time; the
+  capability is spent by the final cancellation + deadline check right before ccc acts.
 
 Outcomes: an ``accepted`` / ``unknown`` delivery goes to ``controller.deliveries`` (the
 attention monitor follows it); only failures after something was typed reach the inbox
@@ -52,14 +52,14 @@ from pathlib import Path
 from typing import Any
 
 from .bridge import (
-    CONFIRM_PHRASE,
     BridgeController,
+    Capability,
     Deadline,
     Mutation,
-    PendingAction,
     Problem,
     Refusal,
     before_mutation,
+    log_refused,
     log_tool,
 )
 from .bridge_text import normalise, numbers_in, redact
@@ -75,13 +75,14 @@ BRIEF_TIMEOUT_S = 6.0  # inspect with the voice-brief LLM summary (ccc budget 10
 BRIEF_FALLBACK_TIMEOUT_S = 3.0  # then inspect -N (summary = first sentences)
 TOOL_BUDGET_S = 10.0  # one tool call in total (list + re-list + inspect share it)
 MUTATION_BUDGET_S = 20.0  # ccc send / answer
+#: send_message / answer_decision in total (resolve + inspect + ccc), under the SDK's 30 s.
+MUTATION_TOOL_BUDGET_S = 28.0
 LOCK_TIMEOUT_S = 2.0  # wait this long for a running mutation, then refuse
 LIST_TTL_S = 30.0  # names resolve against a list this fresh before re-fetching
 CACHE_TTL_S = 600.0  # the numbered list + briefed decisions are forgotten after this
 
 MESSAGE_MAX = 4000
 OTHER_TEXT_MAX = 500  # ccc answer rejects longer free text
-PROMPT_TEXT_CAP = 200  # message text read back in the confirm prompt
 AIM_CAP = 80
 READ_CAP = 1500
 BRIEF_CAP = 1500
@@ -561,8 +562,17 @@ def _tail_reply(text: str) -> str:
     return "… " + rest[1] if len(rest) > 1 else ""
 
 
+@dataclass(frozen=True)
+class Grant:
+    """A checked capability for one send / answer: spent right before ccc acts."""
+
+    action: str
+    cap: Capability
+    args: Mapping[str, str] = field(repr=False)
+
+
 class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + per-call caches
-    """The sessions client tools + the ``send`` / ``answer`` executors."""
+    """The sessions client tools (list, read, brief, send, answer)."""
 
     def __init__(
         self,
@@ -592,8 +602,6 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         }
         for name, fn in tools.items():
             self.ctl.register_tool(name, _guarded(name, fn, self.ctl))
-        self.ctl.register_executor("send", self.execute_send)
-        self.ctl.register_executor("answer", self.execute_answer)
 
     # -- helpers ------------------------------------------------------------------------
     def _sync_call(self) -> None:
@@ -761,7 +769,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         self._briefed[s.session_id] = str(decision.get("decision_id") or "")
         return self._done("brief_decision", redact(format_briefing(s, decision), BRIEF_CAP))
 
-    # -- proposals ----------------------------------------------------------------------
+    # -- send / answer (act at once on the verified sentence) ------------------------------
     def _mutable(self, target: str, verb: str, deadline: Deadline) -> Session | str:
         found = self.resolve(target, fresh=True, deadline=deadline)
         if found.session is None:
@@ -771,26 +779,29 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             return f"{_say_name(s)} is a background session — I can read it but not {verb} it."
         return s
 
-    def _authorise(self, action: str, target: str, s: Session) -> str | None:
-        """Spend the capability of what Albert just said on ``action``; None when allowed.
+    def _authorise(
+        self, action: str, target: str, s: Session, said: Mapping[str, str]
+    ) -> Grant | str:
+        """Mint the capability of what Albert just said for ``action``; a refusal as text.
 
-        The target must come from that transcript: the list number when he said one, else
-        the session's name. A read / briefing since then already voided the capability.
+        The target must come from that transcript (the list number when he said one, else
+        the session's name), and so must ``said`` (the message text, or his choice). The
+        capability is only checked here; :meth:`_mutate` spends it right before ccc acts.
         """
         cap = self.ctl.mint()
         if isinstance(cap, Refusal):
             return f"refused: {cap.reason}"
         number = _target_number(" ".join(str(target or "").split()))
-        said = str(number) if number is not None else s.name
-        refusal = self.ctl.caps.use(cap, action, {"target": said})
-        return None if refusal is None else f"refused: {refusal.reason}"
+        args = {"target": str(number) if number is not None else s.name, **said}
+        refusal = self.ctl.caps.check(cap, action, args)
+        if refusal is not None:
+            log_refused(refusal.reason)
+            return f"refused: {refusal.reason}"
+        return Grant(action, cap, args)
 
     def send_message(self, target: str, text: str) -> str:
-        """Propose sending ``text`` to the session.
-
-        It runs after "yes, do it" + ``confirm_action``.
-        """
-        deadline = Deadline(TOOL_BUDGET_S, self.clock)
+        """Send ``text`` to the session now (Albert's verified sentence is the go-ahead)."""
+        deadline = Deadline(MUTATION_TOOL_BUDGET_S, self.clock)
         s = self._mutable(target, "message", deadline)
         if isinstance(s, str):
             return self._done("send_message", s)
@@ -803,30 +814,24 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         if s.status in {"waiting", "blocked"}:
             why = REASONS["picker_pending"] if s.status == "waiting" else REASONS["blocked"]
             return self._done("send_message", f"Cannot message {_say_name(s)}: {why}.")
-        refused = self._authorise("send_message", target, s)
-        if refused is not None:
-            return self._done("send_message", refused)
-        return self._done("send_message", self._propose_send(s, message))
-
-    def _propose_send(self, s: Session, message: str, summary: str = "") -> str:
-        self.ctl.propose("send", {"session_id": s.session_id, "name": s.name, "text": message})
-        if summary:
-            return f"To answer {_say_name(s)} with {summary}, say {CONFIRM_PHRASE}."
-        said = redact(" ".join(message.split()), PROMPT_TEXT_CAP)
-        return f"To send to {_say_name(s)}: {said} — say {CONFIRM_PHRASE}."
+        grant = self._authorise("send_message", target, s, {"text": message})
+        if isinstance(grant, str):
+            return self._done("send_message", grant)
+        return self._done("send_message", self._send(s, message, grant, deadline))
 
     def answer_decision(self, target: str, choice: str) -> str:
-        """Propose answering the session's decision with ``choice`` (letter, label, number)."""
-        deadline = Deadline(TOOL_BUDGET_S, self.clock)
+        """Answer the session's decision with ``choice`` (letter, label, number) now."""
+        deadline = Deadline(MUTATION_TOOL_BUDGET_S, self.clock)
         s = self._mutable(target, "answer", deadline)
         if isinstance(s, str):
             return self._done("answer_decision", s)
         log_tool("answer_decision", s.name)
-        refused = self._authorise("answer_decision", target, s)
-        if refused is not None:
-            return self._done("answer_decision", refused)
-        proposal = self._propose_decision(s, str(choice or ""), deadline)
-        return self._done("answer_decision", proposal)
+        choice = str(choice or "")
+        said = {"choice": choice} if choice.strip() else {}
+        grant = self._authorise("answer_decision", target, s, said)
+        if isinstance(grant, str):
+            return self._done("answer_decision", grant)
+        return self._done("answer_decision", self._decide(s, choice, grant, deadline))
 
     def _open_decision(
         self, s: Session, deadline: Deadline
@@ -844,7 +849,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             return f"{_say_name(s)}: {REASONS['decision_changed']}."
         return decision, questions
 
-    def _propose_decision(self, s: Session, choice: str, deadline: Deadline) -> str:
+    def _decide(self, s: Session, choice: str, grant: Grant, deadline: Deadline) -> str:
         opened = self._open_decision(s, deadline)
         if isinstance(opened, str):
             return opened
@@ -857,10 +862,9 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             text = " ".join(
                 f"{q.text} → {_pick_text(q, p)}" for q, p in zip(questions, picks, strict=True)
             )
-            said = redact(_picks_summary(questions, picks), LABEL_CAP * 2)
-            return self._propose_send(s, _clean_message(text)[:MESSAGE_MAX], said)
-        did = str(decision.get("decision_id") or "")
-        return self._propose_answer(s, did, questions, picks)
+            return self._send(s, _clean_message(text)[:MESSAGE_MAX], grant, deadline)
+        payload = _answer_payload(str(decision.get("decision_id") or ""), picks)
+        return self._answer(s, payload, grant, deadline)
 
     @staticmethod
     def _resolve_picks(questions: Sequence[Question], choice: str) -> list[Pick] | str:
@@ -878,57 +882,55 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             picks.append(pick)
         return picks
 
-    def _propose_answer(
-        self, s: Session, did: str, questions: Sequence[Question], picks: Sequence[Pick]
-    ) -> str:
-        answers: list[dict[str, Any]] = []
-        for i, p in enumerate(picks):
-            if p.other:
-                answers.append({"question_index": i, "other_text": p.other})
-            else:
-                answers.append({"question_index": i, "option_indices": list(p.indices)})
-        self.ctl.propose(
-            "answer",
-            {"session_id": s.session_id, "name": s.name, "decision_id": did, "answers": answers},
-        )
-        said = redact(_picks_summary(questions, picks), LABEL_CAP * 2)
-        return f"To answer {_say_name(s)} with {said}, say {CONFIRM_PHRASE}."
-
-    # -- executors (run by confirm_action) -------------------------------------------------
-    def execute_send(self, pending: PendingAction) -> str:
-        """Run a confirmed ``send`` proposal: ``ccc send -s ID -j`` (text on stdin)."""
-        args = pending.args
+    def _send(self, s: Session, message: str, grant: Grant, deadline: Deadline) -> str:
+        """``ccc send -s ID -j`` (the text on stdin only)."""
         return self._mutate(
             "send",
-            pending,
-            lambda budget: self.client.send(str(args["session_id"]), str(args["text"]), budget),
+            s,
+            grant,
+            deadline,
+            lambda budget: self.client.send(s.session_id, message, budget),
         )
 
-    def execute_answer(self, pending: PendingAction) -> str:
-        """Run a confirmed ``answer`` proposal: ``ccc answer -s ID -j`` (JSON on stdin)."""
-        args = pending.args
-        payload = {"decision_id": args["decision_id"], "answers": args["answers"]}
+    def _answer(
+        self, s: Session, payload: Mapping[str, Any], grant: Grant, deadline: Deadline
+    ) -> str:
+        """``ccc answer -s ID -j`` (the answers as JSON on stdin)."""
         return self._mutate(
             "answer",
-            pending,
-            lambda budget: self.client.answer(str(args["session_id"]), payload, budget),
+            s,
+            grant,
+            deadline,
+            lambda budget: self.client.answer(s.session_id, payload, budget),
         )
 
-    def _mutate(self, kind: str, pending: PendingAction, act: Callable[[float], CccResult]) -> str:
-        name = str(pending.args.get("name") or "the session")
-        session_id = str(pending.args.get("session_id") or "")
-        deadline = Deadline(MUTATION_BUDGET_S, self.ctl.clock)
+    def _mutate(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self,
+        kind: str,
+        s: Session,
+        grant: Grant,
+        tool_deadline: Deadline,
+        act: Callable[[float], CccResult],
+    ) -> str:
+        """Spend the capability right before ccc acts (one mutation at a time)."""
+        budget = min(MUTATION_BUDGET_S, tool_deadline.remaining())
+        deadline = Deadline(budget, self.ctl.clock)
         lock_wait = min(LOCK_TIMEOUT_S, deadline.remaining())
         if not self.ctl.mutation_lock.acquire(timeout=max(lock_wait, 0.0)):
-            return self._done(kind, "refused: another action is still running")
+            return "refused: another action is still running"
         try:
-            refusal = before_mutation(self.ctl.cancel, deadline, None, Mutation(kind, pending.args))
+            refusal = before_mutation(
+                self.ctl.cancel,
+                deadline,
+                self.ctl.caps,
+                Mutation(grant.action, grant.args, grant.cap),
+            )
             if refusal is not None:
-                return self._done(kind, f"refused: {refusal.reason}")
+                return f"refused: {refusal.reason}"
             result = act(deadline.remaining())
         finally:
             self.ctl.mutation_lock.release()
-        return self._done(kind, self._outcome(kind, session_id, name, result))
+        return self._outcome(kind, s.session_id, s.name, result)
 
     def _outcome(self, kind: str, session_id: str, name: str, result: CccResult) -> str:
         """Speak the result; follow accepted / unknown deliveries, report real failures."""
@@ -978,6 +980,17 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             self.ctl.report_problem(problem, spoken=True, dedupe_key=f"failed:{session_id}")
         except Exception:  # pylint: disable=broad-exception-caught  # the outcome stands
             log.warning("⚠️  problem report failed", exc_info=True)
+
+
+def _answer_payload(decision_id: str, picks: Sequence[Pick]) -> dict[str, Any]:
+    """The ``ccc answer`` stdin: one entry per question (options, or free text)."""
+    answers: list[dict[str, Any]] = []
+    for i, p in enumerate(picks):
+        if p.other:
+            answers.append({"question_index": i, "other_text": p.other})
+        else:
+            answers.append({"question_index": i, "option_indices": list(p.indices)})
+    return {"decision_id": decision_id, "answers": answers}
 
 
 def format_briefing(s: Session, decision: Mapping[str, Any]) -> str:

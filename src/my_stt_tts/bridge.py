@@ -11,12 +11,13 @@ and the monotonic time it arrived.
 Authorisation (two risk tiers, fail closed):
 
 * Full voice check — Claude session sends / answers / acknowledgements, ``do_on_mac``,
-  ``confirm_action`` and every other risky action. :class:`Authoriser`: the utterance a
-  transcript binds to must match the profile named by ``MAC_VOICE_AUTHORIZED`` (its
-  call-domain profile ``enroll/call/<name>.npy`` when there is one, else the wake profile)
-  with cosine ≥ 0.35. No such variable, no profile, a model failure, no / stale binding,
-  an utterance under 0.4 s → refused. With several candidate utterances every one must
-  pass. ``[system notice]`` messages never pass.
+  ``confirm_action`` and every other risky action. Sends and answers act at once on the
+  verified request sentence (no "yes, do it"): Albert said clearly what to send.
+  :class:`Authoriser`: the utterance a transcript binds to must match the profile named
+  by ``MAC_VOICE_AUTHORIZED`` (its call-domain profile ``enroll/call/<name>.npy`` when
+  there is one, else the wake profile) with cosine ≥ 0.35. No such variable, no profile,
+  a model failure, no / stale binding, an utterance under 0.4 s → refused. With several
+  candidate utterances every one must pass. ``[system notice]`` messages never pass.
 * Low-risk, no voice check — the reversible Mac fast-path tools
   (:mod:`~my_stt_tts.mac_control`: open a site or app, volume, brightness, media) mint
   with ``verify_voice=False``. Speaker scores on short utterances (a one-word "Play.") are
@@ -33,10 +34,13 @@ Authorisation (two risk tiers, fail closed):
   fast-path tools and of ``acknowledge_problem`` do not (:meth:`BridgeController.note_tool_result`).
   A capability allows one action whose arguments come from the transcript
   (:func:`~my_stt_tts.bridge_text.derivable`).
-* :class:`PendingActions` — a risky action becomes THE pending proposal (a newer one
-  replaces it), valid 60 s, single use, confirmed only by a NEW transcript that passes the
-  full voice check and says yes ("yes, do it" — a bare "yes" is too short to verify); a
-  new transcript saying no / cancel / stop drops it.
+* :class:`PendingActions` — a high-stakes Mac operator step becomes THE pending proposal
+  (a newer one replaces it), valid :data:`CONFIRM_TTL_S` (the broker's confirm wait),
+  single use, confirmed only by a NEW transcript that passes the full voice check and says
+  yes ("yes, do it" — a bare "yes" is too short to verify); a new transcript saying no /
+  cancel / stop drops it. A "yes" up to :data:`EXPIRED_GRACE_S` after a proposal lapsed is
+  told that the request expired (ask again with the full sentence), and a "yes" with
+  nothing pending is told not to claim that anything runs.
 
 Problems (:mod:`~my_stt_tts.bridge_problems`, re-exported here): a failure the agent
 already heard in the running call is reported with ``spoken=True``
@@ -83,11 +87,18 @@ log = logging.getLogger("my_stt_tts.bridge")
 FLAGS = ("MAC_VOICE_CLAUDE_BRIDGE", "MAC_VOICE_MAC_CONTROL", "MAC_VOICE_OPERATOR")
 AUTH_ENV = "MAC_VOICE_AUTHORIZED"
 AUTH_THRESHOLD = 0.35
-CONFIRM_TTL_S = 60.0
+#: How long a proposal waits for "yes, do it" (= ``mac_broker.CONFIRM_TIMEOUT_S``).
+CONFIRM_TTL_S = 120.0
+#: A "yes" this long after a proposal lapsed hears "the request expired", not "nothing".
+EXPIRED_GRACE_S = 60.0
 #: How many actions one authorised sentence may start ("open YouTube and make it louder").
 MAX_ACTIONS_PER_TRANSCRIPT = 3
 #: What Albert is asked to say to confirm (two words: long enough for the voice check).
 CONFIRM_PHRASE = "yes, do it"
+#: ``confirm_action`` with nothing pending: the agent must not claim that something runs.
+NOTHING_PENDING = "nothing is waiting for a yes — do not say it is running"
+#: ``confirm_action`` shortly after a proposal lapsed: Albert repeats the request itself.
+EXPIRED = "the request expired — ask again with the full sentence"
 NOTICE_PREFIX = "[system notice]"
 NOTICE_CAP = 300
 
@@ -453,7 +464,15 @@ class PendingActions:
         self.ttl = ttl
         self._current: PendingAction | None = None
         self._declined_by: int | None = None  # seq of the transcript that said no
+        self._lapsed_at: float | None = None  # when the last unconfirmed proposal expired
         self._lock = threading.Lock()
+
+    def _drop_expired(self, now: float) -> None:
+        """Forget a lapsed proposal, remembering when it lapsed (call with the lock held)."""
+        current = self._current
+        if current is not None and current.expires <= now:
+            self._current = None
+            self._lapsed_at = current.expires
 
     def propose(
         self, kind: str, args: Mapping[str, Any], *, source_seq: int | None = None
@@ -470,11 +489,11 @@ class PendingActions:
             source_seq=source_seq,
         )
         with self._lock:
+            self._drop_expired(now)
             old = self._current
-            if old is not None and old.expires <= now:
-                old = None
             self._current = pending
             self._declined_by = None
+            self._lapsed_at = None
         if old is not None:
             log.info("🔁 pending action replaced: %s → %s", _detail(old.kind), _detail(kind))
         log_confirm(kind)
@@ -485,8 +504,10 @@ class PendingActions:
         if transcript.injected or not declined(transcript.text):
             return None
         with self._lock:
+            self._drop_expired(self.clock())
             pending = self._current
-            if pending is None or pending.expires <= self.clock():
+            if pending is None:
+                self._lapsed_at = None  # "no" after a lapse: a later yes has nothing to run
                 return None
             if not _is_newer(transcript, pending):
                 return None
@@ -517,12 +538,14 @@ class PendingActions:
         return result
 
     def _precheck(self, transcript: Transcript) -> PendingAction | Refusal:
+        now = self.clock()
+        self._drop_expired(now)
         pending = self._current
         if pending is None:
-            return _refuse("nothing_pending", "nothing to confirm")
-        if pending.expires <= self.clock():
-            self._current = None
-            return _refuse("expired", "too late — ask again")
+            lapsed = self._lapsed_at
+            if lapsed is not None and now - lapsed < EXPIRED_GRACE_S:
+                return _refuse("expired", EXPIRED)
+            return _refuse("nothing_pending", NOTHING_PENDING)
         if transcript.injected:
             return _refuse("injected", "injected message")
         if not _is_newer(transcript, pending):
@@ -535,11 +558,11 @@ class PendingActions:
         with self._lock:
             self._current = None
             self._declined_by = None
+            self._lapsed_at = None
 
     def live(self) -> list[PendingAction]:
         with self._lock:
-            if self._current is not None and self._current.expires <= self.clock():
-                self._current = None
+            self._drop_expired(self.clock())
             return [] if self._current is None else [self._current]
 
 
@@ -893,6 +916,10 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
     def confirm_action(self, code: str | None = None) -> str:
         """The ``confirm_action`` client tool: run the pending proposal once Albert said yes.
 
+        Only Mac operator steps are proposed. With nothing pending the answer tells the
+        agent not to claim that anything runs; shortly after a proposal lapsed it says the
+        request expired, so the agent asks for the full request again.
+
         ``code`` is ignored (agents configured for the old two-digit codes still pass one).
         """
         del code
@@ -904,7 +931,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         executor = self.executors.get(result.kind)
         if executor is None:
             log_refused(f"no executor for {result.kind}")
-            return "refused: nothing to confirm"
+            return f"refused: {NOTHING_PENDING}"
         return executor(result)
 
 

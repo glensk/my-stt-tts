@@ -29,8 +29,12 @@ One run:
   (unless the request was explicitly background: "do it even if I hang up") or at daemon
   shutdown — always TERM to the process group, then KILL after 3 s;
 * a watcher turns each ``blocked-<sha>.json`` into ``controller.propose("operator_confirm",
-  …)`` (replacing any older proposal) and says "<summary> — say yes, do it"; the
-  ``operator_confirm`` executor writes the matching ``allow-<sha>.json`` (0600).
+  …)`` (replacing any older proposal) and says "<summary> — say yes, do it"; when nothing
+  was said for :data:`REANNOUNCE_S` while it waits, it says ONCE more "still waiting:
+  <summary> — say yes, do it"; the ``operator_confirm`` executor writes the matching
+  ``allow-<sha>.json`` (0600) and answers "confirmed — running it; the result follows as
+  a notice" (every final result, success included, is spoken as a ``[system notice]``
+  while the call runs — :class:`~my_stt_tts.bridge_wiring.OperatorNotices`).
 
 Audit (``<root>/audit.jsonl``, 0600): request length + sha256, status, duration — no
 content. Screenshots never outlive the broker call that took them; leftovers are swept.
@@ -86,10 +90,11 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "operator_result.jso
 BROKER_PATH = Path(__file__).resolve().parent / "mac_broker.py"
 CONFIRM_KIND = "operator_confirm"
 #: confirm_action's answer for an operator step: the step only starts now.
-CONFIRMED_REPLY = (
-    "confirmed — running it now; I'll report the result (a failure comes as a "
-    "[system notice]; no notice means it worked — do not say it is done)"
-)
+CONFIRMED_REPLY = "confirmed — running it; the result follows as a notice"
+#: Silence (no user transcript) after a confirmation request before it is repeated once.
+REANNOUNCE_S = 25.0
+#: How that one repeat starts (``bridge_wiring.OperatorNotices`` speaks it as is).
+STILL_WAITING = "still waiting:"
 
 START_WAIT_S = 10.0
 HARD_LIMIT_S = 300.0
@@ -181,6 +186,7 @@ class OperatorCall:  # pylint: disable=too-many-instance-attributes  # one run's
     stdout_truncated: bool = False
     cancel_reason: str = ""
     proposed: dict[str, PendingAction] = field(default_factory=dict)
+    reannounced: set[str] = field(default_factory=set)
     confirm_message: str = ""
     done: threading.Event = field(default_factory=threading.Event)
     changed: threading.Event = field(default_factory=threading.Event)
@@ -628,6 +634,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             key = f"{sha}:{nonce}"
             live.add(key)
             if key in call.proposed:
+                self._reannounce(call, key)
                 continue
             summary = mac_risk.clean_summary(str(data.get("summary", "")))
             pending = self.controller.propose(
@@ -639,16 +646,36 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
             call.confirm_message = message
             self._set_state(call, NEEDS_CONFIRMATION)
             log_confirm(summary)
-            if self.notify is not None:
-                try:
-                    self.notify(message)
-                except Exception:  # pylint: disable=broad-exception-caught  # never stop the watch
-                    log.warning("⚠️  operator notify failed", exc_info=True)
+            self._notify_text(message)
         for key in [k for k in call.proposed if k not in live]:
             del call.proposed[key]
+            call.reannounced.discard(key)
         if not live and call.state == NEEDS_CONFIRMATION:
             call.confirm_message = ""
             self._set_state(call, RUNNING)
+
+    def _reannounce(self, call: OperatorCall, key: str) -> None:
+        """Repeat a waiting confirmation request ONCE after :data:`REANNOUNCE_S` of silence.
+
+        Silence = no user transcript since the request (the first announcement may have
+        gone unheard, e.g. sent while the agent was still talking). Only while the request
+        is still the controller's live proposal.
+        """
+        pending = call.proposed[key]
+        if key in call.reannounced:
+            return
+        now = self.controller.clock()
+        latest = self.controller.latest
+        heard = latest.received_at if latest is not None and not latest.injected else 0.0
+        if now - max(pending.created_at, heard) < REANNOUNCE_S:
+            return
+        if all(p.id != pending.id for p in self.controller.pending.live()):
+            call.reannounced.add(key)  # replaced, confirmed or expired: nothing to repeat
+            return
+        call.reannounced.add(key)
+        summary = str(pending.args.get("summary", ""))
+        log.info("🔁 confirmation still waiting: repeated once")
+        self._notify_text(f"{STILL_WAITING} {summary} — say {CONFIRM_PHRASE}")
 
     @staticmethod
     def _set_state(call: OperatorCall, state: str) -> None:
@@ -843,8 +870,9 @@ def register(
 ) -> MacOperator | None:
     """Add ``do_on_mac`` + the ``operator_confirm`` executor when ``MAC_VOICE_OPERATOR=1``.
 
-    ``notify(text)`` speaks a confirmation request in the call; ``on_result`` receives
-    every final :class:`OperatorResult` and returns True when it was spoken in the call.
+    ``notify(text)`` speaks a confirmation request (or its one "still waiting: …"
+    repeat) in the call; ``on_result`` receives every final :class:`OperatorResult` and
+    returns True when it was spoken in the call.
     ``options`` go to :class:`MacOperator`.
     """
     if not operator_enabled(env):

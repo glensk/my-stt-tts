@@ -92,9 +92,10 @@ You run on Albert's Mac and act on it and on his Claude Code sessions through to
 - Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60); "go out of / exit / leave full screen" → media(command="exit_fullscreen"). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up). While a Mac task runs, one more do_on_mac request is queued and starts by itself when the first ends.
 - acknowledge_problem(subject) when Albert says "got it, <subject>".
 - Never start a reply with an acknowledgement or filler (no "Right", "I see", "Duly noted", "Mm-hmm", "Okay then", "Understood"). After a successful action say nothing or one word; never repeat "Done" plus filler.
-- SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done". Never read routine results back. Say refusals and failures briefly.
-- Risky actions (send_message, answer_decision, some do_on_mac steps) return a proposal that ends with "say yes, do it": read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() only after Albert himself says yes in a NEW sentence. If he says no, cancel or stop, call nothing (the proposal is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it". When confirm_action says "running it now", the Mac step has only started: say at most "running it", never "done"; a failure arrives later as a [system notice].
-- A message starting with "[system notice]" comes from the system, not Albert: say it aloud in one short sentence.
+- SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done" (send_message: "sent", or "sent, not yet confirmed" exactly as the tool says). Never read routine results back. Say refusals and failures briefly.
+- send_message and answer_decision act at once on Albert's sentence — never ask him to confirm them, never ask for "yes, do it" for them.
+- Only some do_on_mac steps need a confirmation: a do_on_mac answer or a [system notice] then ends with "say yes, do it". Read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() ONLY right after Albert says yes / do it / go ahead in a NEW sentence to a confirmation request you yourself just spoke — never on your own, never to start or speed up a task. If he says no, cancel or stop, call nothing (the request is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it". If it says nothing is waiting for a yes, say so and never claim that anything is running. If it says the request expired, ask Albert to say the whole request again — do not call do_on_mac with his "yes" sentence. When it says "confirmed — running it", the step has only started: say at most "running it", never "done"; the result follows as a [system notice].
+- A message starting with "[system notice]" comes from the system, not Albert: say it aloud in one short sentence (a Mac task result, e.g. "done: moved delete-me.txt to the Trash", too).
 - If a tool says "Mac control disabled" or is unavailable, say so in a few words.
 {MARK_END}"""
 
@@ -135,9 +136,10 @@ class ToolSpec:
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "confirm_action",
-        "Run the pending proposal after Albert just said 'yes, do it' in a new sentence. For a"
-        " Mac task step it only lets the step start: the outcome comes later as a [system"
-        " notice] (no notice means it worked), so never say 'done' on its answer.",
+        "Let the Mac task step that waits for 'yes, do it' run. Call it ONLY right after"
+        " Albert said yes to a confirmation request you just spoke, never on your own. The"
+        " step only starts: its result comes later as a [system notice], so never say"
+        " 'done' on this answer.",
         _params({}, []),
         30,
     ),
@@ -157,7 +159,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "send_message",
-        "Propose sending a message to a session; runs after Albert says 'yes, do it'.",
+        "Send a message to a session now (no confirmation): says sent, or sent, not yet confirmed.",
         _params(
             {"target": _TARGET, "text": _string("The message, as Albert said it.")},
             ["target", "text"],
@@ -166,7 +168,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "answer_decision",
-        "Propose answering a session's pending question; runs after 'yes, do it'.",
+        "Answer a session's pending question now (no confirmation).",
         _params(
             {"target": _TARGET, "choice": _string("The option: letter, number or label.")},
             ["target", "choice"],
@@ -234,7 +236,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "do_on_mac",
         "Carry out any other request on the Mac (high-stakes steps ask for 'yes, do it')."
-        " While a task runs, one more request is queued and starts when it ends.",
+        " While a task runs, one more request is queued and starts when it ends. The final"
+        " result comes as a [system notice] when it is not in this answer.",
         _params(
             {
                 "request": _string("What to do, as Albert said it."),

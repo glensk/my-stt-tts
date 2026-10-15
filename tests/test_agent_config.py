@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from my_stt_tts.attention import make_acknowledge_tool
-from my_stt_tts.bridge import BridgeController
+from my_stt_tts.bridge import EXPIRED, NOTHING_PENDING, BridgeController
 from my_stt_tts.claude_sessions import SessionTools
 from my_stt_tts.mac_control import TOOL_NAMES, MacControl
-from my_stt_tts.mac_operator import MacOperator
+from my_stt_tts.mac_operator import CONFIRMED_REPLY, MacOperator
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "eleven_agent_config.py"
 _spec = importlib.util.spec_from_file_location("eleven_agent_config_under_test", _SCRIPT)
@@ -372,7 +372,34 @@ def test_prompt_forbids_filler_openers_and_confirm_says_the_outcome_comes_later(
         assert f'"{word}"' in cfg.SECTION
     assert 'never repeat "Done" plus filler' in cfg.SECTION
     assert "[system notice]" in specs["confirm_action"].description
-    assert "running it now" in cfg.SECTION
+    assert '"confirmed — running it"' in cfg.SECTION
+    assert CONFIRMED_REPLY.startswith("confirmed — running it")
+
+
+def test_sends_and_answers_need_no_confirmation() -> None:
+    specs = {s.name: s for s in cfg.TOOL_SPECS}
+    for name in ("send_message", "answer_decision"):
+        desc = specs[name].description
+        assert "no confirmation" in desc and "yes, do it" not in desc
+        assert not desc.startswith("Propose")
+    assert "send_message and answer_decision act at once" in cfg.SECTION
+    assert 'never ask for "yes, do it" for them' in cfg.SECTION
+
+
+def test_confirm_action_only_after_a_yes_to_the_agents_own_request() -> None:
+    specs = {s.name: s for s in cfg.TOOL_SPECS}
+    assert "never on your own" in specs["confirm_action"].description
+    assert "never on your own" in cfg.SECTION
+    assert "never claim that anything is running" in cfg.SECTION
+    assert "the request expired, ask Albert to say the whole request again" in cfg.SECTION
+    assert "nothing is waiting for a yes" in NOTHING_PENDING
+    assert "expired" in EXPIRED
+
+
+def test_a_notice_is_said_in_one_short_sentence() -> None:
+    assert '"[system notice]" comes from the system' in cfg.SECTION
+    assert "in one short sentence" in cfg.SECTION
+    assert "done: moved delete-me.txt to the Trash" in cfg.SECTION
 
 
 def test_media_offers_exit_fullscreen_and_do_on_mac_mentions_the_queue() -> None:

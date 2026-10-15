@@ -318,9 +318,74 @@ def test_states_needs_confirmation_then_done_after_confirm(tmp_path: Path) -> No
     call.say("yes, do it")
     reply = call.ctl.confirm_action()
     assert reply == mac_operator.CONFIRMED_REPLY  # the step only starts now: never "done"
-    assert reply.startswith("confirmed — running it now") and "[system notice]" in reply
+    assert reply == "confirmed — running it; the result follows as a notice"
     result = wait_done(op)
     assert result.status == DONE and result.summary == "Sent the mail."
+
+
+def _wait_for(pred: Any, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not pred():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def test_a_waiting_confirmation_is_repeated_once_after_25_s_of_silence(tmp_path: Path) -> None:
+    call = Call()
+    notices: list[str] = []
+    op = make_operator(tmp_path, call, "block", notify=notices.append)
+    started(call, op, "send this mail")
+    assert _wait_for(lambda: len(notices) == 1)
+    call.clock.now += 20.0
+    time.sleep(0.2)
+    assert len(notices) == 1  # not yet 25 s
+    call.clock.now += 6.0
+    assert _wait_for(lambda: len(notices) == 2)
+    assert notices[1] == "still waiting: press cmd+return in Mail — say yes, do it"
+    call.clock.now += 60.0
+    time.sleep(0.2)
+    assert len(notices) == 2  # once only
+    call.say("yes, do it")
+    assert call.ctl.confirm_action() == mac_operator.CONFIRMED_REPLY
+    assert wait_done(op).status == DONE
+
+
+def test_speech_since_the_request_delays_the_repeat(tmp_path: Path) -> None:
+    call = Call()
+    notices: list[str] = []
+    op = make_operator(tmp_path, call, "block", notify=notices.append)
+    started(call, op, "send this mail")
+    assert _wait_for(lambda: len(notices) == 1)
+    call.clock.now += 20.0
+    call.say("hmm, which mail was that")  # Albert talks: the 25 s count from here
+    call.clock.now += 20.0
+    time.sleep(0.2)
+    assert len(notices) == 1
+    call.clock.now += 6.0
+    assert _wait_for(lambda: len(notices) == 2)
+    op.cancel("test over")
+    assert wait_done(op).status == CANCELLED
+
+
+def test_no_repeat_once_the_proposal_is_gone(tmp_path: Path) -> None:
+    call = Call()
+    notices: list[str] = []
+    op = make_operator(tmp_path, call, "block", notify=notices.append)
+    started(call, op, "send this mail")
+    assert _wait_for(lambda: len(notices) == 1)
+    call.say("no, cancel that", level=OTHER)  # drops the proposal
+    assert not call.ctl.pending.live()
+    call.clock.now += 30.0
+    time.sleep(0.3)
+    assert len(notices) == 1
+    op.cancel("test over")
+    assert wait_done(op).status == CANCELLED
+
+
+def test_the_broker_waits_two_minutes_for_a_yes() -> None:
+    assert mac_broker.CONFIRM_TIMEOUT_S == 120.0
 
 
 def test_confirm_needs_a_new_authorised_transcript(tmp_path: Path) -> None:

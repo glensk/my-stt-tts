@@ -102,7 +102,10 @@ checks read the current tab of the front window).
 
 "Silence" in a pass criterion means: successes are not spoken — the agent says nothing,
 or at most a brief acknowledgement, never a confirmation request. Refusals and failures are
-always spoken.
+always spoken. Exception: a Mac operator task (`do_on_mac`, A7) that ends during the
+call is always reported with one short `[system notice]` sentence, success included
+("done: Do Not Disturb is on"). Session sends and answers (A10, A12) never ask for
+"yes, do it"; only high-stakes Mac operator steps (A7.3) do.
 
 ### A1 — open YouTube
 
@@ -183,8 +186,9 @@ Pass: Calculator frontmost; silence.
    scripts/acceptance_setup.sh -q focus -w 10 -x '^on$'
    ```
 
-   Pass: Focus on, silence. When `-q focus` prints `unknown` (the orchestrator's terminal has
-   no Full Disk Access), Albert confirms the Focus icon in the menu bar instead. Albert turns
+   Pass: Focus on, no confirmation asked, and the agent says the result in one short
+   sentence ("done: Do Not Disturb is on"). When `-q focus` prints `unknown` (the
+   orchestrator's terminal has no Full Disk Access), Albert confirms the Focus icon in the menu bar instead. Albert turns
    it off again afterwards.
 
 2. Precondition: the front Safari window has at least 2 tabs (`$A -q tabs`; if not, the
@@ -196,18 +200,24 @@ Pass: Calculator frontmost; silence.
    scripts/acceptance_setup.sh -q tabs -w 15 -x '^1 in front window'
    ```
 
-   Pass: no confirmation request, then exactly one tab left in the front window.
+   Pass: no confirmation request, then exactly one tab left in the front window, and the
+   result is spoken in one short sentence.
 
 3. Albert says: **"delete the file delete-me"** → the agent speaks a summary and asks
    for "yes, do it"; Albert says **"yes, do it"** (two words — a bare "yes" is too short
-   for the voice check).
+   for the voice check). The request waits up to 120 s for the yes; when nothing is said
+   for 25 s it is repeated once ("still waiting: … — say yes, do it"). The agent must not
+   call `confirm_action` before Albert's yes, nor say "running it" before then.
 
    ```commands
    scripts/acceptance_setup.sh -q file                # before the confirm: exists
    scripts/acceptance_setup.sh -q file -w 15 -x '^gone$'
    ```
 
-   Pass: "yes, do it" requested, the file still exists until the confirm, gone after it.
+   Pass: "yes, do it" requested, the file still exists until the confirm, gone after it,
+   and the result is spoken ("done: moved delete-me.txt to the Trash"). A "yes, do it" after
+   the request expired is answered with "ask again with the full sentence", never by a new
+   `do_on_mac` from the yes sentence.
 
 ### A8 — which sessions are running
 
@@ -237,15 +247,15 @@ confirmation is asked for (reading is not a mutation). Albert does not answer it
 
 ### A10 — sending and answering by voice
 
-1. Idle send. Albert says: **"tell scratch-idle: print hello"** → the agent repeats the
-   proposal and asks for "yes, do it"; Albert says **"yes, do it"**.
+1. Idle send. Albert says: **"tell scratch-idle: print hello"** → sent at once, no
+   "yes, do it" (his verified sentence is the go-ahead).
 
    ```commands
    scripts/acceptance_setup.sh -q prompts -w 20 -x 'print hello'
    ```
 
-   Pass: the prompt "print hello" is in scratch-idle's transcript (a `user` record); the
-   send itself is silent.
+   Pass: no confirmation asked; the prompt "print hello" is in scratch-idle's transcript (a
+   `user` record); the agent says at most "sent" (or "sent, not yet confirmed").
 
 2. Busy send. Right before it, the orchestrator makes scratch-busy busy:
 
@@ -253,8 +263,7 @@ confirmation is asked for (reading is not a mutation). Albert does not answer it
    scripts/acceptance_setup.sh -b        # sends "Run `sleep 60` in bash, then say done.", waits for busy
    ```
 
-   Then within 60 s Albert says: **"tell scratch-busy: print hello"** → "yes, do it"?
-   → **"yes, do it"**.
+   Then within 60 s Albert says: **"tell scratch-busy: print hello"** (no confirmation).
 
    ```commands
    scripts/acceptance_setup.sh -q enqueued -w 20 -x 'print hello'
@@ -277,7 +286,7 @@ confirmation is asked for (reading is not a mutation). Albert does not answer it
    ```
 
    Albert says: **"what does scratch-idle need"** (briefing: the colour question, options
-   red, green, blue) → **"answer green"** → "yes, do it"? → **"yes, do it"**.
+   red, green, blue) → **"answer green"** (answered at once, no confirmation).
 
    ```commands
    scripts/acceptance_setup.sh -q answers -w 20 -x '"green"'
@@ -313,7 +322,7 @@ this (Albert starts it, then stays silent).
 
 ### A12 — failure on a dead session, attention inbox
 
-1. In a call. Albert says: **"tell scratch-dead: hi"** → "yes, do it"? → **"yes, do it"**.
+1. In a call. Albert says: **"tell scratch-dead: hi"** (sent at once, no confirmation).
 
    ```commands
    scripts/acceptance_setup.sh -q problems          # a row with subject scratch-dead
@@ -323,7 +332,7 @@ this (Albert starts it, then stays silent).
    Pass: the failure is spoken in the call (a `[system notice]` or the tool result), and
    `attention.db` has an open problem for scratch-dead.
 
-2. Voice off. Albert says **"tell scratch-dead: hi again"** → "yes, do it"? → **"yes, do it"**,
+2. Voice off. Albert says **"tell scratch-dead: hi again"** (no confirmation),
    then at once **"voice off"** (or the orchestrator runs `./mac-voice -f`). He does NOT say
    "got it".
 
