@@ -28,7 +28,7 @@ A private voice assistant that lives on your own machine — say a word, ask out
 
 <br>
 
-**🚀 [Get started](#-get-started) · 🎙️ [What it does](#what-it-does) · ⚡ [Quick start](#-quick-start) · 🔁 [How it works](#how-it-works) · 🔒 [Privacy](#-your-audio-never-leaves-your-mac) · 🛠️ [Developers](#for-developers)**
+**🚀 [Get started](#-get-started) · 🎙️ [What it does](#what-it-does) · ⚡ [Quick start](#-quick-start) · 🔁 [How it works](#how-it-works) · 🤖 [Claude bridge](#-claude-bridge-voice-control-of-claude-sessions-and-the-mac) · 🔒 [Privacy](#-your-audio-never-leaves-your-mac) · 🛠️ [Developers](#for-developers)**
 
 </div>
 
@@ -380,6 +380,204 @@ uv sync && uv run pytest
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
 
+## 🤖 Claude bridge (voice control of Claude sessions and the Mac)
+
+The `./mac-voice` daemon can do more than talk: with the bridge switched on, the ElevenLabs agent
+gets **client tools** that run on this Mac. You can ask which Claude Code sessions are running,
+hear what one of them needs, message it, answer its questions, and drive the Mac — open sites and
+apps, control video, volume and brightness, or hand any other request to a Mac operator. Successes
+stay quiet; problems are spoken. Design and acceptance record: `PLAN_claude-bridge.md` (local).
+
+### What the bridge does
+
+- **Claude Code sessions** (through the JSON commands of ccc, the claude-command-center,
+  `ccc sessions | inspect | send | answer | delivery | events -j`):
+  - `list_sessions` — a numbered list of the sessions of both Claude accounts by their memorable
+    name, status (busy / idle / waiting / blocked) and short AIM; "number 2" works as a target
+    afterwards. Background sessions (`claude --bg`) are marked and can only be listed and read.
+  - `read_session` — the last reply or the last prompt of one session.
+  - `brief_decision` — a spoken briefing of the decision a session waits for (a pending
+    question picker, or a `You [decision]:` line in its to-do list): what the session works on,
+    the question, the options and its recommendation with the reason.
+  - `send_message` — types a message into the session's iTerm tab (idle: as a new prompt; busy:
+    queued); `answer_decision` — answers its question picker (single and multi-select).
+- **Mac fast path** (`mac_control.py`): `open_url` (any http(s) site in Safari; `youtube` and
+  `jellyfin` shortcuts), `open_app` (any installed app), `set_volume`, `set_brightness` (built-in
+  display), `media` (play, pause, seek ±s, next, previous, fullscreen, exit fullscreen on YouTube
+  and Jellyfin) and `youtube_play_first`.
+- **Mac operator** (`do_on_mac`): any other request ("close the other Safari tabs", "move
+  delete-me.txt to the Trash") runs as a headless `claude -p` (model sonnet, billed to the work
+  account) whose only tools come from a local broker (`mac_broker.py`: screenshots, UI trees,
+  clicks, keys, typing, menus, Safari page reads, AppleScript). The broker checks every step
+  against a risk table (below). One task runs at a time, one more may wait; a task ends with the
+  call unless you said "do it even if I hang up"; hard limit 5 min.
+- **Attention inbox** (`attention.py`): failed sends, a session that failed or asks a question
+  after a voice message, failed Mac actions and operator tasks become problems in
+  `~/.local/state/mac-voice/attention.db`. During a call they are spoken at once; otherwise the
+  next "voice on" opens with a briefing of the open problems (≤ 600 characters), plus an optional
+  content-free macOS banner. "Got it, \<subject\>" (voice-checked) clears one item; items expire
+  after 7 days.
+- **Spoken notices**: confirmation requests, late operator results ("done: …" / "Mac task failed:
+  …") and new problems reach the call as `[system notice] …` messages, held up to 3 s while the
+  agent is still speaking. A problem heard in the call is never briefed again at the next
+  "voice on".
+
+### Flags
+
+Opt-in, in `.env` (read by `./mac-voice -d`); `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`
+must be set as for `./mac-voice`.
+
+| Variable                      | Example                             | Meaning                                                                       |
+| :---------------------------- | :---------------------------------- | :---------------------------------------------------------------------------- |
+| `MAC_VOICE_CLAUDE_BRIDGE`     | `1`                                 | the Claude session tools (list / read / brief / send / answer)                |
+| `MAC_VOICE_MAC_CONTROL`       | `1`                                 | the Mac fast-path tools (disabled while a `-D` doctor check fails)            |
+| `MAC_VOICE_OPERATOR`          | `1`                                 | the `do_on_mac` operator                                                      |
+| `MAC_VOICE_AUTHORIZED`        | `albert`                            | the one voice profile that may act; unset → every bridge action is refused    |
+| `MAC_VOICE_READY_SOUND`       | `/System/Library/Sounds/Glass.aiff` | played once the daemon listens (default Glass); `0`, `off` or empty: no sound |
+| `MAC_VOICE_CCC_BIN`           | `~/.local/bin/ccc`                  | the ccc executable (default: `$PATH`, then `~/.local/bin/ccc`)                |
+| `MAC_VOICE_STATE_DIR`         | `~/.local/state/mac-voice`          | daemon control socket + status (inbox, operator dirs stay in the default)     |
+| `MAC_VOICE_SPEAKER_THRESHOLD` | `0.35`                              | wake-word voice gate only (the bridge's in-call check is fixed at 0.35)       |
+| `MAC_VOICE_WAKE`              | `voice on`                          | custom wake phrase (sherpa KWS; "hey jarvis" stays active)                    |
+| `MAC_VOICE_WAKE_THRESHOLD`    | `0.75`                              | openWakeWord threshold for "hey jarvis"                                       |
+| `MAC_VOICE_WAKE_PHASES`       | `2`                                 | staggered openWakeWord copies while idle                                      |
+
+Any of the first three flags also turns on the attention inbox and its monitor. Each component
+gates itself, and a failing one never stops the others.
+
+### Setup
+
+```bash
+uv sync --inexact --extra elevenlabs --extra operator    # mcp for the operator's broker
+./mac-voice -D                                           # doctor: System Events + Safari automation,
+                                                         # Safari "Allow JavaScript from Apple Events",
+                                                         # Accessibility, volume read — ✅/❌ + fix
+scripts/enroll_wakeword.py "voice on" -n 8 -w albert     # wake clips + wake profile enroll/albert.npy
+scripts/enroll_call.py albert                            # call-domain profile enroll/call/albert.npy
+scripts/eleven_agent_config.py -n                        # dry run: backup + diff of the agent config
+scripts/eleven_agent_config.py -a                        # apply, verify, roll back on failure
+./mac-voice -d                                           # the daemon, in an iTerm tab
+```
+
+- **Why a call profile.** In a call the mic runs through Apple's voice processing (echo
+  cancellation, gain control), so in-call sentences score too low against the raw-mic wake
+  profile (0.32 for Albert, under the 0.35 threshold). `enroll_call.py` records sentences through
+  the same path a call uses (8 clips of 4 s, German / English / French hints), prints a
+  leave-one-out calibration table and saves `enroll/call/<name>.npy`, which the in-call check
+  prefers. Stop the daemon first: it owns the mic. `-n` records without writing.
+- **Agent config.** `eleven_agent_config.py` manages the 14 client tools (by name, idempotent),
+  `client_tool_call` events, the first-message override (the voice-on briefing), the soft-timeout
+  filler (off) and a marked section of the system prompt. Every run writes a sanitised 0600 backup
+  to `~/.local/state/mac-voice/agent-backups/`; `-a` rolls back by itself on any failure, and
+  `-r <backup>` restores a backup by hand.
+
+### Authorisation, as built now
+
+Only the voice named by `MAC_VOICE_AUTHORIZED` may act. Each user transcript is bound to the
+utterance it came from (Silero VAD segments of the call's mic stream, 5 s window), and the check
+fails closed: no profile, a model failure, no or an ambiguous binding, or an utterance under
+0.4 s is refused.
+
+- **Two risk tiers.** The Mac fast-path tools (open a site or app, volume, brightness, media)
+  need no voice match: one-word commands like "Play." score unreliably, and a call only starts
+  after a voice-checked wake word. Everything else — session sends and answers,
+  acknowledgements, `do_on_mac`, confirmations — needs the call-profile voice check with a cosine
+  of at least 0.35.
+- **Up to 3 actions per sentence** ("open YouTube and make it louder"). Each action's arguments
+  must come from what was said (host, app, number, keyword; most words of a message or a choice).
+  Any external content reaching the agent (a session read, a briefing, an operator result, a
+  notice) voids the sentence's unused actions; refusals and the fast-path results do not.
+- **Injected notices never act**: a `[system notice]` can never authorise anything.
+- **The session in focus.** After a briefing or a read of session S, a send or an answer whose
+  sentence names no session goes to S ("answer green"), for 2 minutes or until another session
+  is read; "tell it …" also means S. An explicit recipient ("tell / ask / send to \<X\>", "sag
+  \<X\>", "dis à \<X\>", "\<X\>: …") is never redirected: if X matches no session, the request is
+  refused with the closest names.
+- **Misheard names**: a name that matches no session exactly resolves to the one clearly most
+  similar name ("Scratch Idol" → `scratch-idle`); several close names are refused and listed.
+- **Sends and answers need no confirmation**: the voice-checked sentence that says what to send
+  is the authorisation. They run once and are never retried; a timeout is reported as "not yet
+  confirmed", never as failed.
+- **Confirmations** exist only for high-stakes operator steps. The agent reads the step back
+  ("move delete-me.txt to the Trash — say yes, do it"); a voice-checked **"yes, do it"** within
+  120 s runs exactly that step once (a bare "yes" is too short to verify). After 25 s of silence
+  the request is repeated once; "no", "cancel" or "stop" drops it. A newer request replaces an
+  older one.
+
+### The risk table (`mac_risk.py`)
+
+The broker classifies every operator step before it touches the Mac; anything unknown waits for
+a confirmation.
+
+| Verdict     | What                                                                                                                                                                                                                                                                                                                                                                                                              |
+| :---------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **SAFE**    | observing (screenshots, UI trees, read-only Safari page reads, `list_folder`), opening sites and apps, ordinary clicks and menus, typing into ordinary apps, navigation keys, Return in a search field or address bar, switching tabs / windows (in shells too), closing tabs / windows, quitting apps, saving, Focus / Do Not Disturb, volume, brightness, media, Safari tab AppleScripts                        |
+| **CONFIRM** | deleting / trashing / erasing, emptying the Trash, sending / posting / replying / sharing, paying and ordering, installs and updates, security / privacy / network / account settings, force quit, typing into shells, Finder or System Settings, typing into password fields, Return outside a search field (and in messaging apps), unidentified clicks in sensitive apps, any other AppleScript, unknown tools |
+| **REFUSE**  | AppleScript with `do shell script` (or `run script`, `load script`, `sysoexec`), non-http(s) URLs or URLs with credentials, app names that are paths, `list_folder` on hidden folders or outside home, `/tmp` and `/Volumes`                                                                                                                                                                                      |
+
+Labels are matched in English, German and French. Summaries name the action and its target,
+never typed text. The broker's audit (`broker_audit.jsonl`, 0600) records tool, argument hash,
+risk and outcome — never the arguments.
+
+### Privacy
+
+The bridge sends more than the local pipeline does — know what leaves the Mac:
+
+- **To ElevenLabs and the agent's LLM** (ElevenLabs' speech-to-text, then the LLM configured in
+  the agent, Claude Sonnet today): your call audio and its transcripts, and everything the tools
+  return — session names, AIMs, briefings, `read_session` text (last reply ≤ 1500 characters,
+  last prompt ≤ 500), decision questions and options, operator results and problem notices.
+  Session text passes a redaction filter (`glpat-`, `ghp_`, `xox[bp]-`, `AKIA`, `sk-`, JWTs,
+  private keys) and is capped first, but anything else in a session's reply is sent as is.
+- **To Anthropic** (`claude -p`, work account): every `do_on_mac` request plus the screenshots,
+  UI trees and Safari page reads the operator takes while working. Screenshots are deleted right
+  after use; the run keeps no session transcript (`--no-session-persistence`).
+- **Mac control acts as you**: Safari runs with your logged-in sessions, so the operator can act
+  on any site you are logged into (outward actions such as sending, posting or paying wait for
+  "yes, do it").
+- Local logs and audits hold one line per action, lengths and hashes — never message text. The
+  inbox stores kind, subject, short reason and times, never message text.
+
+### Problems and the ready sound
+
+```bash
+./mac-voice -K              # acknowledge every open problem of the voice-on briefing
+./mac-voice -K mac_action   # only the open problems of one kind
+```
+
+The daemon plays a short sound (default Glass) once it listens, so you know when you may say
+"hey jarvis" or "voice on"; set `MAC_VOICE_READY_SOUND` to another file or switch it off.
+
+### Acceptance
+
+The attended acceptance run (A1–A12) has its fixtures in `scripts/acceptance_setup.sh` and its
+steps in [`scripts/ACCEPTANCE_RUNBOOK.md`](scripts/ACCEPTANCE_RUNBOOK.md):
+
+```bash
+scripts/acceptance_setup.sh -n -A auto   # dry run: checks quota, picks the account, lists the steps
+scripts/acceptance_setup.sh -A auto      # scratch sessions scratch-idle / -busy / -dead, test file, volume 40
+scripts/acceptance_setup.sh -q host -w 15 -x '^www\.youtube\.com$'   # one ✅/❌ check
+scripts/acceptance_setup.sh -C           # undo everything, restore volume and brightness
+```
+
+`-A auto` (the default) reads ccc's cached quota first and runs the scratch sessions on the
+private account while its weekly and 5 h usage are below 95 %, else on the work account, else
+stops with the reset times.
+
+### Residual risks
+
+- **A replay of your voice** (a recording) passes the speaker check: ECAPA cannot tell a
+  recording from you. Outward and destructive Mac steps still wait for a fresh "yes, do it",
+  so a replay would need that phrase too.
+- **Another voice can use the fast path during a call**: volume, brightness, media and opening
+  sites or apps need no voice match. Sends, answers and operator tasks from another voice are
+  refused (tested with phone playback: scores 0.04 / 0.02 / -0.01).
+- **ECAPA is unreliable under about 1 s of speech**: short sentences can refuse you; say the
+  full request ("tell scratch-idle: print hello", "yes, do it").
+
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
+
 ## 🔒 Your audio never leaves your Mac
 
 Speech-to-text and text-to-speech run **on-device**. Only the *transcribed text* of what you say is
@@ -395,6 +593,9 @@ profiles stay local and git-ignored.
 - The only thing that leaves the machine is the text prompt to the LLM provider you configure.
 - Speaker profiles and any local recordings live on disk and are git-ignored.
 - Don't dictate confidential content to a third-party LLM — the same caution as any cloud AI.
+- The ElevenLabs path (`./mac-voice`) and the [Claude bridge](#-claude-bridge-voice-control-of-claude-sessions-and-the-mac)
+  are the exception: call audio goes to ElevenLabs, and the bridge sends Claude session content
+  and operator screenshots to cloud LLMs (see its Privacy part).
 
 </details>
 

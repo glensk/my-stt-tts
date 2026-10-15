@@ -9,10 +9,12 @@ touches the Mac:
   CSS-selector reads of the Safari page through a fixed read-only script), typing into
   ordinary apps, navigation keys, Return in a search field / address bar, Focus /
   Do-Not-Disturb, volume, brightness, media.
-* CONFIRM blocks: closing tabs / windows / apps, sending / posting / mail / messages,
-  deleting / moving / renaming / saving files, purchases, security / privacy / network
-  settings, installs, typing into shells, Return outside a search field / address bar,
-  URLs with a long query, every ``applescript``, anything unrecognised. The broker
+* CONFIRM blocks only high-stakes calls: deleting / trashing files, emptying the Trash,
+  sending / posting / mail / messages, purchases, installs, security / privacy / network
+  / account settings, password fields, typing or Return in shells and messaging apps,
+  ``applescript`` other than Safari tab/window handling, anything unrecognised.
+  Closing tabs / windows / apps, saving, ordinary clicks and long URLs run
+  (``mac_risk``). The broker
   writes ``<call-dir>/blocked-<sha>.json`` (tool, normalised-args sha256, a one-line
   summary, a nonce; 0600) and waits up to 120 s for ``allow-<sha>.json`` carrying the
   same nonce, which the daemon writes after a spoken ``confirm_action``. Exactly that call

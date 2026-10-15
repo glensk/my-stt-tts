@@ -64,5 +64,31 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
 - Tool / function calling (R2-7) → `tools.py` (`ToolRegistry`, example tools); the
   provider round-trip is in `brain.py` (`_stream_anthropic_tools`/`_stream_openai_tools`).
   Optional cloud backends: `stt.CloudTranscriber` + `tts.CloudTTS` (local-first, key-gated).
+- ElevenLabs daemon (`./mac-voice`) → `eleven_voice.py` (`VoiceSession`, CLI, client tools
+  on a real `ClientTools`, `[system notice]` sending), `voice_control.py` (`VoiceDaemon`,
+  wake listener, control socket, ready sound, `daemon_main` builds the bridge),
+  `voice_gate.py` (ECAPA wake + call-domain profiles, `score_against`).
+- Claude bridge (tp#855, design in the local `PLAN_claude-bridge.md`; README section
+  "Claude bridge"):
+  - `bridge.py` → `BridgeController`, `Authoriser` (two risk tiers, 0.35 call-profile
+    check), `CapabilityStore` (≤ 3 actions per sentence), `PendingActions` ("yes, do it"),
+    `before_mutation`; `bridge_problems.py` → `Problem` / sinks / briefing interfaces;
+    `bridge_text.py` → normalising, number words, hosts, `derivable`, `spoken_name`
+    (misheard names), `redact`; `bridge_wiring.py` → registers the components, each gated
+    by its own flag, plus `OperatorNotices`; `turns.py` → `TurnSource` (VAD utterances,
+    transcript ↔ utterance binding).
+  - `claude_sessions.py` → session tools over `ccc … -j` (list / read / brief / send /
+    answer, session in focus, explicit recipients).
+  - `mac_control.py` → Mac fast-path tools + `mac-voice -D` doctor; `mac_sites.py` →
+    Safari YouTube / Jellyfin adapters.
+  - `mac_operator.py` → `do_on_mac` (`claude -p` lifecycle, confirmation watcher, queue);
+    `mac_broker.py` → the operator's stdio MCP broker; `mac_risk.py` → risk table
+    (SAFE / CONFIRM / REFUSE) + blocked/allow files; schema in `schemas/operator_result.json`.
+  - `attention.py` → attention inbox (`attention.db`), `Monitor` (`ccc events`), voice-on
+    briefing, `acknowledge_problem`, `mac-voice -K`.
+  - `scripts/eleven_agent_config.py` → ElevenLabs agent tools + prompt section (backup,
+    apply, rollback); `scripts/enroll_call.py` → call-domain voice profile;
+    `scripts/acceptance_setup.sh` + `scripts/ACCEPTANCE_RUNBOOK.md` → attended acceptance
+    fixtures and steps; `scripts/spikes/` → Phase-0 spike scripts.
 - Private/local notes → `CLAUDE.local.md` (gitignored); `CLAUDE.md` is a gitignored
   shim that imports this file.
