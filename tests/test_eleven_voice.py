@@ -360,6 +360,25 @@ def test_own_outcome_tools_keep_the_sentence_and_others_void_it(sdk) -> None:
     assert contexts == ["tool result"]  # session text: unused rights are void
 
 
+def test_a_refused_tool_call_keeps_the_sentence(sdk) -> None:
+    """Run 6 of tp#855: a refusal is no external content — the agent's retry may still act."""
+    del sdk
+    ctl = _controller()
+    contexts: list[str] = []
+    ctl.register_tool("answer_decision", lambda target, choice: "refused: argument not said")
+    ctl.register_tool("read_session", lambda target: "refused: voice bridge said hi")
+    ctl.note_context = contexts.append
+    session = _session(ctl)
+    tools = session.client_tools.tools
+    assert str(tools["answer_decision"][0]({"target": "x", "choice": "g"})).startswith("refused")
+    assert str(tools["read_session"][0]({"target": "x"})).startswith("refused:")
+    assert not contexts
+    ctl.register_tool("brief_decision", lambda target: "The session x needs a decision")
+    session = _session(ctl)
+    assert session.client_tools.tools["brief_decision"][0]({"target": "x"})
+    assert contexts == ["tool result"]  # a briefing still voids the sentence
+
+
 def test_tool_errors_become_speakable_answers(sdk) -> None:
     del sdk
     ctl = _controller()

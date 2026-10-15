@@ -31,9 +31,11 @@ Authorisation (two risk tiers, fail closed):
   check runs once and is cached. External content reaching the agent — a session read, a
   briefing, an operator result, an injected notice, any other tool result — invalidates
   the unused ones (and the transcripts behind them); the results of the bridge's own Mac
-  fast-path tools and of ``acknowledge_problem`` do not (:meth:`BridgeController.note_tool_result`).
+  fast-path tools and of ``acknowledge_problem`` do not, and neither does a refusal (a
+  result starting with ``refused:``) of any tool (:meth:`BridgeController.note_tool_result`).
   A capability allows one action whose arguments come from the transcript
-  (:func:`~my_stt_tts.bridge_text.derivable`).
+  (:func:`~my_stt_tts.bridge_text.derivable`); a caller may vouch for an argument it checked
+  itself (``vouched``: the Claude session in focus, a misheard session name).
 * :class:`PendingActions` — a high-stakes Mac operator step becomes THE pending proposal
   (a newer one replaces it), valid :data:`CONFIRM_TTL_S` (the broker's confirm wait),
   single use, confirmed only by a NEW transcript that passes the full voice check and says
@@ -62,7 +64,7 @@ import secrets
 import threading
 import time
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -95,6 +97,8 @@ EXPIRED_GRACE_S = 60.0
 MAX_ACTIONS_PER_TRANSCRIPT = 3
 #: What Albert is asked to say to confirm (two words: long enough for the voice check).
 CONFIRM_PHRASE = "yes, do it"
+#: A tool result starting with this is a refusal: no external content (see note_tool_result).
+REFUSED_PREFIX = "refused:"
 #: ``confirm_action`` with nothing pending: the agent must not claim that something runs.
 NOTHING_PENDING = "nothing is waiting for a yes — do not say it is running"
 #: ``confirm_action`` shortly after a proposal lapsed: Albert repeats the request itself.
@@ -139,6 +143,11 @@ class Transcript:
 # -- logging (one line, never content) -----------------------------------------------------
 def _detail(text: str) -> str:
     return redact(" ".join(str(text).split()), LOG_DETAIL_CAP)
+
+
+def is_refusal(result: object) -> bool:
+    """True for a tool result that is a refusal (``refused: …``): no external content."""
+    return isinstance(result, str) and result.lstrip().startswith(REFUSED_PREFIX)
 
 
 def log_tool(name: str, detail: str = "") -> str:
@@ -356,26 +365,47 @@ class CapabilityStore:  # pylint: disable=too-many-instance-attributes  # per-ca
         with self._lock:
             self._spent.add(seq)
 
-    def check(self, cap: Capability, action: str, args: Mapping[str, Any]) -> Refusal | None:
+    def check(
+        self,
+        cap: Capability,
+        action: str,
+        args: Mapping[str, Any],
+        *,
+        vouched: Collection[str] = (),
+    ) -> Refusal | None:
         """Would :meth:`use` allow this? (does not consume)."""
         with self._lock:
-            return self._check(cap, action, args)
+            return self._check(cap, action, args, vouched)
 
-    def use(self, cap: Capability, action: str, args: Mapping[str, Any]) -> Refusal | None:
-        """Consume ``cap`` for ``action(args)``; None when allowed, else the Refusal."""
+    def use(
+        self,
+        cap: Capability,
+        action: str,
+        args: Mapping[str, Any],
+        *,
+        vouched: Collection[str] = (),
+    ) -> Refusal | None:
+        """Consume ``cap`` for ``action(args)``; None when allowed, else the Refusal.
+
+        ``vouched``: argument names the caller already found in the capability's sentence
+        by its own rule (the session in focus, a misheard session name); every other
+        argument must be :func:`~my_stt_tts.bridge_text.derivable`.
+        """
         with self._lock:
-            refusal = self._check(cap, action, args)
+            refusal = self._check(cap, action, args, vouched)
             if refusal is None:
                 del self._live[cap.id]
         if refusal is not None:
             log_refused(refusal.reason)
         return refusal
 
-    def _check(self, cap: Capability, action: str, args: Mapping[str, Any]) -> Refusal | None:
+    def _check(
+        self, cap: Capability, action: str, args: Mapping[str, Any], vouched: Collection[str]
+    ) -> Refusal | None:
         if self._live.get(cap.id) != cap:
             return _refuse("no_capability", "no fresh instruction — say it again")
         for key, value in args.items():
-            if not derivable(value, cap.text, key):
+            if key not in vouched and not derivable(value, cap.text, key):
                 return _refuse("not_in_transcript", f"{action}: argument not in what you said")
         return None
 
@@ -620,6 +650,8 @@ class Mutation:
     action: str
     args: Mapping[str, Any]
     cap: Capability | None = None
+    #: Argument names the caller vouches for (:meth:`CapabilityStore.use`).
+    vouched: frozenset[str] = frozenset()
 
 
 def before_mutation(
@@ -646,7 +678,7 @@ def before_mutation(
     if mutation.cap is None:
         log_refused("no fresh instruction")
         return _refuse("no_capability", "no fresh instruction — say it again")
-    return caps.use(mutation.cap, mutation.action, mutation.args)
+    return caps.use(mutation.cap, mutation.action, mutation.args, vouched=mutation.vouched)
 
 
 # -- the controller --------------------------------------------------------------------------
@@ -809,15 +841,17 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         latest = self._latest
         self.caps.invalidate_all(reason, through_seq=latest.seq if latest else None)
 
-    def note_tool_result(self, name: str) -> None:
+    def note_tool_result(self, name: str, result: object = None) -> None:
         """A client tool answered: external content invalidates, the bridge's own outcome not.
 
         Results of the tools in :attr:`own_outcome_tools` (Mac fast path,
         ``acknowledge_problem``) only say what the bridge itself did, so the rest of the
-        sentence ("open YouTube and make it louder") may still act. Every other result
+        sentence ("open YouTube and make it louder") may still act. A refusal of any tool
+        (``result`` starting with ``refused:``) carries no external content either: the
+        agent may retry with the same sentence after it fixed the call. Every other result
         (session reads, briefings, operator results, confirmations) invalidates.
         """
-        if name in self.own_outcome_tools:
+        if name in self.own_outcome_tools or is_refusal(result):
             return
         self.note_context("tool result")
 

@@ -430,11 +430,13 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             args = {k: v for k, v in (parameters or {}).items() if k != "tool_call_id"}
             started = time.monotonic()
             bridge.tool_started(name)
+            reply: str | None = None
             try:
                 reply = run_tool(name, fn, args, self.tool_guard)
             finally:
                 bridge.tool_finished(name)
-                bridge.note_tool_result(name)  # external content voids unused rights
+                # external content voids unused rights; a refusal does not
+                bridge.note_tool_result(name, reply)
             log.info("🛠️  %s → %s (%.1f s)", name, _tool_outcome(reply), time.monotonic() - started)
             return reply
 

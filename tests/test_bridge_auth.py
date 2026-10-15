@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines  # one test module per bridge component, like the module
 """Authorisation of the Claude/Mac bridge: identity, capabilities, codes, cancellation.
 
 Fakes only: a VAD that calls loud samples speech, a speaker scorer whose cosine depends on
@@ -430,6 +431,33 @@ def test_external_tool_results_burn_the_sentence(external: str) -> None:
     call.ctl.note_tool_result(external)
     refused(call.ctl.caps.use(cap, "open_url", {"target": "youtube"}), "no_capability")
     refused(call.ctl.mint(verify_voice=False), "invalidated")
+
+
+@pytest.mark.parametrize("tool", ["answer_decision", "send_message", "do_on_mac"])
+def test_a_refusal_keeps_the_rest_of_the_sentence(tool: str) -> None:
+    """A refused call carries no external content: a corrected retry may still act."""
+    call = Call()
+    call.say("open youtube")
+    cap = cap_or_fail(call.ctl.mint(verify_voice=False))
+    call.ctl.note_tool_result(tool, "refused: answer_decision: argument not in what you said")
+    assert call.ctl.caps.use(cap, "open_url", {"target": "youtube"}) is None
+    cap_or_fail(call.ctl.mint(verify_voice=False))
+    call.ctl.note_tool_result(tool, "The session x, which works on y, needs a decision")
+    refused(call.ctl.mint(verify_voice=False), "invalidated")
+
+
+def test_vouched_arguments_skip_only_their_own_check() -> None:
+    call = Call()
+    call.say("answer green")
+    cap = cap_or_fail(call.ctl.mint(verify_voice=False))
+    args = {"target": "scratch-idle", "choice": "green"}
+    refused(call.ctl.caps.check(cap, "answer", args), "not_in_transcript")
+    refused(
+        call.ctl.caps.check(cap, "answer", {**args, "choice": "blue"}, vouched={"target"}),
+        "not_in_transcript",
+    )
+    mutation = Mutation("answer", args, cap, frozenset({"target"}))
+    assert before_mutation(call.ctl.cancel, Deadline(5.0), call.ctl.caps, mutation) is None
 
 
 def test_re_registering_without_own_outcome_clears_the_flag() -> None:
@@ -998,3 +1026,36 @@ def test_text_and_choice_use_the_word_share() -> None:
     assert not derivable("delete everything", "tell scratch idle print hello", "text")
     assert derivable("local server", "answer picker demo with local server", "choice")
     assert not derivable("local server", "answer picker demo", "choice")
+
+
+# -- misheard session names (bridge_text.spoken_name) ----------------------------------------
+NAMES = ["scratch-idle", "voice bridge", "nightly", "Picker Demo"]
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("What does Scratch Idol need?", "scratch-idle"),  # run 6 of tp#855
+        ("scratch idol", "scratch-idle"),
+        ("answer green for scratch-idle", "scratch-idle"),
+        ("scratchidle", "scratch-idle"),
+        ("tell voice bridge hello", "voice bridge"),
+        ("tell voice bridg hello", "voice bridge"),
+    ],
+)
+def test_a_spoken_name_tolerates_speech_to_text_slips(text: str, name: str) -> None:
+    assert bridge_text.spoken_name(text, NAMES).name == name
+
+
+@pytest.mark.parametrize(
+    "text", ["scratch that", "scratch that, answer green", "answer green", "scratch", "scratchy"]
+)
+def test_too_different_words_name_no_session(text: str) -> None:
+    assert bridge_text.name_similarity("scratch that", "scratch-idle") < bridge_text.NAME_MATCH_MIN
+    assert bridge_text.spoken_name(text, NAMES) == bridge_text.NameMatch()
+
+
+def test_close_names_are_ambiguous_not_guessed() -> None:
+    found = bridge_text.spoken_name("scratch idol", ["scratch-idle", "scratch-ideal", "nightly"])
+    assert found.name is None
+    assert found.close == ("scratch-idle", "scratch-ideal")

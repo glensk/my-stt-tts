@@ -19,11 +19,22 @@ Tools (the voice agent's client tools):
   a read, briefing or injected notice since then voids it. One mutation at a time; the
   capability is spent by the final cancellation + deadline check right before ccc acts.
 
+The session in focus: after a successful ``brief_decision`` / ``read_session`` of S, a
+send or answer whose sentence names no session may target S ("answer green" right after
+the briefing); the text or choice must still be said. Focus ends when another session is
+briefed or read, when the call ends, or after :data:`FOCUS_TTL_S`.
+
+Misheard names: a target (and the sentence's session name) that matches no session
+exactly resolves to the unique clearly-best similar name
+(:func:`~my_stt_tts.bridge_text.spoken_name`: "Scratch Idol" → ``scratch-idle``); several
+close names are refused with the closest ones listed.
+
 Outcomes: an ``accepted`` / ``unknown`` delivery goes to ``controller.deliveries`` (the
 attention monitor follows it); only failures after something was typed reach the inbox
 (one item per session); a timeout or unreadable answer during send / answer is "not yet
 confirmed", never "failed", and never retried. Every read tool call shares one 10 s
-budget across its ccc calls.
+budget across its ccc calls. A refusal (``refused: …``) is no external content: it leaves
+the sentence's remaining capabilities alone.
 
 Background sessions (D4) are listed and read, never messaged. A to-do-line decision is
 answered with a message (``send``), a picker decision with ``ccc answer``. Every session
@@ -62,7 +73,7 @@ from .bridge import (
     log_refused,
     log_tool,
 )
-from .bridge_text import normalise, numbers_in, redact
+from .bridge_text import derivable, normalise, numbers_in, redact, spoken_name
 
 log = logging.getLogger("my_stt_tts.claude_sessions")
 
@@ -80,6 +91,7 @@ MUTATION_TOOL_BUDGET_S = 28.0
 LOCK_TIMEOUT_S = 2.0  # wait this long for a running mutation, then refuse
 LIST_TTL_S = 30.0  # names resolve against a list this fresh before re-fetching
 CACHE_TTL_S = 600.0  # the numbered list + briefed decisions are forgotten after this
+FOCUS_TTL_S = 120.0  # the briefed / read session stays the implied target this long
 
 MESSAGE_MAX = 4000
 OTHER_TEXT_MAX = 500  # ccc answer rejects longer free text
@@ -369,6 +381,28 @@ def _match_name(target: str, sessions: Sequence[Session]) -> Resolution | None:
     return None
 
 
+def _misheard(target: str, sessions: Sequence[Session]) -> Resolution | None:
+    """A speech-to-text slip of a name ("Scratch Idol" → ``scratch-idle``), if clear.
+
+    One clearly-best similar name resolves (logged with that name only); several close
+    ones are a question listing them; nothing close is None (the caller says "unknown").
+    """
+    said = spoken_name(target, [s.name for s in sessions])
+    if said.name is not None:
+        hits = [s for s in sessions if s.name == said.name]
+        if len(hits) == 1:
+            log.info("🔎 session name misheard → %s", _say_name(hits[0]))
+            return Resolution(hits[0])
+        names = ", ".join(_say_name(s) for s in hits)
+        return Resolution(question=f"Several sessions match {redact(target, 40)!r}: {names}.")
+    if said.close:
+        names = ", ".join(redact(n, 40) for n in said.close)
+        return Resolution(
+            question=f"No session is called {redact(target, 40)!r}. Closest: {names}?"
+        )
+    return None
+
+
 def _candidates(target: str, sessions: Sequence[Session]) -> list[Session]:
     want = _squash(target)
     by_name = {_squash(s.name): s for s in sessions}
@@ -569,6 +603,17 @@ class Grant:
     action: str
     cap: Capability
     args: Mapping[str, str] = field(repr=False)
+    vouched: frozenset[str] = frozenset()  # args checked here, not by derivable
+
+
+class _Refused(str):
+    """A refusal result: no external content, so it does not void the sentence."""
+
+    __slots__ = ()
+
+
+def _refused(reason: str) -> str:
+    return _Refused(f"refused: {reason}")
 
 
 class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + per-call caches
@@ -587,6 +632,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         self._listed: list[Session] = []
         self._listed_at: float | None = None
         self._briefed: dict[str, str] = {}  # session_id → decision_id last briefed
+        self._focus: tuple[str, float] | None = None  # (session_id, since) — see module doc
         self._call: object | None = None  # the call (controller.turns) the caches belong to
         self._cached_at: float | None = None
         self._cache_lock = threading.Lock()
@@ -614,6 +660,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
                 self._call = turns
                 self._numbered, self._briefed = [], {}
                 self._listed, self._listed_at = [], None
+                self._focus = None
             self._cached_at = now
 
     def _fetch(self, deadline: Deadline | None = None) -> list[Session] | str:
@@ -654,7 +701,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
                 return Resolution(question=refreshed)
             sessions = refreshed
             found = _match_name(target, sessions)
-        return found or self._unknown(target, sessions)
+        return found or _misheard(target, sessions) or self._unknown(target, sessions)
 
     def _by_number(self, number: int, fresh: bool, deadline: Deadline | None) -> Resolution:
         if not self._numbered:
@@ -685,9 +732,42 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         return Resolution(question="No Claude sessions are running.")
 
     def _done(self, reason: str, text: str) -> str:
-        """Every result reached the agent: unused capabilities are void now."""
-        self.ctl.note_context(reason)
+        """Every result reached the agent: unused capabilities are void now (not on a refusal)."""
+        if not isinstance(text, _Refused):
+            self.ctl.note_context(reason)
         return text
+
+    # -- the session in focus -------------------------------------------------------------
+    def _set_focus(self, s: Session | None) -> None:
+        """``s`` is in focus now (None: nothing is — another session was briefed or read)."""
+        with self._cache_lock:
+            self._focus = (s.session_id, self.clock()) if s is not None else None
+
+    def _in_focus(self) -> str | None:
+        """The session_id in focus, unless :data:`FOCUS_TTL_S` passed since."""
+        with self._cache_lock:
+            if self._focus is None:
+                return None
+            session_id, since = self._focus
+            if self.clock() - since >= FOCUS_TTL_S:
+                self._focus = None
+                return None
+            return session_id
+
+    def _target_vouched(self, s: Session, text: str) -> str:
+        """Why ``s`` counts as said in ``text`` though its name is not in it ("" = not).
+
+        ``"misheard"`` — the sentence says a name that is clearly ``s``'s
+        (:func:`~my_stt_tts.bridge_text.spoken_name`); ``"focus"`` — it names no session
+        at all and ``s`` is the session in focus.
+        """
+        names = [x.name for x in self._listed] or [s.name]
+        said = spoken_name(text, names)
+        if said.name is not None:
+            return "misheard" if said.name == s.name else ""
+        if said.close:  # names some session, just not clearly which
+            return ""
+        return "focus" if self._in_focus() == s.session_id else ""
 
     # -- list / read / brief --------------------------------------------------------------
     def list_sessions(self) -> str:
@@ -714,6 +794,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         if what not in {"last_reply", "last_prompt"}:
             return self._done("read_session", "I can read the last reply or the last prompt.")
         deadline = Deadline(TOOL_BUDGET_S, self.clock)
+        self._set_focus(None)
         found = self.resolve(target, deadline=deadline)
         if found.session is None:
             return self._done("read_session", found.question)
@@ -724,6 +805,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             return self._done(
                 "read_session", f"Cannot read {_say_name(s)}: {reason_for(res.code)}."
             )
+        self._set_focus(s)
         text = " ".join(str(res.data.get(what) or "").split())
         if what == "last_reply":
             text = _tail_reply(text)  # before redaction: a cut-off token is no token
@@ -752,6 +834,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
     def brief_decision(self, target: str) -> str:
         """The spoken briefing of the decision the session needs (D5), ≤ 10 s in total."""
         deadline = Deadline(TOOL_BUDGET_S, self.clock)
+        self._set_focus(None)
         found = self.resolve(target, deadline=deadline)
         if found.session is None:
             return self._done("brief_decision", found.question)
@@ -760,6 +843,7 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         log_tool("brief_decision", s.name)
         if data is None:
             return self._done("brief_decision", failure)
+        self._set_focus(s)
         decision = data.get("decision")
         if not isinstance(decision, Mapping) or not _questions(decision):
             state = str(data.get("state") or s.status)
@@ -785,19 +869,27 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         """Mint the capability of what Albert just said for ``action``; a refusal as text.
 
         The target must come from that transcript (the list number when he said one, else
-        the session's name), and so must ``said`` (the message text, or his choice). The
-        capability is only checked here; :meth:`_mutate` spends it right before ccc acts.
+        the session's name — also misheard, or not at all when ``s`` is the session in
+        focus and the sentence names no session), and so must ``said`` (the message text,
+        or his choice). The capability is only checked here; :meth:`_mutate` spends it
+        right before ccc acts.
         """
         cap = self.ctl.mint()
         if isinstance(cap, Refusal):
-            return f"refused: {cap.reason}"
+            return _refused(cap.reason)
         number = _target_number(" ".join(str(target or "").split()))
         args = {"target": str(number) if number is not None else s.name, **said}
-        refusal = self.ctl.caps.check(cap, action, args)
+        vouched: frozenset[str] = frozenset()
+        if number is None and not derivable(s.name, cap.text, "target"):
+            how = self._target_vouched(s, cap.text)
+            if how:
+                vouched = frozenset({"target"})
+                log.info("🎯 %s → %s (%s)", action, _say_name(s), how)
+        refusal = self.ctl.caps.check(cap, action, args, vouched=vouched)
         if refusal is not None:
             log_refused(refusal.reason)
-            return f"refused: {refusal.reason}"
-        return Grant(action, cap, args)
+            return _refused(refusal.reason)
+        return Grant(action, cap, args, vouched)
 
     def send_message(self, target: str, text: str) -> str:
         """Send ``text`` to the session now (Albert's verified sentence is the go-ahead)."""
@@ -917,16 +1009,16 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         deadline = Deadline(budget, self.ctl.clock)
         lock_wait = min(LOCK_TIMEOUT_S, deadline.remaining())
         if not self.ctl.mutation_lock.acquire(timeout=max(lock_wait, 0.0)):
-            return "refused: another action is still running"
+            return _refused("another action is still running")
         try:
             refusal = before_mutation(
                 self.ctl.cancel,
                 deadline,
                 self.ctl.caps,
-                Mutation(grant.action, grant.args, grant.cap),
+                Mutation(grant.action, grant.args, grant.cap, grant.vouched),
             )
             if refusal is not None:
-                return f"refused: {refusal.reason}"
+                return _refused(refusal.reason)
             result = act(deadline.remaining())
         finally:
             self.ctl.mutation_lock.release()

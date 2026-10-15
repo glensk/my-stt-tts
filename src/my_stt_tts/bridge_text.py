@@ -12,6 +12,9 @@
 * :func:`derivable` — the fast-path rule: an argument must come from what was said; a
   message ``text`` or a decision ``choice`` counts when at least two thirds of its words
   were said (:func:`words_said`).
+* :func:`spoken_name` — which of several names (Claude session names) a sentence or a
+  spoken target says, tolerating speech-to-text slips ("Scratch Idol" → ``scratch-idle``):
+  a unique best similarity ≥ :data:`NAME_MATCH_MIN`, clearly ahead of the runner-up.
 * :func:`redact` — token / key / JWT / private-key patterns replaced, text capped.
 """
 
@@ -19,6 +22,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from functools import cache
 from urllib.parse import urlsplit
 
@@ -346,3 +352,73 @@ def _string_derivable(value: str, text: str, key: str) -> bool:
     if key in {"host", "url", "target"} or _looks_like_host(value):
         return host_said(value, text)
     return keyword_said(value, text)
+
+
+# -- spoken names (Claude sessions) ---------------------------------------------------------
+#: Similarity (:func:`name_similarity`) a misheard name needs ("scratch idol" ~ "scratch-idle").
+NAME_MATCH_MIN = 0.75
+#: How far the best name must be ahead of the runner-up to count as unique.
+NAME_MATCH_MARGIN = 0.1
+#: Names shorter than this (without spaces) only match exactly: too little to compare.
+NAME_MATCH_MIN_LEN = 5
+
+
+def name_similarity(spoken: str, name: str) -> float:
+    """Edit-distance ratio (0–1) of ``spoken`` and ``name``: case, spaces, hyphens ignored."""
+    a, b = compact(spoken), compact(name)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+@dataclass(frozen=True)
+class NameMatch:
+    """What :func:`spoken_name` found: the unique name, or the close names (best first)."""
+
+    name: str | None = None
+    close: tuple[str, ...] = ()
+
+
+def _name_score(text: str, name: str) -> float:
+    """The best similarity of ``name`` to a run of whole words of ``text``.
+
+    Runs of one word fewer to one word more than the name are compared, and only those of
+    about the name's length (a lone "scratch" never stands for "scratch-idle"). A run equal
+    to the name (spaces ignored) scores 1.
+    """
+    want = compact(name)
+    tokens = normalise(text).split()
+    if not want or not tokens:
+        return 0.0
+    size = len(normalise(name).split())
+    slack = max(2, len(want) // 4)
+    best = 0.0
+    for width in range(max(1, size - 1), size + 2):
+        for i in range(len(tokens) - width + 1):
+            run = "".join(tokens[i : i + width])
+            if run == want:
+                return 1.0
+            if len(want) >= NAME_MATCH_MIN_LEN and abs(len(run) - len(want)) <= slack:
+                best = max(best, name_similarity(run, want))
+    return best
+
+
+def spoken_name(text: str, names: Sequence[str]) -> NameMatch:
+    """Which of ``names`` ``text`` says — exactly, or misheard but clearly that one.
+
+    A name counts when its best score (:func:`_name_score`) is ≥ :data:`NAME_MATCH_MIN`
+    and the next best name scores at least :data:`NAME_MATCH_MARGIN` less. Several names
+    that close together give no name, only the ``close`` ones (best first).
+    """
+    scores = sorted(
+        ((score, name) for name in dict.fromkeys(names) if (score := _name_score(text, name))),
+        key=lambda pair: -pair[0],
+    )
+    hits = [(score, name) for score, name in scores if score >= NAME_MATCH_MIN]
+    if not hits:
+        return NameMatch()
+    top, best = hits[0]
+    rivals = [name for score, name in scores[1:] if score > top - NAME_MATCH_MARGIN]
+    if not rivals:
+        return NameMatch(best)
+    return NameMatch(close=tuple([best, *rivals][:3]))

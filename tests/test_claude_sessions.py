@@ -295,7 +295,7 @@ def test_number_without_a_list_or_out_of_range_asks(rig: Rig) -> None:
 
 
 def test_unknown_target_offers_close_candidates(rig: Rig) -> None:
-    found = rig.tools.resolve("voice bridg")
+    found = rig.tools.resolve("voice")  # too short to be a misheard "voice bridge"
     assert found.session is None
     assert "Did you mean voice bridge" in found.question
     unknown = rig.tools.resolve("zebra")
@@ -1059,3 +1059,148 @@ def test_briefings_are_forgotten_at_a_new_call(rig: Rig) -> None:
 def test_a_tail_cut_reply_loses_its_partial_first_word(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(last_reply="…p_" + "A" * 30 + " and the rest")
     assert rig.tool("read_session", "voice bridge") == "voice bridge last said: … and the rest"
+
+
+# -- the session in focus + misheard names (run 6 of tp#855) ---------------------------------
+COLOURS = {
+    "decision_id": "d-colour",
+    "source": "ask_user_question",
+    "questions": [
+        {
+            "text": "Which colour should the test banner have?",
+            "multi_select": False,
+            "options": [
+                {"label": "red", "consequence": None},
+                {"label": "green", "consequence": None},
+                {"label": "blue", "consequence": None},
+            ],
+        }
+    ],
+    "recommendation": "green",
+    "recommendation_reason": "",
+    "context": {"aim": "", "ticket": "", "recent_summary": ""},
+}
+
+FOCUS_ROWS = [
+    {"session_id": "id-scratch", "name": "scratch-idle", "kind": "interactive", "status": "idle"},
+    {"session_id": "id-voice", "name": "voice bridge", "kind": "interactive", "status": "busy"},
+]
+
+NOT_SAID = "refused: answer_decision: argument not in what you said"
+
+
+@pytest.fixture(name="focus")
+def _focus() -> Rig:
+    rig = Rig(FOCUS_ROWS)
+    rig.ccc.replies["inspect"] = inspect_data(COLOURS, state="waiting")
+    rig.ccc.replies["answer"] = ok({"delivery_id": "a1", "outcome": "accepted"})
+    rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
+    return rig
+
+
+def _answered(rig: Rig) -> list[dict[str, Any]]:
+    return [json.loads(stdin or "{}")["answers"] for _argv, stdin, _t in rig.ccc.of("answer")]
+
+
+def test_answer_green_right_after_the_briefing_targets_the_briefed_session(focus: Rig) -> None:
+    focus.say("What does Scratch Idol need?")
+    assert "needs a decision" in focus.tool("brief_decision", "Scratch Idol")
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == "answered"
+    assert _answered(focus) == [[{"question_index": 0, "option_indices": [1]}]]
+    assert focus.ccc.of("answer")[0][0][3] == "id-scratch"
+
+
+def test_without_a_session_in_focus_the_target_must_be_said(focus: Rig) -> None:
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+    assert not focus.ccc.of("answer")
+
+
+def test_the_choice_must_still_be_said_for_the_session_in_focus(focus: Rig) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "blue") == NOT_SAID
+    assert not focus.ccc.of("answer")
+
+
+def test_focus_expires(focus: Rig) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.clock.now += claude_sessions.FOCUS_TTL_S
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+
+
+@pytest.mark.parametrize("tool", ["brief_decision", "read_session"])
+def test_focus_moves_to_the_session_briefed_or_read_next(focus: Rig, tool: str) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.tool(tool, "voice bridge")
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+
+
+def test_focus_ends_with_the_call(focus: Rig) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.ctl.end_call()
+    focus.ctl.begin_call()
+    focus.say("Answer green.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+
+
+def test_a_sentence_naming_another_session_does_not_use_the_focus(focus: Rig) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say("Answer green for voice bridge.")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+
+
+def test_a_read_puts_the_session_in_focus_for_a_send(focus: Rig) -> None:
+    focus.ccc.replies["inspect"] = inspect_data(last_reply="shall I deploy?")
+    focus.tool("read_session", "scratch-idle")
+    focus.say("Tell it to deploy now.")
+    assert focus.tool("send_message", "scratch-idle", "deploy now") == "sent"
+    assert focus.ccc.of("send")[0][0][3] == "id-scratch"
+
+
+def test_a_misheard_name_in_the_sentence_counts_as_the_target(
+    focus: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    focus.say("Answer green for Scratch Idol.")
+    with caplog.at_level("INFO", logger="my_stt_tts.claude_sessions"):
+        assert focus.tool("answer_decision", "Scratch Idol", "green") == "answered"
+    lines = [r.getMessage() for r in caplog.records if "misheard" in r.getMessage()]
+    assert lines == [
+        "🔎 session name misheard → scratch-idle",
+        "🎯 answer_decision → scratch-idle (misheard)",
+    ]
+    assert all("green" not in r.getMessage() for r in caplog.records)
+
+
+def test_scratch_that_is_no_session(focus: Rig) -> None:
+    found = focus.tools.resolve("scratch that")
+    assert found.session is None and "No session is called 'scratch that'" in found.question
+    focus.say("scratch that, answer green")
+    assert focus.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+
+
+def test_close_misheard_names_are_refused_with_the_closest_ones() -> None:
+    rows = [
+        *FOCUS_ROWS,
+        {"session_id": "id-ideal", "name": "scratch-ideal", "kind": "interactive",
+         "status": "idle"},
+    ]  # fmt: skip
+    rig = Rig(rows)
+    rig.ccc.replies["inspect"] = inspect_data(COLOURS, state="waiting")
+    found = rig.tools.resolve("Scratch Idol")
+    assert found.session is None
+    assert "Closest: scratch-idle, scratch-ideal" in found.question
+    rig.say("Answer green for scratch idol.")
+    assert rig.tool("answer_decision", "scratch-idle", "green") == NOT_SAID
+    assert not rig.ccc.of("answer")
+
+
+def test_a_refusal_does_not_void_the_sentence(focus: Rig) -> None:
+    """Run 6: the agent's corrected retry got "context changed" — no more."""
+    focus.say("Answer green for scratch-idle.")
+    assert focus.tool("answer_decision", "scratch-idle", "b) green please") == NOT_SAID
+    assert focus.tool("answer_decision", "scratch-idle", "green") == "answered"
+    assert len(focus.ccc.of("answer")) == 1

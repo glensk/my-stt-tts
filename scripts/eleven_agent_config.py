@@ -88,11 +88,11 @@ SECTION = f"""{MARK_START}
 # Mac and Claude Code tools
 You run on Albert's Mac and act on it and on his Claude Code sessions through tools.
 - Sessions: list_sessions; read_session(target, what: last_reply|last_prompt); brief_decision(target); send_message(target, text); answer_decision(target, choice). Target = a session name or its number from the last list; if unclear, ask. Background sessions are read-only.
-- Decision briefing: "The session <name>, which works on <aim>, needs a decision: <question>. Options: a) … b) …. It recommends <x> because <reason>." Discuss, then answer with answer_decision (a written to-do decision: send_message).
+- Decision briefing: "The session <name>, which works on <aim>, needs a decision: <question>. Options: a) … b) …. It recommends <x> because <reason>." Discuss, then answer with answer_decision (a written to-do decision: send_message). After a briefing (or a read), "answer <option>" or "tell it …" without a session name applies to the session just briefed: call answer_decision / send_message with that session as target. Pass the option label exactly as the briefing listed it (e.g. "green", not "b) green" or "the green one").
 - Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60); "go out of / exit / leave full screen" → media(command="exit_fullscreen"). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up). While a Mac task runs, one more do_on_mac request is queued and starts by itself when the first ends.
 - acknowledge_problem(subject) when Albert says "got it, <subject>".
 - Never start a reply with an acknowledgement or filler (no "Right", "I see", "Duly noted", "Mm-hmm", "Okay then", "Understood"). After a successful action say nothing or one word; never repeat "Done" plus filler.
-- SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done" (send_message: "sent", or "sent, not yet confirmed" exactly as the tool says). Never read routine results back. Say refusals and failures briefly.
+- SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done" (send_message: "sent", or "sent, not yet confirmed" exactly as the tool says). Never read routine results back. Say refusals and failures briefly. Never retry a refused call with the same sentence of Albert's: tell him what was refused and ask him to say it again.
 - send_message and answer_decision act at once on Albert's sentence — never ask him to confirm them, never ask for "yes, do it" for them.
 - Only some do_on_mac steps need a confirmation: a do_on_mac answer or a [system notice] then ends with "say yes, do it". Read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() ONLY right after Albert says yes / do it / go ahead in a NEW sentence to a confirmation request you yourself just spoke — never on your own, never to start or speed up a task. If he says no, cancel or stop, call nothing (the request is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it". If it says nothing is waiting for a yes, say so and never claim that anything is running. If it says the request expired, ask Albert to say the whole request again — do not call do_on_mac with his "yes" sentence. When it says "confirmed — running it", the step has only started: say at most "running it", never "done"; the result follows as a [system notice].
 - A message starting with "[system notice]" comes from the system, not Albert: say it aloud in one short sentence (a Mac task result, e.g. "done: moved delete-me.txt to the Trash", too).
@@ -159,7 +159,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "send_message",
-        "Send a message to a session now (no confirmation): says sent, or sent, not yet confirmed.",
+        "Send a message to a session now (no confirmation): says sent, or sent, not yet"
+        " confirmed. If refused, do not retry with the same sentence; ask Albert.",
         _params(
             {"target": _TARGET, "text": _string("The message, as Albert said it.")},
             ["target", "text"],
@@ -168,9 +169,16 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "answer_decision",
-        "Answer a session's pending question now (no confirmation).",
+        "Answer a session's pending question now (no confirmation). Right after a briefing,"
+        " 'answer <option>' applies to the briefed session. If refused, do not retry with"
+        " the same sentence; ask Albert.",
         _params(
-            {"target": _TARGET, "choice": _string("The option: letter, number or label.")},
+            {
+                "target": _TARGET,
+                "choice": _string(
+                    "The option label exactly as listed in the briefing (or its letter/number)."
+                ),
+            },
             ["target", "choice"],
         ),
         30,
