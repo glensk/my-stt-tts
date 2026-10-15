@@ -13,7 +13,12 @@ Client tools (PLAN_claude-bridge 7.3), registered on the
 ``youtube_play_first()``   open + play the first visible video on a YouTube page
 =========================  =====================================================================
 
-Every tool: a capability from the latest authorised transcript, arguments derivable from
+These are the low-risk, reversible tier: they mint with ``verify_voice=False``, i.e. no
+speaker check (short commands like "Play." score unreliably; a call only starts after a
+verified wake word). ``MAC_VOICE_AUTHORIZED`` must still be set, injected notices never
+act, and another voice in the room can change the volume (accepted residual risk).
+
+Every tool: a capability from the latest user transcript, arguments derivable from
 it, then :func:`~my_stt_tts.bridge.before_mutation` (call's cancellation token, 3 s
 monotonic deadline, capability consumed) under the controller's mutation lock, right
 before acting. Subprocesses are argv lists with timeouts through an injectable runner.
@@ -537,7 +542,7 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
     def _start(self, tool: str, detail: str, args: Mapping[str, Any]) -> Capability | str:
         """Log, mint, and check that ``args`` come from the transcript (not consumed yet)."""
         log_tool(tool, detail)
-        cap = self.controller.mint()
+        cap = self.controller.mint(verify_voice=False)  # low-risk tier, no voice check
         if isinstance(cap, Refusal):
             return speak(cap)
         refusal = self.controller.caps.check(cap, tool, args)

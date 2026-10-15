@@ -9,14 +9,18 @@ import plistlib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from mac_fakes import (
+    ALBERT,
+    FRAME,
     OTHER,
     SYSTEM_EVENTS_PROBE,
     Call,
     FakeMac,
     FakeScorer,
     FakeVad,
+    yt_state,
 )
 
 from my_stt_tts import eleven_voice, mac_control
@@ -140,9 +144,36 @@ def test_no_capability_without_a_transcript() -> None:
     assert not call.fake.opened()
 
 
-def test_other_speaker_is_refused() -> None:
+def test_other_speaker_may_change_the_volume() -> None:
+    """Low-risk tier: Mac fast-path tools need no voice match (accepted residual risk)."""
     call = Call()
     call.say("louder", level=OTHER)
+    assert call.mac.set_volume(step="up").startswith("ok:")
+    assert call.fake.scripts(SET_VOLUME)
+
+
+def test_too_short_utterance_may_play() -> None:
+    """A one-word "Play." (0.2 s, under the voice check's minimum) still acts."""
+    call = Call()
+    call.fake.js = {
+        "state": [yt_state(paused=True), yt_state(paused=False)],
+        "play_poll": {"state": "resolved"},
+    }
+    for _ in range(2):
+        call.clock.now += 0.1
+        call.ctl.feed_audio(np.full(FRAME, ALBERT, dtype=np.float32))
+    for _ in range(6):
+        call.clock.now += 0.1
+        call.ctl.feed_audio(np.zeros(FRAME, dtype=np.float32))
+    call.clock.now += 1.5
+    call.ctl.on_transcript(1, "Play.", call.clock.now)
+    assert call.mac.media("play") == "ok: playing"
+
+
+def test_mac_tool_refused_when_authorized_env_unset() -> None:
+    call = Call()
+    call.ctl.authoriser.authorized = None
+    call.say("louder")
     assert call.mac.set_volume(step="up") == "refused: voice not verified"
     assert not call.fake.scripts(SET_VOLUME)
 

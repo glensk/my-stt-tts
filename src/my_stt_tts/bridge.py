@@ -8,13 +8,22 @@ Built once in ``voice_control.daemon_main`` when one of the opt-in flags
 :class:`~my_stt_tts.turns.TurnSource`) and every user transcript with a sequence number
 and the monotonic time it arrived.
 
-Authorisation (only Albert's voice may act, fail closed):
+Authorisation (two risk tiers, fail closed):
 
-* :class:`Authoriser` — the utterance a transcript binds to must match the profile named
-  by ``MAC_VOICE_AUTHORIZED`` (its call-domain profile ``enroll/call/<name>.npy`` when there
-  is one, else the wake profile) with cosine ≥ 0.35. No such variable, no profile, a model
-  failure, no / stale binding, an utterance under 0.4 s → refused. With several candidate
-  utterances every one must pass. ``[system notice]`` messages never pass.
+* Full voice check — Claude session sends / answers / acknowledgements, ``do_on_mac``,
+  ``confirm_action`` and every other risky action. :class:`Authoriser`: the utterance a
+  transcript binds to must match the profile named by ``MAC_VOICE_AUTHORIZED`` (its
+  call-domain profile ``enroll/call/<name>.npy`` when there is one, else the wake profile)
+  with cosine ≥ 0.35. No such variable, no profile, a model failure, no / stale binding,
+  an utterance under 0.4 s → refused. With several candidate utterances every one must
+  pass. ``[system notice]`` messages never pass.
+* Low-risk, no voice check — the reversible Mac fast-path tools
+  (:mod:`~my_stt_tts.mac_control`: open a site or app, volume, brightness, media) mint
+  with ``verify_voice=False``. Speaker scores on short utterances (a one-word "Play.") are
+  unreliable and refused Albert himself, and a call only starts after a verified wake
+  word. Everything else still holds: ``MAC_VOICE_AUTHORIZED`` must be set, injected
+  notices never mint, one capability per transcript, invalidation, arguments derivable
+  from the transcript. Residual risk: another voice in the room can change the volume.
 * :class:`CapabilityStore` — an authorised transcript mints at most ONE capability; any
   read, briefing, tool result or contextual update invalidates the unused ones (and the
   transcripts behind them). A capability allows one action whose arguments come from the
@@ -241,23 +250,32 @@ class CapabilityStore:
         self._burned_through = -1  # transcripts up to this seq can no longer mint
         self._lock = threading.Lock()
 
-    def mint(self, transcript: Transcript) -> Capability | Refusal:
-        """At most one capability per authorised user transcript."""
+    def mint(self, transcript: Transcript, *, verify_voice: bool = True) -> Capability | Refusal:
+        """At most one capability per authorised user transcript.
+
+        ``verify_voice=False`` (low-risk tier) skips only the speaker check; an
+        unconfigured ``MAC_VOICE_AUTHORIZED`` still refuses.
+        """
         with self._lock:
             refusal = self._mint_precheck(transcript)
+            if refusal is None and not verify_voice and self.authoriser.authorized is None:
+                refusal = _refuse("not_configured")
             if refusal is None:
                 self._minted.add(transcript.seq)  # one attempt per transcript, pass or fail
         if refusal is not None:
             log_refused(refusal.reason)
             return refusal
-        refusal = self.authoriser.verify(transcript)
-        if refusal is not None:
-            return refusal
+        if verify_voice:
+            refusal = self.authoriser.verify(transcript)
+            if refusal is not None:
+                return refusal
         cap = Capability(secrets.token_hex(8), transcript.seq, transcript.text, self.clock())
         with self._lock:
             if transcript.seq <= self._burned_through:  # a read arrived while verifying
                 return _refuse("invalidated", "context changed — say it again")
             self._live[cap.id] = cap
+        if not verify_voice:
+            log.info("🔓 low-risk action, no voice check")
         return cap
 
     def _mint_precheck(self, transcript: Transcript) -> Refusal | None:
@@ -791,13 +809,16 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
     def latest(self) -> Transcript | None:
         return self._latest
 
-    def mint(self) -> Capability | Refusal:
-        """A capability from the latest user transcript (at most one per transcript)."""
+    def mint(self, *, verify_voice: bool = True) -> Capability | Refusal:
+        """A capability from the latest user transcript (at most one per transcript).
+
+        ``verify_voice=False`` is the low-risk tier (Mac fast path): no speaker check.
+        """
         latest = self._latest
         if latest is None:
             log_refused("nothing said")
             return _refuse("no_transcript", "nothing said yet")
-        return self.caps.mint(latest)
+        return self.caps.mint(latest, verify_voice=verify_voice)
 
     def propose(self, kind: str, args: Mapping[str, Any]) -> PendingAction:
         """A risky action waiting for its code; the asking transcript cannot confirm it."""

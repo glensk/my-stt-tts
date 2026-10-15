@@ -276,22 +276,27 @@ code is asked for (reading is not a mutation). Albert does not answer it; A10 mo
 
 ### A11 — other voices are refused
 
-Needs a second person, or a TV / phone playing someone else saying "louder" (not a
+Needs a second person, or a TV / phone playing someone else saying the sentence (not a
 recording of Albert — replaying Albert is the documented residual risk, not tested).
+Volume, media and the other Mac fast-path tools are the low-risk tier and need no voice
+match: another voice saying "louder" DOES change the volume (documented residual risk),
+so A11 tests a session send, which keeps the full voice check.
 
 ```commands
-scripts/acceptance_setup.sh -q volume            # V0
+scripts/acceptance_setup.sh -q prompts           # P0: scratch-idle's user prompts so far
 ```
 
-1. The other person says: **"louder"**. Then the TV/phone plays **"louder"**.
+1. The other person says: **"tell scratch-idle: print hello"**. Then the TV/phone plays
+   **"tell scratch-idle: print hello"**.
 
 ```commands
-scripts/acceptance_setup.sh -q volume            # still V0 after each
+scripts/acceptance_setup.sh -q prompts           # still P0 after each
 ```
 
-Pass: both are refused — spoken refusal, or ignored with no volume change — and the volume
-reads V0 after each attempt. The conversation has to be on for this (Albert starts it,
-then stays silent).
+Pass: both are refused (spoken "voice not verified", no code given) and scratch-idle's
+prompts still read P0 after each attempt — no new "print hello" record (A10 already left
+one, so compare with P0, not with the bare string). The conversation has to be on for
+this (Albert starts it, then stays silent).
 
 ### A12 — failure on a dead session, attention inbox
 
