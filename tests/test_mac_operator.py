@@ -529,6 +529,7 @@ def test_stdout_is_capped(tmp_path: Path) -> None:
 
 
 def test_daemon_shutdown_stops_the_run_via_the_controller(tmp_path: Path) -> None:
+    pytest.importorskip("mcp", reason="register() needs the 'operator' extra (mcp)")
     call = Call()
     op = register(
         call.ctl,
@@ -701,6 +702,7 @@ def test_audit_has_no_content_and_mode_0600(tmp_path: Path) -> None:
 
 
 def test_register_only_with_the_flag(tmp_path: Path) -> None:
+    pytest.importorskip("mcp", reason="register() needs the 'operator' extra (mcp)")
     call = Call()
     assert register(call.ctl, env={}) is None
     assert register(call.ctl, env={"MAC_VOICE_OPERATOR": "0"}) is None

@@ -9,14 +9,16 @@ jobs:
   lint-test:
     # macOS arm64: the only runner that exercises the Apple-Silicon MLX path.
     # Heavy ML extras are NOT installed; tests cover pure logic with audio mocked.
+    # The 'operator' extra (mcp) is light, pure Python, and needed by the
+    # operator/broker tests (mac_operator.register, mac_broker.build_server).
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
-      - name: Sync (core + dev only)
-        run: uv sync
+      - name: Sync (core + dev + operator extra)
+        run: uv sync --extra operator
       - name: Ruff format check
         run: uv run ruff format --check .
       - name: Ruff lint
