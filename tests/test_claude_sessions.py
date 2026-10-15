@@ -529,9 +529,13 @@ def test_read_then_send_in_the_same_turn_is_refused(rig: Rig) -> None:
 
 
 def test_the_target_must_be_in_what_albert_said(rig: Rig) -> None:
-    rig.say("tell scratch idle hello")
+    rig.say("hello to scratch idle")
     assert rig.tool("send_message", "voice bridge", "hello") == (
         "refused: send_message: argument not in what you said"
+    )
+    rig.say("tell scratch idle hello")  # an explicit recipient: refused by name
+    assert rig.tool("send_message", "voice bridge", "hello") == (
+        "refused: You addressed scratch idle, not voice bridge."
     )
     rig.say("tell scratch idle hello")
     assert rig.tool("answer_decision", "voice bridge", "a").startswith("refused:")
@@ -1204,3 +1208,121 @@ def test_a_refusal_does_not_void_the_sentence(focus: Rig) -> None:
     assert focus.tool("answer_decision", "scratch-idle", "b) green please") == NOT_SAID
     assert focus.tool("answer_decision", "scratch-idle", "green") == "answered"
     assert len(focus.ccc.of("answer")) == 1
+
+
+# -- an explicit recipient beats the focus (run 7 of tp#855) ----------------------------------
+def test_run7_tell_scratch_that_is_refused_not_sent_to_the_focus(focus: Rig) -> None:
+    """Run 7: "Tell Scratch that, hi." went to the briefed scratch-idle."""
+    focus.say("What does Scratch Idol need?")
+    assert "needs a decision" in focus.tool("brief_decision", "Scratch Idol")
+    focus.say("Tell Scratch that, hi.")
+    result = focus.tool("send_message", "scratch-idle", "hi")
+    assert result.startswith("refused: No session is called 'scratch that'.")
+    assert "Did you mean scratch-idle" in result
+    assert not focus.ccc.of("send")
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Tell Scratch that, hi.",
+        "Sag Scratch that: hi.",
+        "Schreib an Scratch that, hi.",
+        "Dis à Scratch that : hi.",
+        "Envoie à Scratch that, hi.",
+        "Scratch that: hi.",
+    ],
+)
+def test_an_unknown_recipient_never_falls_back_to_the_focus(focus: Rig, sentence: str) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say(sentence)
+    result = focus.tool("send_message", "scratch-idle", "hi")
+    assert result.startswith("refused: No session is called 'scratch that'.")
+    assert not focus.ccc.of("send")
+
+
+def test_a_recipient_naming_another_session_is_refused(focus: Rig) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say("Tell voice bridge hi.")
+    result = focus.tool("send_message", "scratch-idle", "hi")
+    assert result == "refused: You addressed voice bridge, not scratch-idle."
+    assert not focus.ccc.of("send")
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Tell it: hi",
+        "tell them hi",
+        "Sag ihm: hi",
+        "Schreib ihr hi",
+        "Dis-lui hi",
+        "Demande-lui: hi",
+    ],
+)
+def test_a_pronoun_recipient_is_the_session_in_focus(focus: Rig, sentence: str) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say(sentence)
+    assert focus.tool("send_message", "scratch-idle", "hi") == "sent"
+    assert focus.ccc.of("send")[0][0][3] == "id-scratch"
+
+
+def test_a_pronoun_recipient_without_focus_is_not_said(focus: Rig) -> None:
+    focus.say("Tell it: hi")
+    assert focus.tool("send_message", "scratch-idle", "hi").startswith("refused: ")
+    assert not focus.ccc.of("send")
+
+
+@pytest.mark.parametrize("sentence", ["Answer green.", "Antworte grün.", "Réponds vert."])
+def test_answer_without_a_recipient_keeps_the_focus(focus: Rig, sentence: str) -> None:
+    focus.tool("brief_decision", "scratch-idle")
+    focus.say(sentence)
+    choice = sentence.split()[1].rstrip(".")
+    assert focus.tool("answer_decision", "scratch-idle", choice) == "answered"
+    assert focus.ccc.of("answer")[0][0][3] == "id-scratch"
+
+
+@pytest.mark.parametrize(
+    "sentence", ["Answer scratch-idle green.", "Answer green for scratch-idle."]
+)
+def test_answer_naming_the_session_uses_it(focus: Rig, sentence: str) -> None:
+    focus.tool("brief_decision", "voice bridge")
+    focus.say(sentence)
+    assert focus.tool("answer_decision", "scratch-idle", "green") == "answered"
+    assert focus.ccc.of("answer")[0][0][3] == "id-scratch"
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "scratch idle: print hello",
+        "Tell scratch idle to print hello.",
+        "Schick an scratch idle: print hello",
+        "Écris à Scratch Idol : print hello",
+    ],
+)
+def test_a_named_recipient_is_the_target(focus: Rig, sentence: str) -> None:
+    focus.tool("brief_decision", "voice bridge")
+    focus.say(sentence)
+    assert focus.tool("send_message", "scratch-idle", "print hello") == "sent"
+    assert focus.ccc.of("send")[0][0][3] == "id-scratch"
+
+
+@pytest.mark.parametrize(
+    ("sentence", "phrase"),
+    [
+        ("Tell Scratch that, hi.", "scratch that"),
+        ("tell it: hi", "it"),
+        ("Please tell scratch idle to deploy", "scratch idle"),
+        ("Bitte frag scratch idle, ob es fertig ist", "scratch idle"),
+        ("Envoie à scratch idle : bonjour", "scratch idle"),
+        ("send a message to voice bridge", "voice bridge"),
+        ("scratch idle: print hello", "scratch idle"),
+        ("Answer: green.", None),
+        ("Antworte grün.", None),
+        ("answer: write tests", None),
+        ("scratch that, answer green", None),
+    ],
+)
+def test_recipient_phrase(sentence: str, phrase: str | None) -> None:
+    assert claude_sessions.recipient_phrase(sentence) == phrase

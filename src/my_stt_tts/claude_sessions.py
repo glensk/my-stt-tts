@@ -22,7 +22,13 @@ Tools (the voice agent's client tools):
 The session in focus: after a successful ``brief_decision`` / ``read_session`` of S, a
 send or answer whose sentence names no session may target S ("answer green" right after
 the briefing); the text or choice must still be said. Focus ends when another session is
-briefed or read, when the call ends, or after :data:`FOCUS_TTL_S`.
+briefed or read, when the call ends, or after :data:`FOCUS_TTL_S`. Focus never overrides
+an explicit recipient: a sentence that addresses one ("tell / ask / send to / write to /
+message <X>", "sag / frag / schreib / schick an <X>", "dis / demande / écris / envoie à
+<X>", a leading "<X>: …") goes only to the session X names (exactly or misheard), and an
+X that names no session is refused with the closest names — never sent to the focus. A
+pronoun recipient (it / them / him / her, ihm / ihr / ihn / ihnen, lui / leur) is the
+session in focus ("tell it to deploy").
 
 Misheard names: a target (and the sentence's session name) that matches no session
 exactly resolves to the unique clearly-best similar name
@@ -419,6 +425,131 @@ def _say_name(s: Session) -> str:
     return redact(s.name, 40)
 
 
+# -- the recipient a sentence addresses ("tell X …", "X: …") -----------------------------------
+#: Verbs that address a recipient: "tell / ask / send (to) / write (to) / message X",
+#: "sag / frag / schreib / schick (an) X", "dis / demande / écris / envoie (à) X".
+_ADDRESS_VERBS = {
+    "tell", "ask", "send", "write", "message",
+    "sag", "sage", "frag", "frage", "schreib", "schreibe", "schick", "schicke",
+    "dis", "demande", "ecris", "envoie",
+}  # fmt: skip
+#: Prepositions between the verb (or its object) and the recipient.
+_ADDRESS_PREPS = {"to", "an", "a", "au", "aux"}
+#: "send a message to X": the object skipped before the preposition.
+_ADDRESS_OBJECTS = (
+    ("a", "message"), ("the", "message"), ("a", "note"),
+    ("eine", "nachricht"), ("die", "nachricht"), ("un", "message"), ("le", "message"),
+)  # fmt: skip
+#: Pronoun recipients: they mean the session in focus ("tell it to deploy", "sag ihm …").
+_RECIPIENT_PRONOUNS = {
+    "it", "them", "him", "her", "ihm", "ihr", "ihn", "ihnen", "lui", "leur",
+}  # fmt: skip
+#: Words that end the recipient phrase ("tell scratch idle to deploy" → "scratch idle").
+#: Not "that": speech-to-text writes "scratch that" for a name (run 7 of tp#855).
+_RECIPIENT_END = {"to", "zu", "dass", "que", "qu", "whether", "ob", "si", "about"}
+_RECIPIENT_MAX_WORDS = 4
+#: Words before a verb that still leave it at the start of the sentence.
+_LEAD_FILLER = {
+    "please", "ok", "okay", "hey", "now", "then", "and", "so", "can", "could", "would",
+    "you", "bitte", "jetzt", "dann", "und", "also", "kannst", "du", "mal",
+    "alors", "et", "maintenant", "puis", "peux", "tu", "stp", "svp",
+}  # fmt: skip
+#: Heads of a leading "<head>: …" that name no recipient ("Answer: green.").
+_COLON_HEADS = {
+    "answer", "reply", "choice", "option", "message", "note", "yes", "no",
+    "antwort", "antworte", "wahl", "ja", "nein", "nachricht",
+    "reponse", "reponds", "choix", "oui", "non",
+} | _LEAD_FILLER  # fmt: skip
+_SENTENCE_END = {".", "!", "?"}
+_MARKS = {*_SENTENCE_END, ":", ",", ";"}
+
+
+def _tokens(text: str) -> list[str]:
+    """Casefolded, accent-free words plus the punctuation that delimits phrases."""
+    out: list[str] = []
+    for chunk in re.split(r"([.!?:,;])", text):
+        out.extend([chunk] if chunk in _MARKS else normalise(chunk).split())
+    return out
+
+
+def _sentence_starts(tokens: Sequence[str]) -> list[int]:
+    """Indices where a sentence starts (after any leading filler words)."""
+    starts: list[int] = []
+    at_start = True
+    for i, tok in enumerate(tokens):
+        if tok in _SENTENCE_END:
+            at_start = True
+            continue
+        if at_start:
+            if tok in _LEAD_FILLER or tok == ",":
+                continue
+            starts.append(i)
+            at_start = False
+    return starts
+
+
+def _phrase_after(tokens: Sequence[str], i: int) -> str:
+    """The recipient phrase starting at ``tokens[i]`` (up to punctuation or a connector)."""
+    words: list[str] = []
+    for tok in tokens[i:]:
+        if not tok.isalnum() or (words and tok in _RECIPIENT_END):
+            break
+        words.append(tok)
+        if tok in _RECIPIENT_PRONOUNS and len(words) == 1:
+            break
+        if len(words) == _RECIPIENT_MAX_WORDS:
+            break
+    return " ".join(words)
+
+
+def _addressed(tokens: Sequence[str], verb_at: int) -> str:
+    """The recipient after the addressing verb at ``verb_at`` ("" when there is none)."""
+    i = verb_at + 1
+    for obj in _ADDRESS_OBJECTS:
+        if tuple(tokens[i : i + len(obj)]) == obj:
+            i += len(obj)
+            if i < len(tokens) and tokens[i] in _ADDRESS_PREPS:
+                return _phrase_after(tokens, i + 1)
+            return ""
+    if i < len(tokens) and tokens[i] in _ADDRESS_PREPS:
+        i += 1
+    return _phrase_after(tokens, i)
+
+
+def recipient_phrase(text: str) -> str | None:
+    """The recipient ``text`` explicitly addresses, normalised; None when it addresses none.
+
+    "Tell Scratch that, hi." → ``"scratch that"``; "dis à scratch idle : bonjour" →
+    ``"scratch idle"``; "scratch idle: print hello" → ``"scratch idle"``; "tell it hi" →
+    ``"it"`` (a pronoun: :func:`is_pronoun`); "Answer green." / "Answer: green." → None.
+    Only a verb at the start of a sentence counts, so a message text that itself says
+    "write …" after a colon does not address anyone.
+    """
+    tokens = _tokens(text)
+    for start in _sentence_starts(tokens):
+        if tokens[start] in _ADDRESS_VERBS:
+            phrase = _addressed(tokens, start)
+            if phrase:
+                return phrase
+            continue
+        end = next((j for j in range(start, len(tokens)) if not tokens[j].isalnum()), None)
+        words = tokens[start:end] if end is not None else []
+        if (
+            end is not None
+            and tokens[end] == ":"
+            and 0 < len(words) <= _RECIPIENT_MAX_WORDS
+            and words[0] not in _COLON_HEADS
+            and words[0] not in _ADDRESS_VERBS
+        ):
+            return " ".join(words)
+    return None
+
+
+def is_pronoun(phrase: str) -> bool:
+    """True when a recipient phrase is a pronoun: it means the session in focus."""
+    return phrase in _RECIPIENT_PRONOUNS
+
+
 # -- decisions ----------------------------------------------------------------------------------
 _ORDINALS = {
     "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
@@ -769,6 +900,29 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
             return ""
         return "focus" if self._in_focus() == s.session_id else ""
 
+    def _recipient_is(self, s: Session, phrase: str) -> str:
+        """How the explicit recipient ``phrase`` names ``s`` ("named", "misheard", "" = not)."""
+        if derivable(s.name, phrase, "target"):
+            return "named"
+        names = [x.name for x in self._listed] or [s.name]
+        return "misheard" if spoken_name(phrase, names).name == s.name else ""
+
+    def _wrong_recipient(self, s: Session, phrase: str) -> str:
+        """Why a sentence addressing ``phrase`` cannot go to ``s`` (closest names as hints)."""
+        said = redact(phrase, 40)
+        others = [x for x in self._listed if x.session_id != s.session_id]
+        named = [x for x in others if self._recipient_is(x, phrase)]
+        if len(named) == 1:
+            return f"You addressed {_say_name(named[0])}, not {_say_name(s)}."
+        focus = self._in_focus()
+        hints = [x for x in self._listed if x.session_id == focus]
+        hints += [x for x in _candidates(phrase, self._listed) if x not in hints]
+        if hints:
+            names = ", ".join(_say_name(x) for x in hints)
+            return f"No session is called {said!r}. Did you mean {names}?"
+        running = ", ".join(_say_name(x) for x in self._listed[:5])
+        return f"No session is called {said!r}." + (f" Running: {running}." if running else "")
+
     # -- list / read / brief --------------------------------------------------------------
     def list_sessions(self) -> str:
         """Numbered list of every live session (both accounts)."""
@@ -871,8 +1025,10 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         The target must come from that transcript (the list number when he said one, else
         the session's name — also misheard, or not at all when ``s`` is the session in
         focus and the sentence names no session), and so must ``said`` (the message text,
-        or his choice). The capability is only checked here; :meth:`_mutate` spends it
-        right before ccc acts.
+        or his choice). A sentence that addresses a recipient ("tell <X> …", "<X>: …",
+        :func:`recipient_phrase`) goes only to the session X names; a pronoun recipient
+        ("tell it …") means the session in focus. The capability is only checked here;
+        :meth:`_mutate` spends it right before ccc acts.
         """
         cap = self.ctl.mint()
         if isinstance(cap, Refusal):
@@ -880,11 +1036,19 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         number = _target_number(" ".join(str(target or "").split()))
         args = {"target": str(number) if number is not None else s.name, **said}
         vouched: frozenset[str] = frozenset()
-        if number is None and not derivable(s.name, cap.text, "target"):
+        phrase = recipient_phrase(cap.text) if number is None else None
+        how = ""
+        if phrase is not None and not is_pronoun(phrase):  # "tell <X> …": X decides
+            how = self._recipient_is(s, phrase)
+            if not how:
+                log_refused("the addressed recipient is not that session")
+                return _refused(self._wrong_recipient(s, phrase))
+            how = "" if how == "named" else how
+        elif number is None and not derivable(s.name, cap.text, "target"):
             how = self._target_vouched(s, cap.text)
-            if how:
-                vouched = frozenset({"target"})
-                log.info("🎯 %s → %s (%s)", action, _say_name(s), how)
+        if how:
+            vouched = frozenset({"target"})
+            log.info("🎯 %s → %s (%s)", action, _say_name(s), how)
         refusal = self.ctl.caps.check(cap, action, args, vouched=vouched)
         if refusal is not None:
             log_refused(refusal.reason)
