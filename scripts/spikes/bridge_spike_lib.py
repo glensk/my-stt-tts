@@ -34,6 +34,10 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude")
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "tests/fixtures/spikes"
 ACCOUNTS: dict[str, Path | None] = {"cpriv": None, "cwork": Path.home() / ".claude-work"}
+#: Account used when a caller passes none: env ``SCRATCH_ACCOUNT`` (set by
+#: ``acceptance_setup.sh`` from its state file), else cpriv.
+_ENV_ACCOUNT = os.environ.get("SCRATCH_ACCOUNT", "")
+DEFAULT_ACCOUNT = _ENV_ACCOUNT if _ENV_ACCOUNT in ACCOUNTS else "cpriv"
 
 OK = "✅"
 FAIL = "❌"
@@ -104,8 +108,9 @@ def agents_json(config_dir: Path | None, cwd: str | None = None) -> Any:
     return json.loads(out)
 
 
-def list_sessions(account: str = "cpriv") -> list[ClaudeSession]:
-    """Every session of *account* (interactive and background)."""
+def list_sessions(account: str | None = None) -> list[ClaudeSession]:
+    """Every session of *account* (default :data:`DEFAULT_ACCOUNT`), interactive and background."""
+    account = account or DEFAULT_ACCOUNT
     rows = agents_json(ACCOUNTS[account])
     return [
         ClaudeSession(
@@ -123,7 +128,7 @@ def list_sessions(account: str = "cpriv") -> list[ClaudeSession]:
 
 
 def find_session(
-    *, session_id: str | None = None, name: str | None = None, account: str = "cpriv"
+    *, session_id: str | None = None, name: str | None = None, account: str | None = None
 ) -> ClaudeSession | None:
     """The interactive session with *session_id* (preferred) or exact *name*."""
     hits = [
@@ -135,7 +140,7 @@ def find_session(
     return hits[0] if len(hits) == 1 else None
 
 
-def session_status(session_id: str, account: str = "cpriv") -> str:
+def session_status(session_id: str, account: str | None = None) -> str:
     """Raw status of *session_id* now (``busy``/``idle``/``waiting``/``blocked``/``gone``).
 
     A scratch session's Stop hook may arm a keep-warm timer (a background shell), which
@@ -150,9 +155,9 @@ def session_status(session_id: str, account: str = "cpriv") -> str:
     return "gone"
 
 
-def transcript_for(session_id: str, account: str = "cpriv") -> Path | None:
+def transcript_for(session_id: str, account: str | None = None) -> Path | None:
     """The JSONL transcript of *session_id*: owning account first, then the other one."""
-    homes = [ACCOUNTS[account] or Path.home() / ".claude"]
+    homes = [ACCOUNTS[account or DEFAULT_ACCOUNT] or Path.home() / ".claude"]
     homes += [h or Path.home() / ".claude" for h in ACCOUNTS.values()]
     for home in homes:
         hits = sorted((home / "projects").glob(f"*/{session_id}.jsonl"))
@@ -161,10 +166,10 @@ def transcript_for(session_id: str, account: str = "cpriv") -> Path | None:
     return None
 
 
-def expected_transcript(session: ClaudeSession, account: str = "cpriv") -> Path:
+def expected_transcript(session: ClaudeSession, account: str | None = None) -> Path:
     """Where Claude Code WILL write *session*'s transcript (a fresh session has none
     until its first prompt): ``projects/<cwd with non-alphanumerics as ->/<id>.jsonl``."""
-    home = ACCOUNTS[account] or Path.home() / ".claude"
+    home = ACCOUNTS[account or DEFAULT_ACCOUNT] or Path.home() / ".claude"
     slug = re.sub(r"[^A-Za-z0-9]", "-", session.cwd)
     return home / "projects" / slug / f"{session.session_id}.jsonl"
 

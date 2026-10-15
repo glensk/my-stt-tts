@@ -7,7 +7,7 @@ SCRATCH=/tmp/bridge-scratch
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 CCC_REPO="${CCC_REPO:-$HOME/obsidian/42-Git/llms/claude-command-center}"
 CCC_PY="$CCC_REPO/.venv/bin/python"
-CLAUDE_JSON="$HOME/.claude.json"
+ACCOUNT="${SCRATCH_ACCOUNT:-cpriv}"
 NAME=scratch-idle
 MODEL=sonnet
 DRY=0
@@ -15,20 +15,23 @@ CLEANUP=""
 
 usage() {
 	cat <<'EOF'
-Usage: scratch_setup.sh [-n] [-b] [-N NAME] [-m MODEL] | -C ITERM_SESSION_ID
+Usage: scratch_setup.sh [-n] [-b] [-N NAME] [-m MODEL] [-a ACCOUNT] | -C ITERM_SESSION_ID
 
 Creates /tmp/bridge-scratch (with a project settings file allowing `Bash(sleep:*)`, so
-the busy test never stops on a permission prompt), pre-trusts it for the cpriv account
-(~/.claude.json, both /tmp/... and /private/tmp/...; backup first, atomic write), then
-opens ONE new iTerm2 tab in the current window running
+the busy test never stops on a permission prompt), pre-trusts it for the chosen account
+(cpriv: ~/.claude.json, cwork: ~/.claude-work/.claude.json; both /tmp/... and
+/private/tmp/...; backup first, atomic write), then opens ONE new iTerm2 tab in the
+current window running
   cd /tmp/bridge-scratch && claude -n scratch-idle --model sonnet
-under cpriv, and prints the new tab's iTerm session id.
+under that account, and prints the new tab's iTerm session id. It does not check the
+account's quota (acceptance_setup.sh does).
 
 Options:
   -n, --dry-run        print what would be done, change nothing
   -b, --busy           name the session scratch-busy (the second scratch session)
   -N, --name NAME      session name (default scratch-idle)
   -m, --model MODEL    model for the scratch session (default sonnet)
+  -a, --account ACCT   cpriv or cwork (default: env SCRATCH_ACCOUNT, else cpriv)
   -C, --cleanup ID     send /exit to the Claude session in iTerm session ID, then close
                        that tab
   -h, --help           this help
@@ -37,6 +40,7 @@ Examples:
   scripts/spikes/scratch_setup.sh -n
   scripts/spikes/scratch_setup.sh            # -> prints ITERM_SESSION=<uuid>
   scripts/spikes/scratch_setup.sh -b
+  scripts/spikes/scratch_setup.sh -a cwork
   scripts/spikes/scratch_setup.sh -C <uuid>
 EOF
 }
@@ -54,6 +58,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	-m | --model)
 		MODEL="${2:?-m needs a model}"
+		shift
+		;;
+	-a | --account)
+		ACCOUNT="${2:?-a needs cpriv or cwork}"
 		shift
 		;;
 	-C | --cleanup)
@@ -93,7 +101,23 @@ PY
 	exit $?
 fi
 
-LAUNCH="cd $SCRATCH && env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR CC_NO_KEEPWARM=1 AI_NO_AUTOCOMMIT=1 $CLAUDE_BIN -n $NAME --model $MODEL"
+# cpriv = both config-dir variables UNSET (setting the default path orphans the Keychain
+# login); cwork = CLAUDE_CONFIG_DIR pinned to ~/.claude-work.
+case "$ACCOUNT" in
+cpriv)
+	CLAUDE_JSON="$HOME/.claude.json"
+	ACCOUNT_ENV="env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR"
+	;;
+cwork)
+	CLAUDE_JSON="$HOME/.claude-work/.claude.json"
+	ACCOUNT_ENV="env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CLAUDE_CONFIG_DIR=$HOME/.claude-work"
+	;;
+*)
+	fail "-a must be cpriv or cwork (got: $ACCOUNT)"
+	exit 2
+	;;
+esac
+LAUNCH="cd $SCRATCH && $ACCOUNT_ENV CC_NO_KEEPWARM=1 AI_NO_AUTOCOMMIT=1 $CLAUDE_BIN -n $NAME --model $MODEL"
 
 if [[ $DRY -eq 1 ]]; then
 	ok "dry run: would mkdir -p $SCRATCH and write $SCRATCH/.claude/settings.local.json (allow Bash(sleep:*))"
@@ -171,5 +195,5 @@ APPLESCRIPT
 	fail "could not open the iTerm2 tab"
 	exit 1
 }
-ok "opened iTerm2 tab running '$NAME' in $SCRATCH"
+ok "opened iTerm2 tab running '$NAME' in $SCRATCH on $ACCOUNT"
 echo "ITERM_SESSION=$ITERM_SESSION"

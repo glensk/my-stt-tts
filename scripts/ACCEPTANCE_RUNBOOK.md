@@ -4,7 +4,8 @@ Attended acceptance of the Claude bridge, `PLAN_claude-bridge.md` §9 Phase 8 (t
 Albert speaks; the orchestrator (a Claude tab) runs every command below from the repo root
 and records ✅/❌ per line in the plan. All Claude-side typing goes into the scratch
 sessions `scratch-idle`, `scratch-busy` and `scratch-dead` in `/tmp/bridge-scratch`
-(cpriv account, model sonnet). None of them is a real work session.
+(model sonnet, on the account the setup picks — see §0). None of them is a real work
+session.
 
 Order: **setup → doctor → daemon → A1 … A12 → cleanup.** Run A9 before A10 (A10
 replaces scratch-idle's last reply), and A12 last before cleanup.
@@ -24,10 +25,22 @@ A=scripts/acceptance_setup.sh   # tables below write $A; each Bash call is a fre
 ## 0. Setup (≈ 3 min)
 
 ```commands
-scripts/acceptance_setup.sh -n                 # dry run: lists every step, reads volume + brightness
-scripts/acceptance_setup.sh   # new-session-ok
+scripts/acceptance_setup.sh -n                 # dry run: lists every step, reads volume + brightness, picks the account
+scripts/acceptance_setup.sh   # new-session-ok  (-A cpriv|cwork forces an account; default auto)
 eval "$(scripts/acceptance_setup.sh -E)"       # IDLE/BUSY/DEAD (+ _SID, _TX), VOL_BEFORE, BRIGHT_BEFORE
 ```
+
+Account and quota, before any tab opens: the setup reads `ccc quota -j` (ccc's cached
+usage, no model call). `-A auto` (the default; env `SCRATCH_ACCOUNT`) takes cpriv while its
+weekly and 5 h usage are both below 95 %, else cwork if it is below, else stops with ❌ and
+the reset times. An explicit `-A cpriv` / `-A cwork` that is capped stops the same way. It
+prints `✅ scratch sessions on <account> (week N %, 5h M %)`; with no readable usage it
+prints a ⚠️ line and auto uses cwork. The account is pre-trusted for `/tmp/bridge-scratch`
+in that account's `.claude.json` and recorded in the state file, so every later `-q`, `-b`,
+`-p`, `-R`, `-E` and `-C` uses it (`-E` also exports `SCRATCH_ACCOUNT`). If the limit is hit
+anyway, the seed (and `-p`) wait stops at once on the "hit your … limit" reply or a halted
+session instead of running into the 180 s timeout: `-C`, then set up again with the other
+account.
 
 What it does (see `-h`): creates `/tmp/bridge-scratch/delete-me.txt`; opens three iTerm
 tabs; seeds `scratch-idle` so its last reply ends with

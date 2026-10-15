@@ -26,6 +26,9 @@ DRY=0
 QUERY=""
 WAIT=0
 EXPECT=""
+ACCOUNT="${SCRATCH_ACCOUNT:-auto}"
+ACCOUNT_GIVEN=0
+CAP_PCT=95
 
 # read -d '' (not $(cat <<EOF)): bash 3.2 cannot parse unbalanced ')' in a heredoc inside $( ).
 IFS= read -r -d '' SEED_PROMPT <<'EOF' || true
@@ -43,7 +46,7 @@ PICKER_PROMPT='Use the AskUserQuestion tool to ask me exactly one single-select 
 
 usage() {
 	cat <<'EOF'
-Usage: acceptance_setup.sh [-n] [-m MODEL] [-v VOLUME] [-T SECONDS]   set up (default)
+Usage: acceptance_setup.sh [-n] [-A ACCT] [-m MODEL] [-v N] [-T SECONDS]  set up (default)
        acceptance_setup.sh -C [-n]                                     undo everything
        acceptance_setup.sh -b | -p | -R                                in-run helpers
        acceptance_setup.sh -E                                          print exports
@@ -51,6 +54,12 @@ Usage: acceptance_setup.sh [-n] [-m MODEL] [-v VOLUME] [-T SECONDS]   set up (de
 
 Fixtures for the attended Phase-8 acceptance run (PLAN_claude-bridge.md §9, runbook
 scripts/ACCEPTANCE_RUNBOOK.md). Setup:
+  0. quota preflight, before any tab opens: reads `ccc quota -j` (ccc's cached usage,
+     no model call) and picks the account of the scratch sessions — auto = cpriv while
+     its weekly and 5 h usage are both below 95 %, else cwork if it is below, else ❌
+     with the reset times; an explicit -A that is capped fails the same way; no readable
+     usage → ⚠️ and auto uses cwork. The account goes into the state file, so -q, -b,
+     -p, -R, -E and -C use it later.
   1. /tmp/bridge-scratch + delete-me.txt (trust pre-seeded via spikes/scratch_setup.sh)
   2. iTerm tab scratch-idle (claude -n scratch-idle --model MODEL), seeded so its last
      reply ends with a "## To-do list" holding one "You [decision]: a) … or b) …" line
@@ -74,9 +83,12 @@ Options:
   -q, --query NAME       print one live value (see below)
   -w, --wait SECONDS     with -q: poll until the value matches -x (default: read once)
   -x, --expect REGEX     with -q: ✅/❌ verdict against this extended regex
+  -A, --account ACCT     cpriv, cwork or auto (default auto; env SCRATCH_ACCOUNT); setup
+                         only — later calls use the account in the state file
   -m, --model MODEL      model of the scratch sessions (default sonnet)
   -v, --volume N         output volume set at setup (default 40)
-  -T, --timeout SECONDS  per-session wait for registration / the seed reply (default 180)
+  -T, --timeout SECONDS  per-session wait for registration / the seed reply (default 180);
+                         a usage-limit reply or a halted session fails at once
   -h, --help             this help
 
 Query names (-q):
@@ -90,6 +102,7 @@ Query names (-q):
 
 Examples:
   scripts/acceptance_setup.sh -n
+  scripts/acceptance_setup.sh -n -A cwork
   scripts/acceptance_setup.sh            # new-session-ok
   eval "$(scripts/acceptance_setup.sh -E)"
   scripts/acceptance_setup.sh -q host -w 15 -x '^www\.youtube\.com$'
@@ -101,6 +114,7 @@ EOF
 
 ok() { printf '\xe2\x9c\x85 %s\n' "$*"; }
 fail() { printf '\xe2\x9d\x8c %s\n' "$*" >&2; }
+warn() { printf '\xe2\x9a\xa0\xef\xb8\x8f  %s\n' "$*" >&2; }
 die() {
 	fail "$*"
 	exit 1
@@ -125,6 +139,11 @@ while [[ $# -gt 0 ]]; do
 		;;
 	-x | --expect)
 		EXPECT="${2:?-x needs a regex}"
+		shift
+		;;
+	-A | --account)
+		ACCOUNT="${2:?-A needs cpriv, cwork or auto}"
+		ACCOUNT_GIVEN=1
 		shift
 		;;
 	-m | --model)
@@ -156,6 +175,13 @@ done
 	fail "-v must be 0-100"
 	exit 2
 }
+case "$ACCOUNT" in
+cpriv | cwork | auto) ;;
+*)
+	fail "-A must be cpriv, cwork or auto (got: $ACCOUNT)"
+	exit 2
+	;;
+esac
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || {
 	fail "-T must be whole seconds"
 	exit 2
@@ -175,7 +201,7 @@ fi
 # Python helper under ccc's venv (iterm2 + command_center); status lines on stderr,
 # results as JSON on stdout. Reuses scripts/spikes/bridge_spike_lib.py and s_bright.py.
 helper() {
-	CCC_REPO="$CCC_REPO" SPIKES="$SPIKES" "$CCC_PY" - "$@" <<'PY'
+	CCC_REPO="$CCC_REPO" SPIKES="$SPIKES" SCRATCH_ACCOUNT="$ACCOUNT" "$CCC_PY" - "$@" <<'PY'
 import json
 import os
 import re
@@ -307,6 +333,43 @@ def _ask_call(rec):
     return None
 
 
+LIMIT_RE = re.compile(r"hit your (?:\w+ )?limit|usage limit", re.IGNORECASE)
+
+
+def _limit_hit(rec):
+    """The text of a usage-limit reply (Claude Code writes a synthetic assistant record
+    with isApiErrorMessage + error rate_limit), else None."""
+    msg = rec.get("message")
+    if rec.get("type") != "assistant" or not isinstance(msg, dict):
+        return None
+    text = lib.payload_text(msg.get("content")) or ""
+    if (rec.get("isApiErrorMessage") and rec.get("error") == "rate_limit") or LIMIT_RE.search(text):
+        return text.strip() or "rate_limit"
+    return None
+
+
+def _watch(anchor, sid, found):
+    """Poll predicate: ("limit", reason) on a usage-limit reply or a halted session,
+    ("ok", value) once *found* (rec -> value or None) matches an appended record."""
+    last_status = [0.0]
+
+    def pred():
+        for rec in anchor.appended():
+            hit = _limit_hit(rec)
+            if hit:
+                return ("limit", hit)
+            val = found(rec)
+            if val:
+                return ("ok", val)
+        if time.monotonic() - last_status[0] >= 5.0:  # `claude agents` is slow: every 5 s
+            last_status[0] = time.monotonic()
+            if lib.session_status(sid) == "halted":
+                return ("limit", "session status halted")
+        return None
+
+    return pred
+
+
 def prompt(mode, iterm, sid, text, timeout):
     sess = resolve(sid)
     if sess is None or not validated(iterm, sess):
@@ -326,21 +389,23 @@ def prompt(mode, iterm, sid, text, timeout):
         say(bool(busy), f"{sess.name}: {'busy' if busy else 'never became busy'}")
         return 0 if busy else 1
     if mode == "ask":
-        def pending():
-            for rec in anchor.appended():
-                call = _ask_call(rec)
-                if call is not None:
-                    return call
-            return None
-        call = lib.wait_until(pending, timeout, 0.5)
-        if not call:
+        got = lib.wait_until(_watch(anchor, sid, _ask_call), timeout, 0.5)
+        if got and got[0] == "limit":
+            say(False, f"{sess.name}: usage limit hit ({sess.account}): {got[1]}")
+            return 1
+        if not got:
             say(False, f"{sess.name}: no AskUserQuestion call within {timeout:.0f} s")
             return 1
+        call = got[1]
         say(True, f"{sess.name}: AskUserQuestion pending (tool_use {call.get('id')})")
         print(json.dumps((call.get("input") or {}).get("questions"), ensure_ascii=False))
         return 0
     end = time.monotonic() + timeout
-    if not lib.wait_until(lambda: any(_end_turn(r) for r in anchor.appended()), timeout, 0.5):
+    got = lib.wait_until(_watch(anchor, sid, _end_turn), timeout, 0.5)
+    if got and got[0] == "limit":
+        say(False, f"{sess.name}: usage limit hit ({sess.account}): {got[1]}")
+        return 1
+    if not got:
         say(False, f"{sess.name}: no end of turn within {timeout:.0f} s")
         return 1
     stable = None  # idle 3 s in a row: a Stop hook may continue the turn
@@ -488,11 +553,20 @@ safari_js() {
 		-e 'end run' "$1"
 }
 
+account_home() { # the config dir of the scratch sessions' account
+	if [[ "$ACCOUNT" == cwork ]]; then
+		printf '%s\n' "$HOME/.claude-work"
+	else
+		printf '%s\n' "$HOME/.claude"
+	fi
+}
+
 transcript_of() { # $1 = session name; the live transcript path (falls back to the recorded one)
 	local sid f
 	sid=$(state_get ".sessions[\"$1\"].session_id")
 	[[ -n "$sid" ]] || return 0
-	for f in "$HOME"/.claude/projects/*/"$sid".jsonl; do
+	for f in "$(account_home)"/projects/*/"$sid".jsonl "$HOME"/.claude/projects/*/"$sid".jsonl \
+		"$HOME"/.claude-work/projects/*/"$sid".jsonl; do
 		[[ -f "$f" ]] && {
 			printf '%s\n' "$f"
 			return 0
@@ -546,7 +620,7 @@ APPLESCRIPT
 print_exports() {
 	need_state
 	local n var
-	printf 'export ACC_STATE=%q\n' "$STATE"
+	printf 'export ACC_STATE=%q SCRATCH_ACCOUNT=%q\n' "$STATE" "$ACCOUNT"
 	for n in "${NAMES[@]}"; do
 		case "$n" in
 		scratch-idle) var=IDLE ;;
@@ -716,6 +790,99 @@ run_query() {
 
 # --------------------------------------------------------------------------- actions
 
+QUOTA_JSON=""
+
+account_usage() { # $1 = cpriv|cwork -> "verdict<TAB>week %<TAB>5h %<TAB>reset epoch<TAB>reason"
+	local id                                     # verdict: ok | capped | unknown; "" = no row
+	case "$1" in
+	cpriv) id=claude:private ;;
+	*) id=claude:work ;;
+	esac
+	jq -r --arg id "$id" --argjson cap "$CAP_PCT" '
+		def pct: if type == "number" then (. | round | tostring) else "?" end;
+		first(.providers[]? | select(.id == $id)) |
+		.windows.seven_day.used_pct as $w | .windows.five_hour.used_pct as $f |
+		(.state == "blocked") as $b |
+		([ (if ($w // -1) >= $cap then .windows.seven_day.resets_at else empty end),
+		   (if ($f // -1) >= $cap then .windows.five_hour.resets_at else empty end),
+		   (if $b then .resets_at else empty end) ]
+		 | map(select(type == "number" and . > 0)) | max // 0) as $r |
+		[ (if $b or ($w // -1) >= $cap or ($f // -1) >= $cap then "capped"
+		   elif $w == null and $f == null then "unknown" else "ok" end),
+		  ($w | pct), ($f | pct), ($r | tostring), (.reason // "") ] | @tsv
+	' <<<"$QUOTA_JSON" 2>/dev/null || true
+}
+
+usage_text() { # $1 = account, $2 = account_usage line -> "week N %, 5h M %[, resets …][: reason]"
+	local verdict week five reset reason out
+	IFS=$'\t' read -r verdict week five reset reason <<<"$2"
+	out="week $week %, 5h $five %"
+	if [[ "$verdict" == capped && "$reset" =~ ^[0-9]+$ && "$reset" -gt 0 ]]; then
+		# jq, not date: `date -r` is a file reference under GNU coreutils
+		out+=", resets $(jq -rn --argjson t "$reset" '$t | strflocaltime("%Y-%m-%d %H:%M")')"
+	fi
+	[[ "$verdict" == capped && -n "$reason" ]] && out+=": $reason"
+	printf '%s\n' "$out"
+}
+
+choose_account() { # quota preflight: sets ACCOUNT to cpriv|cwork before any tab opens
+	local want="$ACCOUNT" a line verdict why=() pick=""
+	QUOTA_JSON=$("$CCC_BIN" quota -j 2>/dev/null) || QUOTA_JSON=""
+	if ! jq -e '[.providers[]? | select(.kind == "claude")] | length > 0' >/dev/null 2>&1 <<<"$QUOTA_JSON"; then
+		[[ "$want" == auto ]] && want=cwork
+		warn "no Claude usage source readable (\`$CCC_BIN quota -j\`) — quota not checked; scratch sessions on $want"
+		ACCOUNT="$want"
+		return 0
+	fi
+	if [[ "$want" == auto ]]; then
+		for a in cpriv cwork; do
+			line=$(account_usage "$a")
+			verdict=${line%%$'\t'*}
+			if [[ "$verdict" == ok ]]; then
+				pick=$a
+				break
+			fi
+			if [[ -z "$line" || "$verdict" == unknown ]]; then
+				why+=("$a usage unknown")
+			else
+				why+=("$a capped ($(usage_text "$a" "$line"))")
+			fi
+		done
+		if [[ -z "$pick" ]]; then
+			# every account capped or unknown: a known-capped cpriv never wins
+			if [[ " ${why[*]} " == *"cwork usage unknown"* ]]; then
+				warn "${why[*]} — auto uses cwork unchecked"
+				ACCOUNT=cwork
+				return 0
+			fi
+			ACCOUNT=cwork
+			if [[ $DRY -eq 1 ]]; then
+				fail "no Claude account below $CAP_PCT %: ${why[*]} — a real run would stop here"
+				return 0
+			fi
+			die "no Claude account below $CAP_PCT % for the scratch sessions: ${why[*]}"
+		fi
+		[[ ${#why[@]} -gt 0 ]] && warn "${why[*]} — auto picks $pick"
+		ACCOUNT=$pick
+		ok "scratch sessions on $ACCOUNT ($(usage_text "$ACCOUNT" "$line"))"
+		return 0
+	fi
+	line=$(account_usage "$want")
+	verdict=${line%%$'\t'*}
+	ACCOUNT="$want"
+	case "$verdict" in
+	ok) ok "scratch sessions on $ACCOUNT ($(usage_text "$ACCOUNT" "$line"))" ;;
+	capped)
+		if [[ $DRY -eq 1 ]]; then
+			fail "$ACCOUNT is capped ($(usage_text "$ACCOUNT" "$line")) — a real run would stop here"
+		else
+			die "$ACCOUNT is capped ($(usage_text "$ACCOUNT" "$line")) — pick the other account with -A, or -A auto"
+		fi
+		;;
+	*) warn "usage of $ACCOUNT unknown (no row in \`$CCC_BIN quota -j\`) — scratch sessions on $ACCOUNT unchecked" ;;
+	esac
+}
+
 preflight() {
 	local bad=0 c
 	for c in osascript jq perl sqlite3 python3; do
@@ -749,6 +916,8 @@ preflight() {
 			die "state file $STATE exists from an earlier run — run -C first"
 		fi
 	fi
+	choose_account
+	export SCRATCH_ACCOUNT="$ACCOUNT"
 	if ! helper names-free "${NAMES[@]}"; then
 		[[ $DRY -eq 1 ]] || die "close the scratch sessions listed above first (or run -C)"
 	fi
@@ -757,7 +926,7 @@ preflight() {
 open_session() { # $1 = name; opens the tab, waits for registration, records it
 	local name="$1" out iterm info
 	# new-session-ok — scratch session for the attended acceptance run
-	out=$("$SCRATCH_SETUP" -N "$name" -m "$MODEL") || {
+	out=$("$SCRATCH_SETUP" -N "$name" -m "$MODEL" -a "$ACCOUNT") || {
 		printf '%s\n' "$out"
 		die "$name: scratch_setup.sh failed"
 	}
@@ -784,7 +953,7 @@ do_setup() {
 	if [[ $DRY -eq 1 ]]; then
 		local vol mut br
 		ok "dry run: would create $SCRATCH and $DELETE_ME"
-		"$SCRATCH_SETUP" -n -N scratch-idle -m "$MODEL" | sed 's/^/   /'
+		"$SCRATCH_SETUP" -n -N scratch-idle -m "$MODEL" -a "$ACCOUNT" | sed 's/^/   /'
 		ok "dry run: would wait (≤ ${TIMEOUT} s) until scratch-idle is registered, tab-validated and idle, then send the seed prompt:"
 		printf '%s\n' "$SEED_PROMPT" | sed 's/^/   | /'
 		ok "dry run: would check \`ccc inspect -s <id> -N -j\` shows a 2-option todo-line decision with a recommendation"
@@ -803,7 +972,8 @@ do_setup() {
 	mkdir -p "$SCRATCH"
 	printf 'Scratch file of the mac-voice acceptance run (A7) — the assistant deletes it.\n' >"$DELETE_ME"
 	ok "created $DELETE_ME"
-	state_merge "$(jq -n --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg d "$SCRATCH" '{created_at: $t, scratch_dir: $d}')"
+	state_merge "$(jq -n --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg d "$SCRATCH" --arg a "$ACCOUNT" \
+		'{created_at: $t, scratch_dir: $d, account: $a}')"
 
 	open_session scratch-idle
 	seed_idle || die "scratch-idle seed check failed — fix with -R, or -C to undo"
@@ -899,6 +1069,20 @@ do_session_prompt() { # $1 = mode (busy|ask|turn), $2 = name, $3 = prompt, $4 = 
 	fi
 	helper prompt "$1" "$iterm" "$sid" "$3" "$4"
 }
+
+# Every call after setup uses the account the setup recorded (a state file from before
+# the account was recorded means cpriv, the only account then).
+if [[ "$ACTION" != setup ]]; then
+	recorded=$(state_get .account)
+	if [[ -n "$recorded" ]]; then
+		[[ $ACCOUNT_GIVEN -eq 1 && "$ACCOUNT" != "$recorded" ]] &&
+			warn "-A $ACCOUNT ignored: the state file says the scratch sessions run on $recorded"
+		ACCOUNT="$recorded"
+	elif [[ -f "$STATE" || "$ACCOUNT" == auto ]]; then
+		ACCOUNT=cpriv
+	fi
+fi
+export SCRATCH_ACCOUNT="$ACCOUNT"
 
 case "$ACTION" in
 setup) do_setup ;;
