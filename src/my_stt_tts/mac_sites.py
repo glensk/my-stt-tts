@@ -9,7 +9,10 @@ Selectors, actions and verification expressions come from spike S-MEDIA
 * Every snippet re-checks the page's host, uses DOM methods only (YouTube's Trusted
   Types make ``innerHTML`` throw) and never writes ``video.volume`` (Jellyfin persists it).
 * Postconditions: ``play`` → ``paused == false`` re-checked ONCE ~1.5 s after ``play()``
-  (a Bluetooth headset can send ``Pause``) and never retried in a loop; ``next`` /
+  (a Bluetooth headset can send ``Pause``) and never retried in a loop;
+  ``youtube_play_first`` first polls the state up to ``PLAY_START_WAIT_S`` for playback
+  to start (YouTube's player or a preroll starts seconds late), then re-checks once —
+  polling is fine, calling ``play()`` again is not; ``next`` /
   ``previous`` → the video / item id changed; ``fullscreen`` → ``fullscreenElement`` or
   ``webkitDisplayingFullscreen``. Playlist end / queue start are refused with a reason.
 * ``play()`` rejected with ``NotAllowedError`` (autoplay policy) → the optional
@@ -38,6 +41,9 @@ _JS_ID_RE = JELLYFIN_ID_RE.replace("/", "\\/")  # as a JavaScript regex literal
 WATCH_URL_RE = re.compile(r"https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]{6,20}")
 
 PLAY_RECHECK_S = 1.5  # re-check ``paused`` once this long after play()
+# youtube_play_first: playback must start within this after navigation / play() — the
+# player or a preroll ad can start seconds after the page shows the <video>
+PLAY_START_WAIT_S = 8.0
 PROMISE_WAIT_S = 0.6  # how long to wait for play()/requestFullscreen() to settle
 PAUSE_WAIT_S = 1.5
 SEEK_SETTLE_S = 0.8
@@ -514,6 +520,13 @@ class MediaDriver:
             raise SafariError(str(error), _ACTION_ERRORS.get(str(error), f"{op} failed"))
 
     def _do_play(self, page: Page) -> Outcome:
+        started = self._start_play(page)
+        if isinstance(started, Outcome):
+            return started
+        return self._recheck_playing(page, started)
+
+    def _start_play(self, page: Page) -> float | Outcome:
+        """Call play() once: the time to re-check from, or why it did not start."""
         started = self.clock()
         res = self.safari.evaluate(
             page.win, "play", promise_js(page.adapter, "play", page.adapter.play)
@@ -526,7 +539,7 @@ class MediaDriver:
             if outcome is not None:
                 return outcome
             started = self.clock()
-        return self._recheck_playing(page, started)
+        return started
 
     def _rejected_play(self, page: Page, name: str) -> Outcome | None:
         """Autoplay rejection → the real-click hook (None = clicked, go on and verify)."""
@@ -546,6 +559,13 @@ class MediaDriver:
         if self.state(page).get("paused") is False:
             return ok("playing")
         return failed("playback was paused again (headset or system)")
+
+    def _await_playing(self, page: Page) -> Outcome:
+        """Poll until playback starts (never play() again), then the one re-check."""
+        st = self._wait_state(page, lambda s: s.get("paused") is False, PLAY_START_WAIT_S)
+        if st.get("paused") is not False:
+            return failed("the video did not start playing")
+        return self._recheck_playing(page, self.clock())
 
     def _do_pause(self, page: Page) -> Outcome:
         self._run(page, "pause", page.adapter.pause)
@@ -603,7 +623,7 @@ class MediaDriver:
         return url
 
     def play_first(self, page: Page, url: str) -> Outcome:
-        """Navigate to ``url``, wait for its player, make sure it plays (one re-check)."""
+        """Navigate to ``url``, wait for its player and playback, then re-check once."""
         try:
             return self._play_first(page, url)
         except SafariError as exc:
@@ -612,7 +632,6 @@ class MediaDriver:
     def _play_first(self, page: Page, url: str) -> Outcome:
         want = url.rsplit("v=", 1)[1]
         self.safari.set_url(page.win, url)
-        started = self.clock()
         st = self._wait_state(
             page, lambda s: s.get("id") == want and bool(s.get("video")), NAV_WAIT_S
         )
@@ -620,8 +639,10 @@ class MediaDriver:
             return failed("the video page did not load")
         loaded = Page(page.win, page.adapter, st)
         if st.get("paused") is not False:
-            return self._do_play(loaded)
-        return self._recheck_playing(loaded, started)
+            started = self._start_play(loaded)
+            if isinstance(started, Outcome):
+                return started
+        return self._await_playing(loaded)
 
 
 _ACTION_ERRORS = {

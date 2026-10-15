@@ -139,6 +139,8 @@ class FakeMac:  # pylint: disable=too-many-instance-attributes  # one fake Mac
         answer = self.js.get(match.group(1), {"ok": True})
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        if callable(answer):  # a reply that depends on the (fake) time
+            answer = answer()
         if isinstance(answer, RunResult):
             return answer
         return RunResult(0, json.dumps(answer) + "\n")

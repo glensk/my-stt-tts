@@ -311,6 +311,64 @@ def test_youtube_play_first_starts_a_paused_video() -> None:
     assert "play" in call.fake.ops()
 
 
+def test_youtube_play_first_waits_for_a_late_start() -> None:
+    """The player (or a preroll) starts 3 s after play() — polled, not a false failure."""
+    call = Call()
+    url = "https://www.youtube.com/watch?v=lDrAZ1wAyVs"
+    played_at: list[float] = []
+
+    def state() -> dict[str, Any]:
+        if not played_at:
+            return yt_state(paused=True)
+        return yt_state(paused=call.clock.now - played_at[0] < 3.0)
+
+    def play() -> dict[str, Any]:
+        played_at.append(call.clock.now)
+        return {"ok": True}
+
+    call.fake.js = {
+        "state": [yt_state(video=False, id=None), state],
+        "first_tile": url,
+        "play": play,
+        "play_poll": {"state": "resolved"},
+    }
+    call.say("play the first video")
+    assert call.mac.youtube_play_first() == "ok: playing"
+    assert call.fake.ops().count("play") == 1
+
+
+def test_youtube_play_first_never_starts() -> None:
+    call = Call()
+    call.fake.js = {
+        "state": [yt_state(video=False, id=None), yt_state(paused=True)],
+        "first_tile": "https://www.youtube.com/watch?v=lDrAZ1wAyVs",
+        "play_poll": {"state": "resolved"},
+    }
+    call.say("play the first video")
+    before = call.clock.now
+    assert call.mac.youtube_play_first() == "failed: the video did not start playing"
+    assert call.fake.ops().count("play") == 1
+    assert call.clock.now - before >= mac_sites.PLAY_START_WAIT_S
+
+
+def test_youtube_play_first_paused_again_at_the_recheck() -> None:
+    call = Call()
+    call.fake.js = {
+        "state": [
+            yt_state(video=False, id=None),
+            yt_state(paused=True),
+            yt_state(paused=False),
+            yt_state(paused=True),
+        ],
+        "first_tile": "https://www.youtube.com/watch?v=lDrAZ1wAyVs",
+        "play_poll": {"state": "resolved"},
+    }
+    call.say("play the first video")
+    out = call.mac.youtube_play_first()
+    assert out == "failed: playback was paused again (headset or system)"
+    assert call.fake.ops().count("play") == 1
+
+
 def test_youtube_play_first_needs_youtube() -> None:
     call = Call()
     call.fake.js = {"state": jf_state()}
