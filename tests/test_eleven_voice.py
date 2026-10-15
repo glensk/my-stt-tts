@@ -345,6 +345,21 @@ def test_tool_wrapper_strips_the_call_id_and_voids_unused_rights(sdk) -> None:
     assert contexts == ["tool result"]
 
 
+def test_own_outcome_tools_keep_the_sentence_and_others_void_it(sdk) -> None:
+    del sdk
+    ctl = _controller()
+    contexts: list[str] = []
+    ctl.register_tool("open_url", lambda target: "ok: opened", own_outcome=True)
+    ctl.register_tool("read_session", lambda target: "voice said hi")
+    ctl.note_context = contexts.append
+    session = _session(ctl)
+    tools = session.client_tools.tools
+    assert tools["open_url"][0]({"target": "youtube"}) == "ok: opened"
+    assert not contexts  # the bridge's own Mac result: the sentence may go on
+    assert tools["read_session"][0]({"target": "voice"}) == "voice said hi"
+    assert contexts == ["tool result"]  # session text: unused rights are void
+
+
 def test_tool_errors_become_speakable_answers(sdk) -> None:
     del sdk
     ctl = _controller()

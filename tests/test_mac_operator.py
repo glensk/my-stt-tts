@@ -27,6 +27,7 @@ from my_stt_tts.mac_operator import (
     DONE,
     FAILED,
     NEEDS_CONFIRMATION,
+    PREAMBLE,
     RUNNING,
     UNKNOWN_PARTIAL,
     MacOperator,
@@ -127,7 +128,7 @@ print(json.dumps({"structured_output": STRUCTURED}))
 sha = "b" * 64
 nonce = "n0nce"
 (here / f"blocked-{sha}.json").write_text(json.dumps(
-    {"tool": "key", "sha256": sha, "summary": "press cmd+w in Safari", "nonce": nonce}))
+    {"tool": "key", "sha256": sha, "summary": "press cmd+return in Mail", "nonce": nonce}))
 allow = here / f"allow-{sha}.json"
 for _ in range(400):
     if allow.exists():
@@ -137,7 +138,7 @@ for _ in range(400):
         (here / f"blocked-{sha}.json").unlink()
         status = "done" if ok else "failed"
         (here / "finish.json").write_text(json.dumps(
-            {"status": status, "reason": "", "summary": "Closed the tab."}))
+            {"status": status, "reason": "", "summary": "Sent the mail."}))
         time.sleep(60)
     time.sleep(0.05)
 (here / f"blocked-{sha}.json").unlink()
@@ -307,27 +308,26 @@ def test_states_needs_confirmation_then_done_after_confirm(tmp_path: Path) -> No
     call = Call()
     notices: list[str] = []
     op = make_operator(tmp_path, call, "block", notify=notices.append)
-    answer = started(call, op, "close this tab")
-    assert answer.startswith("needs confirmation: press cmd+w in Safari — say confirm ")
+    answer = started(call, op, "send this mail")
+    assert answer == "needs confirmation: press cmd+return in Mail — say yes, do it"
     assert op.current is not None and op.current.state == NEEDS_CONFIRMATION
     deadline = time.monotonic() + 2.0  # the watcher notifies right after the answer is ready
     while not notices and time.monotonic() < deadline:
         time.sleep(0.01)
     assert notices and notices[0] in answer
-    code = answer.rsplit(" ", 1)[1]
-    call.say(f"confirm {code}")
-    assert call.ctl.confirm_action(code) == "confirmed"
+    call.say("yes, do it")
+    assert call.ctl.confirm_action() == "confirmed"
     result = wait_done(op)
-    assert result.status == DONE and result.summary == "Closed the tab."
+    assert result.status == DONE and result.summary == "Sent the mail."
 
 
 def test_confirm_needs_a_new_authorised_transcript(tmp_path: Path) -> None:
     call = Call()
     op = make_operator(tmp_path, call, "block")
-    answer = started(call, op, "close this tab")
-    code = answer.rsplit(" ", 1)[1]
-    call.say(f"confirm {code}", level=OTHER)  # someone else says the code
-    assert call.ctl.confirm_action(code).startswith("refused")
+    answer = started(call, op, "send this mail")
+    assert answer.endswith("say yes, do it")
+    call.say("yes, do it", level=OTHER)  # someone else says yes
+    assert call.ctl.confirm_action() == "refused: voice not verified"
     assert op.current is not None and op.current.state == NEEDS_CONFIRMATION
     op.cancel("test over")
     assert wait_done(op).status == CANCELLED
@@ -475,10 +475,12 @@ def test_capability_is_single_use_and_one_task_at_a_time(tmp_path: Path) -> None
     call = Call()
     op = make_operator(tmp_path, call, "hang", start_wait=0.2)
     started(call, op)
+    call.ctl.note_tool_result("do_on_mac")  # what the voice session does with every answer
     assert op.do_on_mac("open Notes") == "refused: another Mac task is still running"
     op.cancel()
     wait_done(op)
-    assert op.do_on_mac("open Notes").startswith("refused")  # the transcript's capability is used
+    # an operator result is external content: the sentence that started it cannot act again
+    assert op.do_on_mac("open Notes") == "refused: context changed — say it again"
 
 
 def test_executor_refuses_when_nothing_waits(tmp_path: Path) -> None:
@@ -575,3 +577,8 @@ def test_argv_helper_matches_spec_order(tmp_path: Path) -> None:
     assert argv[0] == "/x/claude" and argv[-1] == "--no-session-persistence"
     assert argv[argv.index("--json-schema") + 1] == "{}"
     assert argv[argv.index("--tools") + 1] == "" and argv[argv.index("--setting-sources") + 1] == ""
+
+
+def test_preamble_steers_tab_closing_to_keys_not_applescript() -> None:
+    assert "cmd+w" in PREAMBLE and "not AppleScript" in PREAMBLE
+    assert "Closing, quitting" in PREAMBLE  # they run without a confirmation

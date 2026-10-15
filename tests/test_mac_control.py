@@ -24,7 +24,13 @@ from mac_fakes import (
 )
 
 from my_stt_tts import eleven_voice, mac_control
-from my_stt_tts.bridge import Authoriser, BridgeController, MemoryProblemSink, Problem
+from my_stt_tts.bridge import (
+    MAX_ACTIONS_PER_TRANSCRIPT,
+    Authoriser,
+    BridgeController,
+    MemoryProblemSink,
+    Problem,
+)
 from my_stt_tts.mac_control import (
     MDLS,
     OPEN,
@@ -178,12 +184,15 @@ def test_mac_tool_refused_when_authorized_env_unset() -> None:
     assert not call.fake.scripts(SET_VOLUME)
 
 
-def test_capability_is_single_use() -> None:
+def test_one_sentence_allows_three_actions_then_refuses() -> None:
     call = Call()
     call.say("open YouTube")
-    assert call.mac.open_url("youtube").startswith("ok:")
-    assert call.mac.open_url("youtube").startswith("refused:")
-    assert len(call.fake.opened()) == 1
+    for _ in range(MAX_ACTIONS_PER_TRANSCRIPT):
+        assert call.mac.open_url("youtube").startswith("ok:")
+    assert call.mac.open_url("youtube") == (
+        "refused: too many actions in one sentence — say the rest again"
+    )
+    assert len(call.fake.opened()) == MAX_ACTIONS_PER_TRANSCRIPT
 
 
 def test_cancelled_before_mutation() -> None:
@@ -334,7 +343,93 @@ def test_volume_not_changing_is_a_problem() -> None:
     assert call.problems[0].subject == "set_volume"
 
 
+@pytest.mark.parametrize(
+    ("said", "level", "expected"),
+    [
+        ("volume to max", "max", "100"),
+        ("Lautstärke voll", "max", "100"),
+        ("volume à fond", "max", "100"),
+        ("volume to the maximum", "maximum", "100"),
+        ("volume to minimum", "min", "0"),
+        ("volume to a hundred", 100, "100"),
+        ("volume thirty", "30", "30"),
+    ],
+)
+def test_volume_spoken_levels(said: str, level: Any, expected: str) -> None:
+    call = Call()
+    call.say(said)
+    assert call.mac.set_volume(level=level).startswith("ok:")
+    assert call.fake.scripts(SET_VOLUME) == [[expected]]
+
+
+def test_volume_max_must_be_said() -> None:
+    call = Call()
+    call.say("louder")
+    assert "not in what you said" in call.mac.set_volume(level="max")
+
+
 # -- brightness --------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("args", "said"),
+    [
+        ({"level": "max"}, "Put the brightness to max"),
+        ({"step": "max"}, "Put the brightness to max"),  # what the Phase 8 agent sent
+        ({"level": 1.0}, "brightness to the maximum"),
+        ({"level": 100}, "brightness hundred percent"),
+        ({"level": "full"}, "volle Helligkeit"),
+    ],
+)
+def test_brightness_to_max(args: dict[str, Any], said: str) -> None:
+    call = Call()
+    call.say(said)
+    assert call.mac.set_brightness(**args) == "ok: brightness 62 percent"
+    assert call.fake.scripts(PRESS_KEY) == [["144", "16"]]  # past the top is a no-op
+
+
+def test_brightness_to_min_dims_but_never_goes_black() -> None:
+    call = Call()
+    call.display.values = [0.5, 0.125]
+    call.say("brightness to minimum")
+    assert call.mac.set_brightness(level="min") == "ok: brightness 12 percent"
+    assert call.fake.scripts(PRESS_KEY) == [["145", "6"]]  # 0.5 → 0.1 = 6.4 presses
+
+
+def test_brightness_percent_level() -> None:
+    call = Call()
+    call.display.values = [0.5, 0.75]
+    call.say("brightness seventy five percent")
+    assert call.mac.set_brightness(level=75).startswith("ok:")
+    assert call.fake.scripts(PRESS_KEY) == [["144", "4"]]
+
+
+def test_brightness_level_already_there() -> None:
+    call = Call()
+    call.display.values = [1.0]
+    call.say("brightness to max")
+    assert call.mac.set_brightness(level="max") == "ok: brightness already 100 percent"
+    assert not call.fake.scripts(PRESS_KEY)
+
+
+def test_brightness_max_must_be_said_and_args_are_one_of_step_or_level() -> None:
+    call = Call()
+    call.say("brighter")
+    assert "not in what you said" in call.mac.set_brightness(level="max")
+    call.say("brighter to max")
+    assert call.mac.set_brightness("up", level="max").startswith("refused:")
+    assert call.mac.set_brightness().startswith("refused:")
+    assert call.mac.set_brightness(level="blinding").startswith("refused:")
+
+
+def test_brightness_after_a_refused_try_in_the_same_sentence() -> None:
+    """Phase 8: "Put the brightness to max" → "set_brightness ?", then "+2" → context changed."""
+    call = Call()
+    call.ctl.register_tool("set_brightness", call.mac.set_brightness, own_outcome=True)
+    call.say("Put the brightness to max, or two steps up")
+    assert call.mac.set_brightness(step="blinding").startswith("refused:")
+    call.ctl.note_tool_result("set_brightness")  # own outcome: the sentence stays usable
+    assert call.mac.set_brightness(step="+2").startswith("ok:")
+
+
 def test_brightness_up_on_builtin_display() -> None:
     call = Call()
     call.say("brighter")
@@ -437,6 +532,9 @@ def test_register_all_green_registers_the_tools() -> None:
     assert mac is not None and mac.disabled is None
     assert set(TOOL_NAMES) <= set(ctl.tools)
     assert getattr(ctl.tools["open_url"], "__self__", None) is mac
+    # their results are the bridge's own outcome: the rest of the sentence may still act
+    assert set(TOOL_NAMES) <= ctl.own_outcome_tools
+    assert "confirm_action" not in ctl.own_outcome_tools
 
 
 def test_register_with_a_red_check_disables_every_tool() -> None:

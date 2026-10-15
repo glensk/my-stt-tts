@@ -88,7 +88,7 @@ checks read the current tab of the front window).
 ## 2. Acceptance lines
 
 "Silence" in a pass criterion means: successes are not spoken — the agent says nothing,
-or at most a brief acknowledgement, never a confirmation code. Refusals and failures are
+or at most a brief acknowledgement, never a confirmation request. Refusals and failures are
 always spoken.
 
 ### A1 — open YouTube
@@ -176,25 +176,25 @@ Pass: Calculator frontmost; silence.
 
 2. Precondition: the front Safari window has at least 2 tabs (`$A -q tabs`; if not, the
    orchestrator opens one more: `osascript -e 'tell application "Safari" to tell front window to make new tab with properties {URL:"https://example.org"}'`).
-   Albert says: **"close the other Safari tabs"** → the agent speaks a summary and a
-   two-digit code; Albert says **"confirm <code>"** (the code he heard).
+   Albert says: **"close the other Safari tabs"** → closing tabs is low-stakes: the
+   operator closes them with keys / the File menu, no confirmation is asked.
 
    ```commands
    scripts/acceptance_setup.sh -q tabs -w 15 -x '^1 in front window'
    ```
 
-   Pass: spoken summary + code before anything closes (check `$A -q tabs` once before the
-   confirm: unchanged), then exactly one tab left in the front window.
+   Pass: no confirmation request, then exactly one tab left in the front window.
 
-3. Albert says: **"delete the file delete-me"** → the agent asks for a code; Albert says
-   **"confirm <code>"**.
+3. Albert says: **"delete the file delete-me"** → the agent speaks a summary and asks
+   for "yes, do it"; Albert says **"yes, do it"** (two words — a bare "yes" is too short
+   for the voice check).
 
    ```commands
    scripts/acceptance_setup.sh -q file                # before the confirm: exists
    scripts/acceptance_setup.sh -q file -w 15 -x '^gone$'
    ```
 
-   Pass: code requested, the file still exists until the confirm, gone after it.
+   Pass: "yes, do it" requested, the file still exists until the confirm, gone after it.
 
 ### A8 — which sessions are running
 
@@ -220,12 +220,12 @@ Pass: a spoken briefing in the D5 shape — "The session scratch-idle, which wor
 needs a decision: keep the scratch file or delete it? Options: a) keep the scratch file,
 b) delete it. It recommends b) because …" — whose question, both options and the
 recommendation match `.decision` in the `-q decision` output (`source: todo_line`). No
-code is asked for (reading is not a mutation). Albert does not answer it; A10 moves on.
+confirmation is asked for (reading is not a mutation). Albert does not answer it; A10 moves on.
 
 ### A10 — sending and answering by voice
 
 1. Idle send. Albert says: **"tell scratch-idle: print hello"** → the agent repeats the
-   proposal and gives a code; Albert says **"confirm <code>"**.
+   proposal and asks for "yes, do it"; Albert says **"yes, do it"**.
 
    ```commands
    scripts/acceptance_setup.sh -q prompts -w 20 -x 'print hello'
@@ -240,8 +240,8 @@ code is asked for (reading is not a mutation). Albert does not answer it; A10 mo
    scripts/acceptance_setup.sh -b        # sends "Run `sleep 60` in bash, then say done.", waits for busy
    ```
 
-   Then within 60 s Albert says: **"tell scratch-busy: print hello"** → code →
-   **"confirm <code>"**.
+   Then within 60 s Albert says: **"tell scratch-busy: print hello"** → "yes, do it"?
+   → **"yes, do it"**.
 
    ```commands
    scripts/acceptance_setup.sh -q enqueued -w 20 -x 'print hello'
@@ -264,7 +264,7 @@ code is asked for (reading is not a mutation). Albert does not answer it; A10 mo
    ```
 
    Albert says: **"what does scratch-idle need"** (briefing: the colour question, options
-   red, green, blue) → **"answer green"** → code → **"confirm <code>"**.
+   red, green, blue) → **"answer green"** → "yes, do it"? → **"yes, do it"**.
 
    ```commands
    scripts/acceptance_setup.sh -q answers -w 20 -x '"green"'
@@ -293,14 +293,14 @@ scripts/acceptance_setup.sh -q prompts           # P0: scratch-idle's user promp
 scripts/acceptance_setup.sh -q prompts           # still P0 after each
 ```
 
-Pass: both are refused (spoken "voice not verified", no code given) and scratch-idle's
+Pass: both are refused (spoken "voice not verified", no confirmation asked) and scratch-idle's
 prompts still read P0 after each attempt — no new "print hello" record (A10 already left
 one, so compare with P0, not with the bare string). The conversation has to be on for
 this (Albert starts it, then stays silent).
 
 ### A12 — failure on a dead session, attention inbox
 
-1. In a call. Albert says: **"tell scratch-dead: hi"** → code → **"confirm <code>"**.
+1. In a call. Albert says: **"tell scratch-dead: hi"** → "yes, do it"? → **"yes, do it"**.
 
    ```commands
    scripts/acceptance_setup.sh -q problems          # a row with subject scratch-dead
@@ -310,7 +310,7 @@ this (Albert starts it, then stays silent).
    Pass: the failure is spoken in the call (a `[system notice]` or the tool result), and
    `attention.db` has an open problem for scratch-dead.
 
-2. Voice off. Albert says **"tell scratch-dead: hi again"** → code → **"confirm <code>"**,
+2. Voice off. Albert says **"tell scratch-dead: hi again"** → "yes, do it"? → **"yes, do it"**,
    then at once **"voice off"** (or the orchestrator runs `./mac-voice -f`). He does NOT say
    "got it".
 

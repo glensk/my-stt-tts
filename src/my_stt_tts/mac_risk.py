@@ -3,9 +3,15 @@
 Pure standard library and side-effect free except :func:`hit_test_ax` and
 :func:`focused_ax` (read-only Accessibility lookups of the element under a screen point and
 of the focused element). :func:`classify` answers SAFE
-(runs), CONFIRM (blocked until the user confirms by code) or REFUSE (never runs) for one
-broker call; unknown tools are CONFIRM. Summaries name the action and its target, never
-typed text, and are short enough to be spoken.
+(runs), CONFIRM (blocked until the user says "yes, do it") or REFUSE (never runs) for one
+broker call. Only high-stakes calls are CONFIRM: losing data (deleting / trashing files,
+emptying the trash, erasing), acting outward (sending, posting, submitting a form,
+paying), typing into password fields, installs, security / network / account settings,
+force quit, shells, unknown tools — and keys / clicks whose effect cannot be known in the
+apps where that matters (Settings, Finder, shells, messaging). Everything else runs:
+ordinary clicks, menus, navigation, opening / closing / switching tabs and windows,
+quitting apps. Summaries name the action and its target, never typed text, and are short
+enough to be spoken.
 
 Confirmation binding: a blocked call is identified by :func:`args_sha256` (tool + its
 normalised arguments). The broker writes ``blocked-<sha>.json`` with a fresh nonce; the
@@ -22,7 +28,6 @@ import os
 import re
 import secrets
 import unicodedata
-import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +35,6 @@ from typing import Any
 
 SUMMARY_CAP = 80
 URL_CAP = 2000
-URL_QUERY_CAP = 200  # query + fragment longer than this → CONFIRM (screen content in a URL)
 SAFE, CONFIRM, REFUSE = "safe", "confirm", "refuse"
 
 
@@ -41,13 +45,16 @@ def fold(text: str) -> str:
 
 
 # Words on a button / menu item / shortcut that make the action CONFIRM (folded, en/de/fr).
+# Only high-stakes actions: losing data, acting outward, paying, installing, security.
+# Closing / quitting / moving / renaming / duplicating are everyday and run (force quit
+# does not); "empty" alone is too common ("Empty Group"), so only emptying the trash counts.
 _RISKY_WORDS = (
-    # closing / quitting
-    "close", "closing", "quit", "force quit", "schliessen", "beenden", "fermer", "quitter",
-    # deleting / moving / renaming files
-    "delete", "deleting", "remove", "trash", "bin", "erase", "wipe", "empty", "move",
-    "moving", "rename", "duplicate", "loschen", "entfernen", "papierkorb", "umbenennen",
-    "verschieben", "bewegen", "supprimer", "effacer", "corbeille", "renommer", "deplacer",
+    # force quit (an ordinary quit runs)
+    "force quit", "sofort beenden", "forcer a quitter",
+    # deleting files, the trash
+    "delete", "deleting", "remove", "trash", "bin", "erase", "wipe", "empty trash",
+    "empty bin", "loschen", "entfernen", "papierkorb", "papierkorb leeren", "supprimer",
+    "effacer", "corbeille", "vider la corbeille",
     # sending / posting / messages
     "send", "sending", "post", "publish", "submit", "share", "reply", "forward", "tweet",
     "call", "senden", "absenden", "schicken", "posten", "veroffentlichen", "teilen",
@@ -176,6 +183,95 @@ def shell_script_refusal(script: str) -> str | None:
     if _SHELL_SCRIPT_RE.search(unicodedata.normalize("NFKC", script)):
         return "applescript may not run shell commands (do shell script / run script)"
     return None
+
+
+# -- AppleScript that only handles Safari tabs / windows (SAFE) ---------------------------------
+# Every bare word of such a script (outside string literals) must come from this vocabulary:
+# Safari's tab / window / URL terms, reading, simple control flow, and System Events
+# keystrokes. Anything else ("do JavaScript", "email contents", "save", "click", "&"
+# string building, another app) keeps the script CONFIRM.
+def _wordset(text: str) -> frozenset[str]:
+    return frozenset(text.split())
+
+
+_SAFARI_SCRIPT_WORDS = _wordset(
+    """
+    tell end to application app safari system events process activate close make new
+    document documents tab tabs window windows with properties set get return url of the
+    current front first last middle every some index name names count number visible
+    frontmost true false repeat in from by while until times exit if then else is not
+    equal equals and or contains contain does starts begins ends with whose where it its
+    me my item items a an at beginning after before reverse list integer as id delay
+    keystroke using command shift down ref reference source text title
+    """
+)  # fmt: skip
+#: Command-key shortcuts a Safari script may send through System Events: close tab / window,
+#: new tab / window, address bar, reload, back / forward.
+_SAFARI_KEYSTROKES = frozenset("wtnlr[]")
+_SCRIPT_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_SCRIPT_TARGET_RE = re.compile(r'\b(application|app|process)\s+(id\s+)?"((?:[^"\\]|\\.)*)"')
+_SCRIPT_KEYSTROKE_RE = re.compile(
+    r'\bkeystroke\s+"(.)"\s+using\s+(\{[^{}]*\}|(?:command|shift)\s+down)'
+)
+_SCRIPT_VAR_RE = re.compile(r"\b(?:set|repeat\s+with)\s+([a-z_]\w*)\s+(?:to|in|from)\b")
+_SCRIPT_URL_SCHEME_RE = re.compile(r"^\s*([a-z][a-z0-9+.-]*):")
+
+
+def _script_targets_safari(text: str) -> bool:
+    """The script tells only Safari (or System Events about the Safari process), by literal."""
+    targets = [(kind, name.strip()) for kind, _, name in _SCRIPT_TARGET_RE.findall(text)]
+    apps = {name for kind, name in targets if kind != "process"}
+    processes = {name for kind, name in targets if kind == "process"}
+    if not apps or not apps <= {"safari", "system events"} or not processes <= {"safari"}:
+        return False
+    if "system events" in apps and "safari" not in processes:
+        return False
+    # an app named by a variable, not a literal
+    return len(re.findall(r"\b(?:application|app|process)\b", text)) == len(targets)
+
+
+def _script_keystrokes_safe(text: str) -> bool:
+    """Every keystroke is a command-key shortcut from :data:`_SAFARI_KEYSTROKES`."""
+    keystrokes = _SCRIPT_KEYSTROKE_RE.findall(text)
+    if text.count("keystroke") != len(keystrokes):
+        return False
+    return all(char in _SAFARI_KEYSTROKES and "command" in mods for char, mods in keystrokes)
+
+
+def _script_urls_web(text: str) -> bool:
+    """Every string literal with a URL scheme (outside app targets) is http(s)."""
+    for literal in _SCRIPT_STRING_RE.findall(_SCRIPT_TARGET_RE.sub(" ", text)):
+        scheme = _SCRIPT_URL_SCHEME_RE.match(literal)
+        if scheme and scheme.group(1) not in {"http", "https"}:
+            return False
+    return True
+
+
+def safari_tabs_script(script: str) -> bool:
+    """True when ``script`` only opens / closes / activates Safari tabs or windows, sets
+    http(s) URLs or reads — and, through System Events, only presses the command-key
+    shortcuts in :data:`_SAFARI_KEYSTROKES` in Safari. Conservative: unsure → False."""
+    text = unicodedata.normalize("NFKC", script).casefold()
+    if "(*" in text or "&" in text or "«" in text or "\\" in text:
+        return False  # block comments, string building, raw events, escapes
+    text = "\n".join(line.split("--", 1)[0] for line in text.splitlines())
+    if not (
+        _script_targets_safari(text) and _script_keystrokes_safe(text) and _script_urls_web(text)
+    ):
+        return False
+    bare = _SCRIPT_STRING_RE.sub(" ", text)
+    if '"' in bare:
+        return False  # an unterminated string
+    names = set(_SCRIPT_VAR_RE.findall(bare)) - _SCRIPT_UNSAFE_NAMES
+    words = set(re.findall(r"[^\W\d]\w*", bare))
+    return words <= _SAFARI_SCRIPT_WORDS | names
+
+
+#: Names a script variable may not take (they are commands the vocabulary keeps out).
+_SCRIPT_UNSAFE_NAMES = _wordset(
+    "do javascript email contents save delete open print write read run script load store "
+    "shell click perform key code quit location file folder posix path"
+)
 
 
 def search_or_address_field(info: Mapping[str, str] | None) -> bool:
@@ -318,11 +414,9 @@ def _classify_key(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
     app = ctx.app(str(args.get("app", "")))
     summary = f"press {'+'.join([*mods, key])} in {_app_label(app)}"
     mod_set = set(mods)
-    confirm = (
-        ("cmd" in mod_set and key in {"w", "q"})  # close tab / window, quit
-        or ("cmd" in mod_set and key in _DELETE_KEYS)  # move to trash / delete
+    confirm = (  # cmd+w / cmd+q (close, quit) and cmd+s (save) run
+        ("cmd" in mod_set and key in _DELETE_KEYS)  # move to trash / delete
         or ("cmd" in mod_set and key in _SUBMIT_KEYS)  # send in many apps
-        or ("cmd" in mod_set and key == "s")  # save / save as / save all: writes files
         or ({"cmd", "alt"} <= mod_set and key in {"escape", "esc"})  # force quit
         or ({"cmd", "shift"} <= mod_set and key in {"d", "q"})  # Mail send, log out
         or ({"cmd", "ctrl"} <= mod_set and key == "q")  # lock screen
@@ -346,11 +440,28 @@ def _classify_type(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
     text = str(args.get("text", ""))
     app = ctx.app(str(args.get("app", "")))
     summary = f"type text into {_app_label(app)}"
-    if "\n" in text or "\r" in text:
-        return Verdict(CONFIRM, f"type text with Return into {_app_label(app)}")
     if not app or any(_in(app, apps) for apps in (SHELL_APPS, FILE_APPS, SETTINGS_APPS)):
         return Verdict(CONFIRM, summary)
+    returns = "\n" in text or "\r" in text  # Return sends / submits, except in a search field
+    if returns and (
+        _in(app, MESSAGING_APPS) or not _focus_takes_return(str(args.get("app", "")), ctx)
+    ):
+        return Verdict(CONFIRM, f"type text with Return into {_app_label(app)}")
+    if _secret_field(ctx.focused()):
+        return Verdict(CONFIRM, f"type into a password field in {_app_label(app)}")
     return Verdict(SAFE, summary)
+
+
+_FIELD_SECRET_RE = re.compile(r"password|passwort|mot de passe|passcode|\bpin\b")
+
+
+def _secret_field(info: Mapping[str, str] | None) -> bool:
+    """True when the focused element is a password / secure text field."""
+    if not info:
+        return False
+    if fold(info.get("AXSubrole", "")) == "axsecuretextfield":
+        return True
+    return bool(_FIELD_SECRET_RE.search(fold(" ".join(str(info.get(k, "")) for k in _FIELD_KEYS))))
 
 
 def _element_label(info: Mapping[str, str]) -> tuple[str, str]:
@@ -383,7 +494,8 @@ def _classify_click(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
     elif isinstance(point, tuple):
         info = ctx.element_at(point[0], point[1])
         if info is None:
-            return Verdict(CONFIRM, f"click an unidentified spot in {_app_label(app)}")
+            risk = CONFIRM if _sensitive_app(app) else SAFE  # e.g. a web page in Safari
+            return Verdict(risk, f"click an unidentified spot in {_app_label(app)}")
         role, label = _element_label(info)
         shown = _label(info.get("AXTitle") or info.get("AXDescription") or label)
         what = f"'{shown}'" if shown else (role.removeprefix("ax") or "something")
@@ -393,10 +505,17 @@ def _classify_click(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
     confirm = (
         risky_words(label)
         or (_in(app, SETTINGS_APPS) and not safe_topic(label))
-        or (not label.strip() and bool(role) and role not in _BENIGN_ROLES)  # unlabelled button
+        or (not label.strip() and bool(role) and role not in _BENIGN_ROLES and _sensitive_app(app))
         or not app
     )
     return Verdict(CONFIRM if confirm else SAFE, summary)
+
+
+def _sensitive_app(app: str) -> bool:
+    """Apps where an unidentified click may delete, send or change a setting (or unknown)."""
+    return not app or any(
+        _in(app, apps) for apps in (SETTINGS_APPS, FILE_APPS, SHELL_APPS, MESSAGING_APPS)
+    )
 
 
 def _classify_menu(args: Mapping[str, Any], ctx: RiskContext) -> Verdict:
@@ -414,9 +533,6 @@ def _classify_url(args: Mapping[str, Any]) -> Verdict:
     except ValueError as exc:
         return Verdict(REFUSE, "open a URL", str(exc))
     host = url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    parts = urllib.parse.urlsplit(url)
-    if len(parts.query) + len(parts.fragment) > URL_QUERY_CAP:
-        return Verdict(CONFIRM, f"open {_label(host)} with a long query")
     return Verdict(SAFE, f"open {_label(host)}")
 
 
@@ -439,6 +555,31 @@ def _classify_shortcut(args: Mapping[str, Any]) -> Verdict:
     return Verdict(CONFIRM, summary)
 
 
+def _classify_applescript(args: Mapping[str, Any]) -> Verdict:
+    script = str(args.get("script", ""))
+    refusal = shell_script_refusal(script)
+    if refusal is not None:
+        return Verdict(REFUSE, "run an AppleScript", refusal)
+    if safari_tabs_script(script):
+        return Verdict(SAFE, "run a Safari tab / window AppleScript")
+    return Verdict(CONFIRM, "run an AppleScript")
+
+
+#: The per-tool classifiers of :func:`classify`, keyed by tool name.
+_CLASSIFIERS: dict[str, Callable[[Mapping[str, Any], RiskContext], Verdict]] = {
+    # a fixed read-only template; the selector is data only
+    "safari_dom": lambda args, ctx: Verdict(SAFE, "read the Safari page"),
+    "applescript": lambda args, ctx: _classify_applescript(args),
+    "key": _classify_key,
+    "type_text": _classify_type,
+    "click": _classify_click,
+    "menu_select": _classify_menu,
+    "open_url": lambda args, ctx: _classify_url(args),
+    "open_app": lambda args, ctx: _classify_app(args),
+    "run_shortcut": lambda args, ctx: _classify_shortcut(args),
+}
+
+
 def classify(tool: str, args: Mapping[str, Any], ctx: RiskContext | None = None) -> Verdict:
     """The broker's risk table (7.4): SAFE runs, CONFIRM blocks, REFUSE never runs.
 
@@ -448,27 +589,8 @@ def classify(tool: str, args: Mapping[str, Any], ctx: RiskContext | None = None)
     verdict: Verdict
     if tool in {"observe_screen", "list_ui", "finish"}:
         verdict = Verdict(SAFE, tool.replace("_", " "))
-    elif tool == "safari_dom":  # a fixed read-only template; the selector is data only
-        verdict = Verdict(SAFE, "read the Safari page")
-    elif tool == "applescript":
-        refusal = shell_script_refusal(str(args.get("script", "")))
-        verdict = Verdict(REFUSE, "run an AppleScript", refusal or "")
-        if refusal is None:
-            verdict = Verdict(CONFIRM, "run an AppleScript")
-    elif tool == "key":
-        verdict = _classify_key(args, ctx)
-    elif tool == "type_text":
-        verdict = _classify_type(args, ctx)
-    elif tool == "click":
-        verdict = _classify_click(args, ctx)
-    elif tool == "menu_select":
-        verdict = _classify_menu(args, ctx)
-    elif tool == "open_url":
-        verdict = _classify_url(args)
-    elif tool == "open_app":
-        verdict = _classify_app(args)
-    elif tool == "run_shortcut":
-        verdict = _classify_shortcut(args)
+    elif tool in _CLASSIFIERS:
+        verdict = _CLASSIFIERS[tool](args, ctx)
     else:
         verdict = Verdict(CONFIRM, f"use the unknown tool {_label(tool)}")
     return Verdict(verdict.risk, clean_summary(verdict.summary), verdict.reason)

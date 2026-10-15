@@ -7,8 +7,9 @@ Client tools (PLAN_claude-bridge 7.3), registered on the
 =========================  =====================================================================
 ``open_url(target)``       any http(s) site in Safari; shortcuts ``youtube`` / ``jellyfin``
 ``open_app(name)``         any app in /Applications, /System/Applications, ~/Applications
-``set_volume(…)``          ``level`` 0–100, ``step`` up / down / ±N, or ``mute`` true / false
-``set_brightness(step)``   built-in display only: up / down / ±N key presses (1/16 each)
+``set_volume(…)``          ``level`` 0–100 / max / min, ``step`` up / down / ±N, or ``mute``
+``set_brightness(…)``      built-in display only: ``step`` up / down / ±N key presses (1/16
+                           each) or ``level`` max / min / 0–100 percent
 ``media(command, s?)``     play | pause | seek ±s | next | previous | fullscreen (YouTube, Jellyfin)
 ``youtube_play_first()``   open + play the first visible video on a YouTube page
 =========================  =====================================================================
@@ -89,6 +90,11 @@ VOLUME_TOLERANCE = 3  # macOS quantises the output volume
 BRIGHTNESS_PRESSES = 2  # one press = 1/16
 KEY_BRIGHTER, KEY_DARKER = 144, 145
 BRIGHTNESS_SETTLE_S = 0.6  # the HUD animates the change
+BRIGHTNESS_KEY_STEPS = 16  # one key press = 1/16 of the range
+BRIGHTNESS_MIN = 0.1  # "minimum": dim, never black
+#: Spoken extremes a ``level`` may name (folded): set_volume → 100 / 0, brightness → 1.0 / 0.1.
+LEVEL_MAX = ("max", "maximum", "full", "voll", "a fond", "à fond", "highest", "100%")
+LEVEL_MIN = ("min", "minimum", "lowest", "0%")
 MAX_CANDIDATES = 4
 TOOL_NAMES = ("open_url", "open_app", "set_volume", "set_brightness", "media", "youtube_play_first")
 
@@ -322,6 +328,41 @@ end run"""
 def _int_or_none(text: str) -> int | None:
     text = text.strip()
     return int(text) if text.lstrip("-").isdigit() else None
+
+
+def _level_fraction(level: Any) -> float | None:
+    """The fraction a spoken / numeric ``level`` names (not yet range-checked), else None."""
+    if isinstance(level, str):
+        text = " ".join(level.strip().casefold().replace("percent", "").split())
+        if text in LEVEL_MAX or text in LEVEL_MIN:
+            return 1.0 if text in LEVEL_MAX else 0.0
+        try:
+            value = float(text.rstrip("%").strip())
+        except ValueError:
+            return None
+        return value if "." in text and 0 <= value <= 1 else value / 100
+    if isinstance(level, int | float) and not isinstance(level, bool):
+        value = float(level)
+        return value if isinstance(level, float) and 0 <= value <= 1 else value / 100
+    return None
+
+
+def parse_level(level: Any) -> tuple[str, float] | None:
+    """A spoken / numeric level → ``(said, fraction 0–1)``; ``said`` must be derivable.
+
+    ``max`` / ``maximum`` / ``full`` / ``voll`` / ``à fond`` → ``("max", 1.0)``; ``min`` /
+    ``minimum`` → ``("min", 0.0)``; whole numbers are percent (``100`` → ``"max"``,
+    ``0`` → ``"min"``); a float up to 1 is a fraction (``1.0`` → ``"max"``).
+    """
+    fraction = _level_fraction(level)
+    if fraction is None or not 0 <= fraction <= 1:
+        return None
+    percent = round(fraction * 100)
+    if percent == 100:
+        return "max", 1.0
+    if percent == 0:
+        return "min", 0.0
+    return str(percent), percent / 100
 
 
 def _signed_number(step: Any) -> int | None:
@@ -684,13 +725,17 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
         return failed("could not mute" if on else "could not unmute")
 
     # -- brightness ----------------------------------------------------------------------
-    def set_brightness(self, step: int | str) -> str:
-        """Brighter / darker on the built-in display (``up`` / ``down`` or ±N presses)."""
-        parsed = parse_step(step, BRIGHTNESS_PRESSES)
-        if parsed is None or abs(parsed.delta) > 16:
+    def set_brightness(
+        self, step: int | str | None = None, level: float | str | None = None
+    ) -> str:
+        """Brighter / darker on the built-in display: ``step`` up / down / ±N presses, or
+        ``level`` max / min / 0–100 percent ("to max" → full, "minimum" → dim, not black)."""
+        plan = _brightness_plan(step, level)
+        if isinstance(plan, Refusal):
             log_tool("set_brightness", "?")
-            return speak(refused("say brighter or darker"))
-        start = self._start("set_brightness", f"{parsed.delta:+d}", parsed.said)
+            return speak(plan)
+        detail, said, target = plan
+        start = self._start("set_brightness", detail, said)
         if isinstance(start, str):
             return start
         if not self.display.builtin_is_main():
@@ -698,13 +743,14 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
         before = self.display.brightness()
         if before is None:
             return self._fail("set_brightness", "cannot read the brightness")
-        if (parsed.delta > 0 and before >= 1.0) or (parsed.delta < 0 and before <= 0.0):
-            return speak(ok("brightness already at the limit"))
+        delta = _brightness_presses(target, before)
+        if delta == 0 or (delta > 0 and before >= 1.0) or (delta < 0 and before <= 0.0):
+            return speak(ok(f"brightness already {round(before * 100)} percent"))
         deadline = self._deadline()
         return self._mutate(
-            Mutation("set_brightness", parsed.said, start),
+            Mutation("set_brightness", said, start),
             deadline,
-            lambda: self._press_brightness(parsed.delta, before, deadline),
+            lambda: self._press_brightness(delta, before, deadline),
         )
 
     def _press_brightness(self, delta: int, before: float, deadline: Deadline) -> Outcome:
@@ -722,7 +768,7 @@ class MacControl:  # pylint: disable=too-many-instance-attributes  # the fast pa
         return failed("the brightness did not change")
 
     # -- media -------------------------------------------------------------------------
-    def media(self, command: str, seconds: float | int | str | None = None) -> str:
+    def media(self, command: str, seconds: float | str | None = None) -> str:
         """play | pause | seek (±seconds) | next | previous | fullscreen in the front Safari."""
         cmd = str(command).strip().casefold()
         said = _media_said(cmd, seconds)
@@ -796,14 +842,51 @@ def _volume_plan(
         on = mute if isinstance(mute, bool) else str(mute).strip().casefold() in ("true", "1", "on")
         return ("mute" if on else "unmute", {"mute" if on else "unmute": True}, ("mute", on))
     if level is not None:
-        value = _int_or_none(str(level))
-        if value is None or not 0 <= value <= 100:
+        spoken = parse_level(level)
+        if spoken is None:
             return Refusal("bad_args", "the volume goes from 0 to 100")
-        return (str(value), {"level": value}, ("level", value))
+        said, fraction = spoken
+        value = round(fraction * 100)
+        derive: Any = value if said not in ("max", "min") else said
+        return (str(value), {"level": derive}, ("level", value))
     parsed = parse_step(step, VOLUME_STEP)
     if parsed is None or abs(parsed.delta) > 100:
         return Refusal("bad_args", "say louder or quieter")
     return (f"{parsed.delta:+d}", parsed.said, ("step", parsed.delta))
+
+
+def _brightness_plan(step: Any, level: Any) -> tuple[str, dict[str, Any], Step | float] | Refusal:
+    """(log detail, arguments that must be derivable, a key Step or a target fraction)."""
+    if (
+        level is None
+        and parse_level(step) is not None
+        and _direction(step) is None
+        and _signed_number(step) is None
+    ):
+        step, level = None, step  # step="max": the agent meant a level
+    if (step is None) == (level is None):
+        return Refusal("bad_args", "say brighter, darker, or a level like max")
+    if level is not None:
+        parsed = parse_level(level)
+        if parsed is None:
+            return Refusal("bad_args", "say a brightness level like max, min or 50 percent")
+        said, fraction = parsed
+        target = max(BRIGHTNESS_MIN, fraction)
+        derive: Any = said if said in ("max", "min") else int(said)
+        return (said, {"level": derive}, target)
+    parsed_step = parse_step(step, BRIGHTNESS_PRESSES)
+    if parsed_step is None or abs(parsed_step.delta) > BRIGHTNESS_KEY_STEPS:
+        return Refusal("bad_args", "say brighter or darker")
+    return (f"{parsed_step.delta:+d}", parsed_step.said, parsed_step)
+
+
+def _brightness_presses(target: Step | float, before: float) -> int:
+    """Signed key presses to go from ``before`` to ``target`` (max / min overshoot safely)."""
+    if isinstance(target, Step):
+        return target.delta
+    if target >= 1.0:
+        return BRIGHTNESS_KEY_STEPS  # presses past the top are no-ops
+    return round((target - before) * BRIGHTNESS_KEY_STEPS)
 
 
 def _volume_target(apply: tuple[str, Any], current: int) -> int | Outcome:
@@ -864,10 +947,10 @@ def register(
         log.warning("⚠️  Mac control disabled: %s (run mac-voice -D)", mac.disabled)
         controller.problems.report(Problem("mac_control", "doctor", f"disabled: {mac.disabled}"))
         for name in TOOL_NAMES:
-            controller.register_tool(name, mac.disabled_tool(name))
+            controller.register_tool(name, mac.disabled_tool(name), own_outcome=True)
         return mac
-    for name, fn in mac.tools.items():
-        controller.register_tool(name, fn)
+    for name, fn in mac.tools.items():  # own outcomes: the rest of the sentence may still act
+        controller.register_tool(name, fn, own_outcome=True)
     log.info("🖥️  Mac control on (%d tools)", len(TOOL_NAMES))
     try:  # a green doctor settles a "disabled" problem an earlier run left in the inbox
         controller.problems.resolve("mac_control", "doctor")

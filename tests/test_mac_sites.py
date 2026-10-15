@@ -107,6 +107,42 @@ def test_seek_forward_verified() -> None:
     assert "const S = 10.0;" in call.fake.js_of("seek")[0]
 
 
+@pytest.mark.parametrize(
+    ("said", "seconds"),
+    [
+        ("Skip the first minute, please.", 60),
+        ("skip a minute", 60),
+        ("skip one minute", 60),
+        ("skip half a minute", 30),
+        ("skip two minutes", 120),
+        ("spul eine Minute vor", 60),
+        ("spul zwei Minuten vor", 120),
+        ("avance d'une demi-minute", 30),
+    ],
+)
+def test_seek_takes_minutes_as_said(said: str, seconds: int) -> None:
+    call = Call()
+    call.fake.js = {"state": [yt_state(t=5.0), yt_state(t=5.0 + seconds + 0.5)]}
+    call.say(said)
+    assert call.mac.media("seek", seconds) == f"ok: moved {seconds} seconds ahead"
+
+
+def test_a_minute_is_not_ninety_seconds() -> None:
+    call = Call()
+    call.say("skip a minute")
+    assert "not in what you said" in call.mac.media("seek", 90)
+
+
+def test_focus_then_seek_in_one_sentence() -> None:
+    """Phase 8: "First focus Safari, and then skip the first 60 seconds" was refused."""
+    call = Call()
+    call.fake.js = {"state": [yt_state(t=5.0), yt_state(t=65.5)]}
+    call.say("First, focus on Safari, and then skip the first 60 seconds")
+    call.ctl.register_tool("open_app", call.mac.open_app, own_outcome=True)
+    call.ctl.note_tool_result("open_app")  # the first action's result reached the agent
+    assert call.mac.media("seek", 60) == "ok: moved 60 seconds ahead"
+
+
 def test_seek_back_and_failure() -> None:
     call = Call()
     call.fake.js = {"state": [yt_state(t=50.0), yt_state(t=50.5)]}

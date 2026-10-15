@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from my_stt_tts import bridge, claude_sessions
+from my_stt_tts import claude_sessions
 from my_stt_tts.attention import AttentionStore
 from my_stt_tts.attention import register as register_attention
 from my_stt_tts.bridge import (
@@ -231,11 +231,6 @@ class Rig:
 @pytest.fixture(name="rig")
 def _rig() -> Rig:
     return Rig()
-
-
-@pytest.fixture(name="code_35")
-def _code_35(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bridge.secrets, "randbelow", lambda _n: 25)  # 25 + 10 = 35
 
 
 # -- registration ----------------------------------------------------------------------------
@@ -461,16 +456,15 @@ def test_background_session_is_read_only(rig: Rig) -> None:
 
 
 # -- send: proposal → confirm → executor -------------------------------------------------------
-@pytest.mark.usefixtures("code_35")
 def test_send_is_proposed_then_runs_with_text_on_stdin_only(rig: Rig) -> None:
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted", "channel": "api"})
     rig.say("tell voice bridge to run the tests")
     assert rig.tool("send_message", "voice bridge", "run the tests") == (
-        "Say confirm 35 to send to voice bridge: run the tests"
+        "To send to voice bridge: run the tests — say yes, do it."
     )
-    assert not rig.ccc.of("send")  # nothing sent before the code
-    rig.say("confirm 35")
-    assert rig.tool("confirm_action", "35") == "sent"
+    assert not rig.ccc.of("send")  # nothing sent before the yes
+    rig.say("yes, do it")
+    assert rig.tool("confirm_action") == "sent"
     [(argv, stdin, timeout)] = rig.ccc.of("send")
     assert argv == [CCC, "send", "-s", "id-voice", "-j"]
     assert stdin == "run the tests"
@@ -479,21 +473,19 @@ def test_send_is_proposed_then_runs_with_text_on_stdin_only(rig: Rig) -> None:
     assert rig.deliveries.tracked == [("d1", "id-voice", "voice bridge", "accepted")]
 
 
-@pytest.mark.usefixtures("code_35")
 def test_send_logs_one_line_without_content(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted", "channel": "api"})
     caplog.set_level("INFO")
     rig.say("tell voice bridge the secret plan")
     prompt = rig.tool("send_message", "voice bridge", "the secret plan")
-    assert prompt.endswith(": the secret plan")  # the agent reads the text back
-    rig.say("confirm 35")
-    rig.tool("confirm_action", "35")
+    assert prompt.endswith(": the secret plan — say yes, do it.")  # read back
+    rig.say("yes, do it")
+    rig.tool("confirm_action")
     assert "🔒 confirm needed: send" in caplog.text
     assert "📨 send → voice bridge: accepted" in caplog.text
     assert "secret plan" not in caplog.text
 
 
-@pytest.mark.usefixtures("code_35")
 def test_send_text_is_cleaned_and_checked(rig: Rig) -> None:
     rig.say("tell voice bridge something")
     assert rig.tool("send_message", "voice bridge", "  \x1b\x00 ") == "What should I send?"
@@ -501,12 +493,12 @@ def test_send_text_is_cleaned_and_checked(rig: Rig) -> None:
     assert "too long" in rig.tool("send_message", "voice bridge", "x" * 4001)
     rig.say("tell voice bridge hi there")
     prompt = rig.tool("send_message", "voice bridge", "hi\x1b[201~ there\nnext")
-    assert prompt == "Say confirm 35 to send to voice bridge: hi[201~ there next"
+    assert prompt == "To send to voice bridge: hi[201~ there next — say yes, do it."
     [pending] = rig.ctl.pending.live()
     assert pending.args["text"] == "hi[201~ there\nnext"  # multi-line text arrives intact
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
-    rig.say("confirm 35")
-    assert rig.tool("confirm_action", "35") == "sent"
+    rig.say("yes, do it")
+    assert rig.tool("confirm_action") == "sent"
     assert rig.ccc.of("send")[0][1] == "hi[201~ there\nnext"
 
 
@@ -514,7 +506,7 @@ def test_confirm_prompt_text_is_redacted_and_capped(rig: Rig) -> None:
     rig.say("tell voice bridge the token")
     prompt = rig.tool("send_message", "voice bridge", f"use {SECRET} " + "word " * 100)
     assert SECRET not in prompt and "[redacted]" in prompt
-    head = prompt.split(": ", 1)[1]
+    head = prompt.split(": ", 1)[1].removesuffix(" — say yes, do it.")
     assert len(head) <= claude_sessions.PROMPT_TEXT_CAP
 
 
@@ -539,7 +531,7 @@ def test_read_then_send_in_the_same_turn_is_refused(rig: Rig) -> None:
     assert result.startswith("refused:")
     assert rig.ctl.pending.live() == []
     rig.say("tell voice bridge to deploy")  # a new sentence may act
-    assert rig.tool("send_message", "voice bridge", "deploy").startswith("Say confirm")
+    assert rig.tool("send_message", "voice bridge", "deploy").endswith("say yes, do it.")
 
 
 def test_the_target_must_be_in_what_albert_said(rig: Rig) -> None:
@@ -555,14 +547,15 @@ def test_the_target_must_be_in_what_albert_said(rig: Rig) -> None:
 def test_a_list_number_is_a_target_albert_can_say(rig: Rig) -> None:
     rig.tool("list_sessions")
     rig.say("send number two hello")
-    assert rig.tool("send_message", "number two", "hello").startswith("Say confirm")
+    assert rig.tool("send_message", "number two", "hello").endswith("say yes, do it.")
     [pending] = rig.ctl.pending.live()
     assert pending.args["session_id"] == "id-idle"
 
 
-def test_one_capability_per_sentence(rig: Rig) -> None:
+def test_a_proposal_burns_the_rest_of_the_sentence(rig: Rig) -> None:
+    """A session tool result is external content: the sentence cannot act again."""
     rig.say("tell voice bridge hello")
-    assert rig.tool("send_message", "voice bridge", "hello").startswith("Say confirm")
+    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
     assert rig.tool("send_message", "voice bridge", "hello again").startswith("refused:")
     assert len(rig.ctl.pending.live()) == 1
 
@@ -575,10 +568,9 @@ def _confirmed(rig: Rig, kind: str = "send") -> str:
     else:
         rig.say("answer picker demo with b")
         proposal = rig.tool("answer_decision", "picker demo", "b")
-    assert proposal.startswith("Say confirm"), proposal
-    code = proposal.split()[2]
-    rig.say(f"confirm {code}")
-    return rig.tool("confirm_action", code)
+    assert proposal.endswith("say yes, do it."), proposal
+    rig.say("yes, do it")
+    return rig.tool("confirm_action")
 
 
 def test_unknown_outcome_is_tracked_for_the_attention_monitor(rig: Rig) -> None:
@@ -688,20 +680,20 @@ def test_unmapped_code_gets_a_generic_reason() -> None:
 def test_cancel_before_the_mutation_sends_nothing(rig: Rig) -> None:
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.say("tell voice bridge hello")
-    code = rig.tool("send_message", "voice bridge", "hello").split()[2]
-    rig.say(f"confirm {code}")
+    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
+    rig.say("yes, do it")
     rig.ctl.cancel.cancel("stopped")
-    assert rig.tool("confirm_action", code) == "refused: stopped"
+    assert rig.tool("confirm_action") == "refused: stopped"
     assert not rig.ccc.of("send")
 
 
 def test_one_mutation_at_a_time(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_sessions, "LOCK_TIMEOUT_S", 0.01)
     rig.say("tell voice bridge hello")
-    code = rig.tool("send_message", "voice bridge", "hello").split()[2]
-    rig.say(f"confirm {code}")
+    assert rig.tool("send_message", "voice bridge", "hello").endswith("say yes, do it.")
+    rig.say("yes, do it")
     with rig.ctl.mutation_lock:
-        assert rig.tool("confirm_action", code) == "refused: another action is still running"
+        assert rig.tool("confirm_action") == "refused: another action is still running"
     assert not rig.ccc.of("send")
 
 
@@ -799,16 +791,15 @@ def test_choice_other_text_and_ambiguity() -> None:
     assert isinstance(resolve_choice(_q(multi=True), "use postgres"), str)
 
 
-@pytest.mark.usefixtures("code_35")
 def test_picker_answer_proposes_then_runs_ccc_answer_with_json_stdin(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(ASK, state="waiting")
     rig.ccc.replies["answer"] = ok({"delivery_id": "a1", "outcome": "accepted"})
     rig.say("answer picker demo with b")
     assert rig.tool("answer_decision", "picker demo", "b") == (
-        "Say confirm 35 to answer Picker Demo with b) Local server."
+        "To answer Picker Demo with b) Local server, say yes, do it."
     )
-    rig.say("confirm 35")
-    assert rig.tool("confirm_action", "35") == "answered"
+    rig.say("yes, do it")
+    assert rig.tool("confirm_action") == "answered"
     [(argv, stdin, timeout)] = rig.ccc.of("answer")
     assert argv == [CCC, "answer", "-s", "id-wait", "-j"]
     assert stdin is not None
@@ -834,18 +825,17 @@ def test_picker_answer_multi_question_and_other_text(rig: Rig) -> None:
     assert "one answer per question" in rig.tool("answer_decision", "picker demo", "a")
 
 
-@pytest.mark.usefixtures("code_35")
 def test_todo_line_decision_is_answered_with_a_message(rig: Rig) -> None:
     rig.ccc.replies["inspect"] = inspect_data(TODO)
     rig.ccc.replies["send"] = ok({"delivery_id": "d1", "outcome": "accepted"})
     rig.say("answer scratch idle with b and wait for the second review")
     proposal = rig.tool("answer_decision", "scratch idle", "b; wait for the second review")
     assert proposal == (
-        "Say confirm 35 to answer scratch idle with b) Shared bucket; "
-        "b) Wait for the second review."
+        "To answer scratch idle with b) Shared bucket; "
+        "b) Wait for the second review, say yes, do it."
     )
-    rig.say("confirm 35")
-    assert rig.tool("confirm_action", "35") == "sent"
+    rig.say("yes, do it")
+    assert rig.tool("confirm_action") == "sent"
     [(argv, stdin, _timeout)] = rig.ccc.of("send")
     assert argv == [CCC, "send", "-s", "id-idle", "-j"]
     assert stdin == (
@@ -1024,7 +1014,7 @@ def test_briefings_are_forgotten_at_a_new_call(rig: Rig) -> None:
     rig.ctl.begin_call()
     rig.ccc.replies["inspect"] = inspect_data(dict(ASK, decision_id="d-new"), state="waiting")
     rig.say("answer picker demo with a")
-    assert rig.tool("answer_decision", "picker demo", "a").startswith("Say confirm")
+    assert rig.tool("answer_decision", "picker demo", "a").endswith("say yes, do it.")
 
 
 def test_a_tail_cut_reply_loses_its_partial_first_word(rig: Rig) -> None:

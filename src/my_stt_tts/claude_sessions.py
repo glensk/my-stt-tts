@@ -15,9 +15,9 @@ Tools (the voice agent's client tools):
 * ``send_message(target, text)`` / ``answer_decision(target, choice)`` — only a proposal,
   and only with the capability of what Albert just said (the target — name or list
   number — must be in it; a read or briefing since then voids it). The confirm prompt
-  reads the message (redacted, ≤ 200 chars) or the chosen options back. The action runs
-  after ``confirm_action(code)`` through the ``send`` / ``answer`` executors (one
-  mutation at a time, final cancellation + deadline check).
+  reads the message (redacted, ≤ 200 chars) or the chosen options back and asks for "yes,
+  do it". The action runs after ``confirm_action()`` through the ``send`` / ``answer``
+  executors (one mutation at a time, final cancellation + deadline check).
 
 Outcomes: an ``accepted`` / ``unknown`` delivery goes to ``controller.deliveries`` (the
 attention monitor follows it); only failures after something was typed reach the inbox
@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from .bridge import (
+    CONFIRM_PHRASE,
     BridgeController,
     Deadline,
     Mutation,
@@ -794,7 +795,10 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         return None if refusal is None else f"refused: {refusal.reason}"
 
     def send_message(self, target: str, text: str) -> str:
-        """Propose sending ``text`` to the session; it runs after ``confirm_action(code)``."""
+        """Propose sending ``text`` to the session.
+
+        It runs after "yes, do it" + ``confirm_action``.
+        """
         deadline = Deadline(TOOL_BUDGET_S, self.clock)
         s = self._mutable(target, "message", deadline)
         if isinstance(s, str):
@@ -814,13 +818,11 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
         return self._done("send_message", self._propose_send(s, message))
 
     def _propose_send(self, s: Session, message: str, summary: str = "") -> str:
-        pending = self.ctl.propose(
-            "send", {"session_id": s.session_id, "name": s.name, "text": message}
-        )
+        self.ctl.propose("send", {"session_id": s.session_id, "name": s.name, "text": message})
         if summary:
-            return f"Say confirm {pending.code} to answer {_say_name(s)} with {summary}."
+            return f"To answer {_say_name(s)} with {summary}, say {CONFIRM_PHRASE}."
         said = redact(" ".join(message.split()), PROMPT_TEXT_CAP)
-        return f"Say confirm {pending.code} to send to {_say_name(s)}: {said}"
+        return f"To send to {_say_name(s)}: {said} — say {CONFIRM_PHRASE}."
 
     def answer_decision(self, target: str, choice: str) -> str:
         """Propose answering the session's decision with ``choice`` (letter, label, number)."""
@@ -894,12 +896,12 @@ class SessionTools:  # pylint: disable=too-many-instance-attributes  # tools + p
                 answers.append({"question_index": i, "other_text": p.other})
             else:
                 answers.append({"question_index": i, "option_indices": list(p.indices)})
-        pending = self.ctl.propose(
+        self.ctl.propose(
             "answer",
             {"session_id": s.session_id, "name": s.name, "decision_id": did, "answers": answers},
         )
         said = redact(_picks_summary(questions, picks), LABEL_CAP * 2)
-        return f"Say confirm {pending.code} to answer {_say_name(s)} with {said}."
+        return f"To answer {_say_name(s)} with {said}, say {CONFIRM_PHRASE}."
 
     # -- executors (run by confirm_action) -------------------------------------------------
     def execute_send(self, pending: PendingAction) -> str:

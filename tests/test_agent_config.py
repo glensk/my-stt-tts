@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import inspect
 import json
+import re
 import stat
 import sys
 from pathlib import Path
@@ -317,14 +318,30 @@ def test_tool_specs_match_the_controller_tools() -> None:
     funcs["do_on_mac"] = MacOperator.do_on_mac
     funcs["acknowledge_problem"] = make_acknowledge_tool(None, None)  # type: ignore[arg-type]
     assert {s.name for s in cfg.TOOL_SPECS} == set(funcs)
+    legacy = {"confirm_action": {"code"}}  # accepted and ignored, never offered to the agent
     for spec in cfg.TOOL_SPECS:
         params = {
             name: p
             for name, p in inspect.signature(funcs[spec.name]).parameters.items()
-            if name != "self"
+            if name != "self" and name not in legacy.get(spec.name, set())
         }
         schema = spec.parameters
         assert set(schema["properties"]) == set(params), spec.name
         mandatory = {n for n, p in params.items() if p.default is inspect.Parameter.empty}
         assert set(schema["required"]) == mandatory, spec.name
         assert all(prop.get("description") for prop in schema["properties"].values())
+
+
+def test_prompt_and_confirm_tool_ask_for_yes_do_it_and_never_for_a_code() -> None:
+    specs = {s.name: s for s in cfg.TOOL_SPECS}
+    texts = [cfg.SECTION] + [s.description for s in cfg.TOOL_SPECS]
+    texts += [json.dumps(s.parameters) for s in cfg.TOOL_SPECS]
+    plain = [re.sub(r"Claude Code", "", t) for t in texts]
+    assert not [t for t in plain if re.search(r"\bcodes?\b|two-digit", t, re.IGNORECASE)]
+    assert "yes, do it" in cfg.SECTION
+    assert specs["confirm_action"].parameters == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+    assert "level" in specs["set_brightness"].parameters["properties"]

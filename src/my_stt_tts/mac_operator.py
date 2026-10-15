@@ -2,7 +2,7 @@
 
 The ``do_on_mac(request)`` client tool (PLAN_claude-bridge.md 7.4) needs a capability
 minted from Albert's authorised transcript; no proposal up front, because the broker
-(:mod:`my_stt_tts.mac_broker`) holds every risky call until it is confirmed by code.
+(:mod:`my_stt_tts.mac_broker`) holds every high-stakes call until Albert says "yes, do it".
 
 One run:
 
@@ -24,8 +24,8 @@ One run:
   (unless the request was explicitly background: "do it even if I hang up") or at daemon
   shutdown — always TERM to the process group, then KILL after 3 s;
 * a watcher turns each ``blocked-<sha>.json`` into ``controller.propose("operator_confirm",
-  …)`` and says "<summary> — say confirm <code>"; the ``operator_confirm`` executor writes
-  the matching ``allow-<sha>.json`` (0600).
+  …)`` (replacing any older proposal) and says "<summary> — say yes, do it"; the
+  ``operator_confirm`` executor writes the matching ``allow-<sha>.json`` (0600).
 
 Audit (``<root>/audit.jsonl``, 0600): request length + sha256, status, duration — no
 content. Screenshots never outlive the broker call that took them; leftovers are swept.
@@ -57,6 +57,7 @@ from typing import IO, Any
 
 from . import mac_broker, mac_risk
 from .bridge import (
+    CONFIRM_PHRASE,
     BridgeController,
     CancellationToken,
     Capability,
@@ -109,8 +110,13 @@ PREAMBLE = """You operate this Mac through the `mac` broker tools only.
 Do the request below with as few tool calls as possible: prefer open_url, open_app, key
 and menu_select over clicking, and pass observe=true on your last action to get its
 screenshot in the same turn. Apps may show leftover state from earlier use.
-Risky actions (closing, sending, deleting, moving, buying, installing, settings,
-AppleScript) are held until the user confirms by voice; such a call just takes longer.
+High-stakes actions (deleting files, emptying the trash, sending or posting, submitting
+forms, buying, installing, security or network settings, Terminal, most AppleScript) are
+held until the user confirms by voice; such a call just takes longer. Closing, quitting,
+clicking and switching tabs or windows run at once.
+To close Safari tabs or windows use the keyboard (key cmd+w, cmd+shift+w) or the File
+menu (menu_select), not AppleScript; an AppleScript that does more than open, close or
+activate Safari tabs and windows waits for a confirmation.
 If a call returns "denied: not confirmed" or "refused: ...", do not retry it and do not
 work around it: finish with status needs_confirmation or failed.
 After your LAST action, look at a screenshot taken after it, then call
@@ -509,7 +515,7 @@ class MacOperator:  # pylint: disable=too-many-instance-attributes  # the operat
                 {"call_id": call.call_id, "sha": sha, "summary": summary, "nonce": nonce},
             )
             call.proposed[key] = pending
-            message = f"{summary} — say confirm {pending.code}"
+            message = f"{summary} — say {CONFIRM_PHRASE}"
             call.confirm_message = message
             self._set_state(call, NEEDS_CONFIRMATION)
             log_confirm(summary)

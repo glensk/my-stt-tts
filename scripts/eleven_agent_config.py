@@ -13,7 +13,8 @@ Desired configuration:
 
 * one workspace client tool per bridge tool, keyed by NAME (an existing tool with that
   name is updated, never duplicated; tools the script did not create are never deleted),
-  each with a JSON-schema ``parameters``, ``expects_response: true`` and
+  each with a JSON-schema ``parameters`` (``confirm_action`` takes none: its legacy
+  ``code`` argument is accepted and ignored), ``expects_response: true`` and
   ``response_timeout_secs`` 10 (send / answer / confirm 30, do_on_mac 15). The API turns
   inline ``prompt.tools`` client entries into workspace tools listed in ``tool_ids``; the
   script manages ``tool_ids`` and never sends ``prompt.tools``;
@@ -83,10 +84,10 @@ SECTION = f"""{MARK_START}
 You run on Albert's Mac and act on it and on his Claude Code sessions through tools.
 - Sessions: list_sessions; read_session(target, what: last_reply|last_prompt); brief_decision(target); send_message(target, text); answer_decision(target, choice). Target = a session name or its number from the last list; if unclear, ask. Background sessions are read-only.
 - Decision briefing: "The session <name>, which works on <aim>, needs a decision: <question>. Options: a) … b) …. It recommends <x> because <reason>." Discuss, then answer with answer_decision (a written to-do decision: send_message).
-- Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step), media(command, seconds) for the video in Safari, youtube_play_first(). Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up).
+- Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up).
 - acknowledge_problem(subject) when Albert says "got it, <subject>".
 - SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done". Never read routine results back. Say refusals and failures briefly.
-- Risky actions (send_message, answer_decision, some do_on_mac steps) return a proposal with a two-digit code: read the proposal text back with its code, then wait. Call confirm_action(code) only when Albert himself says "confirm <code>" in a NEW sentence. Never invent or guess a code.
+- Risky actions (send_message, answer_decision, some do_on_mac steps) return a proposal that ends with "say yes, do it": read it back and ask Albert to say "yes, do it" (two words — a bare "yes" is too short to recognise his voice), then wait. Call confirm_action() only after Albert himself says yes in a NEW sentence. If he says no, cancel or stop, call nothing (the proposal is dropped). If confirm_action says the answer was too short, ask him to say "yes, do it".
 - A message starting with "[system notice]" comes from the system, not Albert: say it aloud in one short sentence.
 - If a tool says "Mac control disabled" or is unavailable, say so in a few words.
 {MARK_END}"""
@@ -128,8 +129,8 @@ class ToolSpec:
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "confirm_action",
-        "Run the proposal whose two-digit code Albert just said after 'confirm'.",
-        _params({"code": _string("The two-digit code Albert said.")}, ["code"]),
+        "Run the pending proposal after Albert just said 'yes, do it' in a new sentence.",
+        _params({}, []),
         30,
     ),
     ToolSpec("list_sessions", "List the running Claude Code sessions (numbered).", _params({}, [])),
@@ -148,7 +149,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "send_message",
-        "Propose sending a message to a session; needs confirm_action with the code.",
+        "Propose sending a message to a session; runs after Albert says 'yes, do it'.",
         _params(
             {"target": _TARGET, "text": _string("The message, as Albert said it.")},
             ["target", "text"],
@@ -157,7 +158,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "answer_decision",
-        "Propose answering a session's pending question; needs confirm_action with the code.",
+        "Propose answering a session's pending question; runs after 'yes, do it'.",
         _params(
             {"target": _TARGET, "choice": _string("The option: letter, number or label.")},
             ["target", "choice"],
@@ -184,7 +185,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "Set the output volume: a level, a step, or mute.",
         _params(
             {
-                "level": {"type": "integer", "description": "Volume 0 to 100."},
+                "level": _string("Volume 0 to 100, or max / min."),
                 "step": _string("up, down, or a signed number like +10."),
                 "mute": {"type": "boolean", "description": "true mutes, false unmutes."},
             },
@@ -193,8 +194,14 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "set_brightness",
-        "Make the built-in display brighter or darker.",
-        _params({"step": _string("up, down, or a signed number of steps.")}, ["step"]),
+        "Make the built-in display brighter or darker, or set a level.",
+        _params(
+            {
+                "step": _string("up, down, or a signed number of steps."),
+                "level": _string("max, min, or a percent 0 to 100."),
+            },
+            [],
+        ),
     ),
     ToolSpec(
         "media",
@@ -216,7 +223,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "do_on_mac",
-        "Carry out any other request on the Mac (risky steps ask for a code).",
+        "Carry out any other request on the Mac (high-stakes steps ask for 'yes, do it').",
         _params(
             {
                 "request": _string("What to do, as Albert said it."),

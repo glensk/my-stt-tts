@@ -68,7 +68,7 @@ class OperatorNotices:
                 self._answered.add(current.call_id)
 
     def confirm_needed(self, message: str) -> None:
-        """``notify`` of the operator: a blocked step needs ``confirm <code>``."""
+        """``notify`` of the operator: a blocked step needs Albert's "yes, do it"."""
         if self.controller.tool_in_flight(OPERATOR_TOOL):
             return  # the do_on_mac answer itself carries the request
         self.controller.notify_in_call(f"Mac task needs confirmation: {message}")

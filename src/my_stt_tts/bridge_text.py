@@ -5,6 +5,8 @@
 * :func:`numbers_in` — every number a transcript says, as digits or as German, English or
   French number words from 0 to 100 ("dreissig", "thirty", "trente", "fünfunddreißig",
   "quatre-vingt-dix", Swiss "septante"/"huitante"/"nonante").
+* :func:`seconds_in` — durations said in minutes ("a minute", "the first minute", "half a
+  minute", "zwei Minuten", "une demi-minute") as seconds.
 * :func:`normalise_host` / :func:`host_said` — "YouTube" → ``youtube.com``; a host is
   derivable from a transcript when its main label occurs in it.
 * :func:`derivable` — the fast-path rule: an argument must come from what was said.
@@ -45,6 +47,9 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
         "recule",
     ),
     "mute": ("mute", "stumm", "muet"),
+    # spoken levels: set_volume / set_brightness ``level='max'`` / ``'min'``
+    "max": ("max", "maximum", "maximal", "full", "voll", "a fond", "ganz hell", "ganz laut"),
+    "min": ("min", "minimum", "minimal", "ganz dunkel", "ganz leise"),
     "unmute": ("unmute", "ton an", "remets le son"),
     "up": ("louder", "up", "lauter", "heller", "brighter", "plus fort", "monte"),
     "down": ("quieter", "down", "leiser", "dunkler", "darker", "moins fort", "baisse"),
@@ -179,6 +184,55 @@ def numbers_in(text: str) -> set[int]:
     return found
 
 
+# -- durations ---------------------------------------------------------------------------
+_MINUTE = {"minute", "minuten", "min", "mins"}
+_MINUTES = {"minutes", "minuten", "mins"}
+_ONE_MINUTE = {"a", "an", "one", "the", "first", "ein", "eine", "einer", "die", "erste",
+               "ersten", "une", "un", "la", "premiere"}  # fmt: skip
+_HALF = {"half", "halbe", "halben", "demi"}
+_ONE_AND_A_HALF = {"anderthalb", "eineinhalb"}
+
+
+def _number_before(tokens: list[str], end: int) -> int | None:
+    """The number said by the tokens right before index ``end`` (digits or words)."""
+    if end > 0 and tokens[end - 1].isdigit():
+        return int(tokens[end - 1])
+    words = _number_words()
+    for size in range(min(max(len(k) for k in words), end), 0, -1):
+        value = words.get(tuple(tokens[end - size : end]))
+        if value is not None:
+            return value
+    return None
+
+
+def seconds_in(text: str) -> set[int]:
+    """Durations ``text`` says in minutes, as seconds (de/en/fr).
+
+    "a minute" / "one minute" / "the first minute" / "eine Minute" / "une minute" → 60,
+    "half a minute" / "eine halbe Minute" / "une demi-minute" → 30, "a minute and a half" /
+    "anderthalb Minuten" / "une minute et demie" → 90, "two minutes" / "zwei Minuten" /
+    "deux minutes" → 120. Plain seconds are :func:`numbers_in`'s job.
+    """
+    tokens = normalise(text).split()
+    found: set[int] = set()
+    for i, tok in enumerate(tokens):
+        if tok not in _MINUTE and tok not in _MINUTES:
+            continue
+        before = tokens[i - 1] if i else ""
+        two_before = tokens[i - 2] if i > 1 else ""
+        after = " ".join(tokens[i + 1 : i + 4])
+        if before in _ONE_AND_A_HALF:
+            found.add(90)
+        elif before in _HALF or (before == "a" and two_before == "half"):
+            found.add(30)
+        elif (number := _number_before(tokens, i)) is not None and number > 0:
+            found.add(60 * number)
+        elif tok in _MINUTE and (before in _ONE_MINUTE or not before):
+            half = after.startswith(("and a half", "et demie", "und eine halbe"))
+            found.add(90 if half else 60)
+    return found
+
+
 # -- hosts and keywords --------------------------------------------------------------------
 def normalise_host(target: str) -> str:
     """The bare host a spoken or typed target names ("YouTube" → ``youtube.com``)."""
@@ -236,20 +290,34 @@ def _looks_like_host(value: str) -> bool:
     )
 
 
+def _number_said(number: int, text: str, key: str) -> bool:
+    """``number`` is said — for ``seconds`` also as minutes ("the first minute" = 60)."""
+    if number in numbers_in(text):
+        return True
+    return key == "seconds" and abs(number) in seconds_in(text)
+
+
 def derivable(value: object, text: str, key: str = "") -> bool:
     """True when the argument ``value`` (named ``key``) comes from what ``text`` says.
 
-    Numbers must be said (digits or number words), hosts by their main label, any other
-    string as a keyword (or one of its spoken forms), a boolean by its key's keyword.
+    Numbers must be said (digits or number words; ``seconds`` also as minutes), hosts by
+    their main label, a ``level`` of ``max`` / ``min`` as such a word (or 100 / 0), any
+    other string as a keyword (or one of its spoken forms), a boolean by its key's keyword.
     """
     if isinstance(value, bool):
         return bool(key) and keyword_said(key, text)
     if isinstance(value, int | float):
-        return float(value).is_integer() and int(value) in numbers_in(text)
-    if not isinstance(value, str) or not value.strip():
-        return False
-    if value.strip().lstrip("+-").isdigit():
-        return int(value.strip().lstrip("+-")) in numbers_in(text)
+        return float(value).is_integer() and _number_said(int(value), text, key)
+    return isinstance(value, str) and bool(value.strip()) and _string_derivable(value, text, key)
+
+
+def _string_derivable(value: str, text: str, key: str) -> bool:
+    """:func:`derivable` for a non-blank string ``value``."""
+    digits = value.strip().lstrip("+-")
+    if digits.isdigit():
+        return _number_said(int(digits), text, key)
+    if key == "level" and value in {"max", "min"}:  # "to max", "hundred percent", "zero"
+        return keyword_said(value, text) or (100 if value == "max" else 0) in numbers_in(text)
     if key in {"host", "url", "target"} or _looks_like_host(value):
         return host_said(value, text)
     return keyword_said(value, text)

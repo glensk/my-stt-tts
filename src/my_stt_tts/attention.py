@@ -1126,7 +1126,9 @@ def register(
     controller.deliveries = store
     controller.briefings = store
     monitor = Monitor(store, runner, call_active=lambda: controller.turns is not None)
-    controller.register_tool("acknowledge_problem", make_acknowledge_tool(controller, store))
+    controller.register_tool(  # its result is the bridge's own: the sentence may go on
+        "acknowledge_problem", make_acknowledge_tool(controller, store), own_outcome=True
+    )
 
     def shutdown() -> None:
         if monitor.stop():

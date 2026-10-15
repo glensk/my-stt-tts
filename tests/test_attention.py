@@ -651,6 +651,7 @@ def test_register_wires_store_tool_and_shutdown(wired: tuple[Call, Monitor]) -> 
     assert call.ctl.deliveries is mon.store
     assert call.ctl.briefings is mon.store
     assert "acknowledge_problem" in call.ctl.tools
+    assert "acknowledge_problem" in call.ctl.own_outcome_tools  # the sentence may go on
     mon.start()
     call.ctl.shutdown()
     assert mon._thread is None  # pylint: disable=protected-access
@@ -692,7 +693,8 @@ def test_acknowledge_is_per_item_and_voice_verified(wired: tuple[Call, Monitor])
     call.say("got it, scratch dead")
     assert ack("scratch-dead") == "ok: cleared 1"
     assert [i.subject for i in mon.store.open_items()] == ["voice bridge"]
-    assert ack("scratch-dead").startswith("refused:")  # capability is single use
+    # a second action of the same sentence mints again, but the item is already cleared
+    assert ack("scratch-dead") == "nothing open with that name"
     call.say("got it, voice bridge")
     assert ack("voice bridge") == "ok: cleared 1"
     assert mon.store.open_items() == []

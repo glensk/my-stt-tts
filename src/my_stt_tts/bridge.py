@@ -22,14 +22,21 @@ Authorisation (two risk tiers, fail closed):
   with ``verify_voice=False``. Speaker scores on short utterances (a one-word "Play.") are
   unreliable and refused Albert himself, and a call only starts after a verified wake
   word. Everything else still holds: ``MAC_VOICE_AUTHORIZED`` must be set, injected
-  notices never mint, one capability per transcript, invalidation, arguments derivable
-  from the transcript. Residual risk: another voice in the room can change the volume.
-* :class:`CapabilityStore` — an authorised transcript mints at most ONE capability; any
-  read, briefing, tool result or contextual update invalidates the unused ones (and the
-  transcripts behind them). A capability allows one action whose arguments come from the
-  transcript (:func:`~my_stt_tts.bridge_text.derivable`).
-* :class:`PendingActions` — risky actions become a proposal with a random 2-digit code,
-  valid 60 s, single use, confirmed only by a NEW authorised transcript saying the code.
+  notices never mint, at most three capabilities per transcript, invalidation, arguments
+  derivable from the transcript. Residual risk: another voice in the room can change the
+  volume.
+* :class:`CapabilityStore` — an authorised transcript mints up to
+  :data:`MAX_ACTIONS_PER_TRANSCRIPT` capabilities ("open YouTube, then louder"); its voice
+  check runs once and is cached. External content reaching the agent — a session read, a
+  briefing, an operator result, an injected notice, any other tool result — invalidates
+  the unused ones (and the transcripts behind them); the results of the bridge's own Mac
+  fast-path tools and of ``acknowledge_problem`` do not (:meth:`BridgeController.note_tool_result`).
+  A capability allows one action whose arguments come from the transcript
+  (:func:`~my_stt_tts.bridge_text.derivable`).
+* :class:`PendingActions` — a risky action becomes THE pending proposal (a newer one
+  replaces it), valid 60 s, single use, confirmed only by a NEW transcript that passes the
+  full voice check and says yes ("yes, do it" — a bare "yes" is too short to verify); a
+  new transcript saying no / cancel / stop drops it.
 
 Every mutation ends with :func:`before_mutation` (cancellation, deadline, capability)
 right before it acts. Logging is one line per event and never carries content.
@@ -53,7 +60,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from .bridge_text import derivable, numbers_in, redact
+from .bridge_text import derivable, normalise, redact
 from .turns import MIN_UTTERANCE_S, Ambiguous, Binding, SpeechDetector, TurnSource, Utterance
 
 log = logging.getLogger("my_stt_tts.bridge")
@@ -62,6 +69,10 @@ FLAGS = ("MAC_VOICE_CLAUDE_BRIDGE", "MAC_VOICE_MAC_CONTROL", "MAC_VOICE_OPERATOR
 AUTH_ENV = "MAC_VOICE_AUTHORIZED"
 AUTH_THRESHOLD = 0.35
 CONFIRM_TTL_S = 60.0
+#: How many actions one authorised sentence may start ("open YouTube and make it louder").
+MAX_ACTIONS_PER_TRANSCRIPT = 3
+#: What Albert is asked to say to confirm (two words: long enough for the voice check).
+CONFIRM_PHRASE = "yes, do it"
 NOTICE_PREFIX = "[system notice]"
 BRIEFING_CAP = 600
 NOTICE_CAP = 300
@@ -114,7 +125,7 @@ def log_tool(name: str, detail: str = "") -> str:
 
 
 def log_confirm(summary: str) -> str:
-    """``🔒 confirm needed: close 3 tabs``."""
+    """``🔒 confirm needed: send a message``."""
     line = f"🔒 confirm needed: {_detail(summary)}"
     log.info(line)
     return line
@@ -239,34 +250,47 @@ class Capability:
     minted_at: float
 
 
-class CapabilityStore:
+class CapabilityStore:  # pylint: disable=too-many-instance-attributes  # per-call state
     """Mint, check, use and invalidate capabilities (see module docstring)."""
 
     def __init__(self, authoriser: Authoriser, clock: Callable[[], float] = time.monotonic):
         self.authoriser = authoriser
         self.clock = clock
         self._live: dict[str, Capability] = {}
-        self._minted: set[int] = set()
+        self._minted: dict[int, int] = {}  # transcript seq → mint attempts
+        self._spent: set[int] = set()  # transcripts that confirmed a proposal
+        self._voice: dict[int, Refusal | None] = {}  # transcript seq → cached voice check
         self._burned_through = -1  # transcripts up to this seq can no longer mint
         self._lock = threading.Lock()
+        self._verify_lock = threading.Lock()  # one voice check per transcript, not one per mint
+
+    def reset(self) -> None:
+        """A call starts or ends: forget every capability and transcript (seqs restart)."""
+        with self._lock:
+            self._live.clear()
+            self._minted.clear()
+            self._spent.clear()
+            self._voice.clear()
+            self._burned_through = -1
 
     def mint(self, transcript: Transcript, *, verify_voice: bool = True) -> Capability | Refusal:
-        """At most one capability per authorised user transcript.
+        """Up to :data:`MAX_ACTIONS_PER_TRANSCRIPT` capabilities per user transcript.
 
         ``verify_voice=False`` (low-risk tier) skips only the speaker check; an
-        unconfigured ``MAC_VOICE_AUTHORIZED`` still refuses.
+        unconfigured ``MAC_VOICE_AUTHORIZED`` still refuses. The speaker check of a
+        transcript runs once; later mints of the same transcript reuse its verdict.
         """
         with self._lock:
             refusal = self._mint_precheck(transcript)
             if refusal is None and not verify_voice and self.authoriser.authorized is None:
                 refusal = _refuse("not_configured")
-            if refusal is None:
-                self._minted.add(transcript.seq)  # one attempt per transcript, pass or fail
+            if refusal is None:  # every attempt counts, pass or fail
+                self._minted[transcript.seq] = self._minted.get(transcript.seq, 0) + 1
         if refusal is not None:
             log_refused(refusal.reason)
             return refusal
         if verify_voice:
-            refusal = self.authoriser.verify(transcript)
+            refusal = self._verify(transcript)
             if refusal is not None:
                 return refusal
         cap = Capability(secrets.token_hex(8), transcript.seq, transcript.text, self.clock())
@@ -278,19 +302,35 @@ class CapabilityStore:
             log.info("🔓 low-risk action, no voice check")
         return cap
 
+    def _verify(self, transcript: Transcript) -> Refusal | None:
+        """The transcript's voice check, run once and cached by its seq."""
+        with self._verify_lock:
+            with self._lock:
+                if transcript.seq in self._voice:
+                    refusal = self._voice[transcript.seq]
+                    if refusal is not None:
+                        log_refused(refusal.reason)
+                    return refusal
+            refusal = self.authoriser.verify(transcript)
+            with self._lock:
+                self._voice[transcript.seq] = refusal
+            return refusal
+
     def _mint_precheck(self, transcript: Transcript) -> Refusal | None:
         if transcript.injected:
             return _refuse("injected", "injected message")
-        if transcript.seq in self._minted:
+        if transcript.seq in self._spent:
             return _refuse("already_used", "already used — say it again")
         if transcript.seq <= self._burned_through:
             return _refuse("invalidated", "context changed — say it again")
+        if self._minted.get(transcript.seq, 0) >= MAX_ACTIONS_PER_TRANSCRIPT:
+            return _refuse("too_many", "too many actions in one sentence — say the rest again")
         return None
 
     def consume_transcript(self, seq: int) -> None:
-        """Mark a transcript as spent (e.g. it confirmed a code) so it mints nothing."""
+        """Mark a transcript as spent (it confirmed a proposal) so it mints nothing."""
         with self._lock:
-            self._minted.add(seq)
+            self._spent.add(seq)
 
     def check(self, cap: Capability, action: str, args: Mapping[str, Any]) -> Refusal | None:
         """Would :meth:`use` allow this? (does not consume)."""
@@ -327,7 +367,7 @@ class CapabilityStore:
         return dropped
 
 
-# -- proposals + confirmation codes ---------------------------------------------------------
+# -- proposals + spoken confirmation -------------------------------------------------------
 def _norm_value(value: Any) -> Any:
     if isinstance(value, str):
         return " ".join(unicodedata.normalize("NFC", value).split())
@@ -351,13 +391,12 @@ def args_digest(kind: str, args: Mapping[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class PendingAction:  # pylint: disable=too-many-instance-attributes  # a plain record
-    """A risky action waiting for its spoken code."""
+    """A risky action waiting for Albert's "yes, do it"."""
 
     id: str
     kind: str
     args: Mapping[str, Any] = field(repr=False)
     sha256: str
-    code: str
     expires: float
     created_at: float
     source_seq: int | None = None
@@ -367,8 +406,28 @@ class PendingAction:  # pylint: disable=too-many-instance-attributes  # a plain 
         return secrets.compare_digest(args_digest(kind, args), self.sha256)
 
 
+#: A confirmation (normalised text, en/de/fr): "yes, do it", "ja, mach das", "oui, vas-y".
+AFFIRMATIVE = re.compile(
+    r"\b(?:yes|yeah|yep|ok|okay|confirm\w*|go ahead|do it|ja|jawohl|bestatig\w*"
+    r"|bestaetig\w*|mach (?:es|das)|oui|vas y)\b"
+)
+#: A refusal; it wins over an affirmative ("no, don't do it"), so it is checked first.
+NEGATION = re.compile(r"\b(?:no|nein|non|cancel|abbrechen|annuler|stop|don t|dont|do not|nicht)\b")
+
+
+def affirmative(text: str) -> bool:
+    """True when ``text`` says yes (and no negation)."""
+    norm = normalise(text)
+    return bool(AFFIRMATIVE.search(norm)) and not NEGATION.search(norm)
+
+
+def declined(text: str) -> bool:
+    """True when ``text`` says no / cancel / stop."""
+    return bool(NEGATION.search(normalise(text)))
+
+
 class PendingActions:
-    """Proposals confirmed by a random 2-digit code said in a NEW authorised transcript."""
+    """At most ONE proposal, confirmed by a NEW verified transcript that says yes."""
 
     def __init__(
         self,
@@ -379,86 +438,101 @@ class PendingActions:
         self.authoriser = authoriser
         self.clock = clock
         self.ttl = ttl
-        self._by_code: dict[str, PendingAction] = {}
+        self._current: PendingAction | None = None
+        self._declined_by: int | None = None  # seq of the transcript that said no
         self._lock = threading.Lock()
 
     def propose(
         self, kind: str, args: Mapping[str, Any], *, source_seq: int | None = None
     ) -> PendingAction:
-        """Store a proposal; ``source_seq`` is the transcript that asked (it cannot confirm)."""
+        """Store THE proposal (replacing any other); ``source_seq`` asked, it cannot confirm."""
         now = self.clock()
+        pending = PendingAction(
+            id=secrets.token_hex(8),
+            kind=kind,
+            args=dict(args),  # executed as given; the digest is over the normalised form
+            sha256=args_digest(kind, args),
+            expires=now + self.ttl,
+            created_at=now,
+            source_seq=source_seq,
+        )
         with self._lock:
-            self._expire(now)
-            code = self._fresh_code()
-            pending = PendingAction(
-                id=secrets.token_hex(8),
-                kind=kind,
-                args=dict(args),  # executed as given; the digest is over the normalised form
-                sha256=args_digest(kind, args),
-                code=code,
-                expires=now + self.ttl,
-                created_at=now,
-                source_seq=source_seq,
-            )
-            self._by_code[code] = pending
+            old = self._current
+            if old is not None and old.expires <= now:
+                old = None
+            self._current = pending
+            self._declined_by = None
+        if old is not None:
+            log.info("🔁 pending action replaced: %s → %s", _detail(old.kind), _detail(kind))
         log_confirm(kind)
         return pending
 
-    def _fresh_code(self) -> str:
-        while True:
-            code = str(secrets.randbelow(90) + 10)  # 10–99: always two spoken digits
-            if code not in self._by_code:
-                return code
-
-    def _expire(self, now: float) -> None:
-        for code in [c for c, p in self._by_code.items() if p.expires <= now]:
-            del self._by_code[code]
-
-    def confirm(self, code: str | int, transcript: Transcript) -> PendingAction | Refusal:
-        """The proposal ``code`` names, once a new authorised transcript says the code."""
-        refusal = self.authoriser.verify(transcript)
-        if refusal is not None:
-            return refusal
+    def decline(self, transcript: Transcript) -> PendingAction | None:
+        """Drop the proposal when a new transcript says no; returns what was dropped."""
+        if transcript.injected or not declined(transcript.text):
+            return None
         with self._lock:
-            result = self._take(_code_key(code), transcript)
+            pending = self._current
+            if pending is None or pending.expires <= self.clock():
+                return None
+            if not _is_newer(transcript, pending):
+                return None
+            self._current = None
+            self._declined_by = transcript.seq
+        log.info("🚫 pending action cancelled: %s", _detail(pending.kind))
+        return pending
+
+    def confirm(self, transcript: Transcript) -> PendingAction | Refusal:
+        """The pending proposal, once a new transcript says yes in Albert's voice."""
+        if self.decline(transcript) is not None or self._declined_by == transcript.seq:
+            return _refused(_refuse("cancelled", "cancelled — nothing was done"))
+        with self._lock:
+            result = self._precheck(transcript)
         if isinstance(result, Refusal):
-            log_refused(result.reason)
+            return _refused(result)
+        voice = self.authoriser.verify(transcript)  # logs its own refusal
+        if voice is not None and voice.code == "too_short":
+            return _refuse("too_short", f"too short to recognise your voice — say {CONFIRM_PHRASE}")
+        if voice is not None:
+            return voice
+        with self._lock:
+            replaced = self._current is not result  # replaced or dropped while verifying
+            if not replaced:
+                self._current = None
+        if replaced:
+            return _refused(_refuse("replaced", "the proposal changed — listen again"))
         return result
 
-    def _take(self, key: str, transcript: Transcript) -> PendingAction | Refusal:
-        pending = self._by_code.get(key)
+    def _precheck(self, transcript: Transcript) -> PendingAction | Refusal:
+        pending = self._current
         if pending is None:
-            return _refuse("wrong_code", "wrong code")
+            return _refuse("nothing_pending", "nothing to confirm")
         if pending.expires <= self.clock():
-            del self._by_code[key]
-            return _refuse("expired", "code expired")
+            self._current = None
+            return _refuse("expired", "too late — ask again")
+        if transcript.injected:
+            return _refuse("injected", "injected message")
         if not _is_newer(transcript, pending):
-            return _refuse("not_new", "say the code in a new sentence")
-        if int(key) not in numbers_in(transcript.text):
-            return _refuse("code_not_said", "code not heard")
-        if not CONFIRM_WORD.search(transcript.text):
-            return _refuse("no_confirm_word", "say confirm and the code")
-        del self._by_code[key]
+            return _refuse("not_new", f"say {CONFIRM_PHRASE} in a new sentence")
+        if not affirmative(transcript.text):
+            return _refuse("no_yes", f"say {CONFIRM_PHRASE}")
         return pending
 
     def clear(self) -> None:
         with self._lock:
-            self._by_code.clear()
+            self._current = None
+            self._declined_by = None
 
     def live(self) -> list[PendingAction]:
         with self._lock:
-            self._expire(self.clock())
-            return list(self._by_code.values())
+            if self._current is not None and self._current.expires <= self.clock():
+                self._current = None
+            return [] if self._current is None else [self._current]
 
 
-#: The code only counts next to a confirm word (en/de/fr), so steering Albert into saying the
-#: number in another sentence ("set the volume to 35") confirms nothing.
-CONFIRM_WORD = re.compile(r"\b(confirm\w*|bestätig\w*|bestaetig\w*)", re.IGNORECASE)
-
-
-def _code_key(code: str | int) -> str:
-    digits = "".join(ch for ch in str(code) if ch.isdigit())
-    return str(int(digits)) if digits else ""
+def _refused(refusal: Refusal) -> Refusal:
+    log_refused(refusal.reason)
+    return refusal
 
 
 def _is_newer(transcript: Transcript, pending: PendingAction) -> bool:
@@ -520,7 +594,7 @@ def before_mutation(
 ) -> Refusal | None:
     """The final gate right before acting: not cancelled, in time, capability consumed.
 
-    With ``caps`` None (a code-confirmed :class:`PendingAction`) only cancellation and the
+    With ``caps`` None (a confirmed :class:`PendingAction`) only cancellation and the
     deadline are checked.
     """
     refusal: Refusal | None = None
@@ -641,6 +715,8 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         self.briefings: BriefingProvider = briefings or MemoryBriefingProvider()
         self.deliveries: DeliveryTracker = deliveries or MemoryDeliveryTracker()
         self.tools: dict[str, Callable[..., Any]] = {"confirm_action": self.confirm_action}
+        #: Tools whose result is only the bridge's own outcome (see :meth:`note_tool_result`).
+        self.own_outcome_tools: set[str] = set()
         self.executors: dict[str, Callable[[PendingAction], str]] = {}
         self.mutation_lock = threading.Lock()  # one mutation at a time (7.7)
         self.turns: TurnSource | None = None
@@ -660,9 +736,19 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         self._lock = threading.Lock()
 
     # -- registries ---------------------------------------------------------------------
-    def register_tool(self, name: str, fn: Callable[..., Any]) -> None:
-        """Client tools later phases add (name → callable)."""
+    def register_tool(
+        self, name: str, fn: Callable[..., Any], *, own_outcome: bool = False
+    ) -> None:
+        """Client tools later phases add (name → callable).
+
+        ``own_outcome``: the tool's result carries no external content (its result does
+        not invalidate the sentence's remaining capabilities).
+        """
         self.tools[name] = fn
+        if own_outcome:
+            self.own_outcome_tools.add(name)
+        else:
+            self.own_outcome_tools.discard(name)
 
     def register_executor(self, kind: str, fn: Callable[[PendingAction], str]) -> None:
         """What runs a confirmed :class:`PendingAction` of ``kind`` (returns speakable text)."""
@@ -704,9 +790,13 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         self._reset("call ended")
 
     def _reset(self, reason: str) -> None:
-        latest = self._latest
-        self.caps.invalidate_all(reason, through_seq=latest.seq if latest else None)
+        # Transcript seqs restart with every call: a call must not inherit the last one's
+        # spent or burned seqs (that refused the first sentences of the next call).
+        dropped = self.caps.invalidate_all(reason)
+        self.caps.reset()
         self.pending.clear()
+        if dropped:
+            log.debug("call reset (%s)", reason)
         with self._lock:
             self._latest = None
 
@@ -741,6 +831,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         transcript = Transcript(seq, text, received_at, binding=binding)
         with self._lock:
             self._latest = transcript
+        self.pending.decline(transcript)  # "no" / "cancel" drops a waiting proposal
         return transcript
 
     def on_injected(
@@ -755,6 +846,18 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         """A read / briefing / tool result / contextual update reached the agent."""
         latest = self._latest
         self.caps.invalidate_all(reason, through_seq=latest.seq if latest else None)
+
+    def note_tool_result(self, name: str) -> None:
+        """A client tool answered: external content invalidates, the bridge's own outcome not.
+
+        Results of the tools in :attr:`own_outcome_tools` (Mac fast path,
+        ``acknowledge_problem``) only say what the bridge itself did, so the rest of the
+        sentence ("open YouTube and make it louder") may still act. Every other result
+        (session reads, briefings, operator results, confirmations) invalidates.
+        """
+        if name in self.own_outcome_tools:
+            return
+        self.note_context("tool result")
 
     # -- in-call notices ------------------------------------------------------------------
     def set_notice_sink(self, sink: Callable[[str], Any] | None) -> None:
@@ -810,7 +913,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         return self._latest
 
     def mint(self, *, verify_voice: bool = True) -> Capability | Refusal:
-        """A capability from the latest user transcript (at most one per transcript).
+        """A capability from the latest user transcript (up to three per transcript).
 
         ``verify_voice=False`` is the low-risk tier (Mac fast path): no speaker check.
         """
@@ -821,23 +924,29 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         return self.caps.mint(latest, verify_voice=verify_voice)
 
     def propose(self, kind: str, args: Mapping[str, Any]) -> PendingAction:
-        """A risky action waiting for its code; the asking transcript cannot confirm it."""
+        """THE risky action waiting for "yes, do it"; the asking transcript cannot confirm it."""
         latest = self._latest
         return self.pending.propose(kind, args, source_seq=latest.seq if latest else None)
 
-    def confirm(self, code: str | int) -> PendingAction | Refusal:
+    def confirm(self) -> PendingAction | Refusal:
         """Confirm with the latest transcript, which is then spent (mints nothing)."""
         latest = self._latest
         if latest is None:
             log_refused("nothing said")
             return _refuse("no_transcript", "nothing said yet")
         self.caps.consume_transcript(latest.seq)
-        return self.pending.confirm(code, latest)
+        return self.pending.confirm(latest)
 
-    def confirm_action(self, code: str) -> str:
-        """The ``confirm_action`` client tool: run the proposal ``code`` names, once."""
-        result = self.confirm(code)
+    def confirm_action(self, code: str | None = None) -> str:
+        """The ``confirm_action`` client tool: run the pending proposal once Albert said yes.
+
+        ``code`` is ignored (agents configured for the old two-digit codes still pass one).
+        """
+        del code
+        result = self.confirm()
         if isinstance(result, Refusal):
+            if result.code == "cancelled":
+                return "cancelled: nothing was done"
             return f"refused: {result.reason}"
         executor = self.executors.get(result.kind)
         if executor is None:

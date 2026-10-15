@@ -134,6 +134,29 @@ SAFE_CASES = [
     ("run_shortcut", {"name": "Focus on"}),
     ("run_shortcut", {"name": "Do Not Disturb"}),
     ("click", {"element": "Play", "app": "Safari"}),
+    # low stakes since 2026-10-15 (were CONFIRM): closing, quitting, saving, long URLs,
+    # ordinary menu items and Safari tab / window scripts
+    ("key", {"combo": "cmd+w", "app": "Safari"}),  # close tab
+    ("key", {"combo": "cmd+shift+w", "app": "Safari"}),  # close window
+    ("key", {"combo": "cmd+q", "app": "Calculator"}),  # quit
+    ("key", {"combo": "cmd+s", "app": "TextEdit"}),  # save
+    ("key", {"combo": "cmd+shift+s", "app": "TextEdit"}),  # save as
+    ("key", {"combo": "cmd+alt+s", "app": "Xcode"}),  # save all
+    ("key", {"combo": "cmd+S", "app": "Safari"}),
+    ("open_url", {"url": "https://example.com/?q=" + "x" * 201}),  # long query
+    ("open_url", {"url": "https://example.com/#" + "x" * 201}),  # long fragment
+    ("menu_select", {"app": "Safari", "path": "File > Close Window"}),
+    ("menu_select", {"app": "Safari", "path": "File > Close Other Tabs"}),
+    ("menu_select", {"app": "Finder", "path": "File > Rename"}),
+    ("menu_select", {"app": "Finder", "path": "File > Duplicate"}),
+    ("menu_select", {"app": "Calculator", "path": "Calculator > Quit Calculator"}),
+    ("menu_select", {"app": "Safari", "path": "Bookmarks > Move Bookmark"}),
+    ("click", {"element": "Empty Group", "app": "Safari"}),
+    ("click", {"element": "Close", "app": "Safari"}),
+    ("click", {"element": "Schliessen", "app": "Safari"}),
+    ("click", {"element": "Quitter", "app": "Safari"}),
+    ("applescript", {"script": 'tell application "Safari" to get URL of document 1'}),
+    ("applescript", {"script": 'tell application "Safari" to close (every tab of window 1)'}),
 ]
 
 
@@ -143,9 +166,6 @@ def test_safe_calls(tool: str, args: dict[str, Any]) -> None:
 
 
 CONFIRM_CASES = [
-    ("key", {"combo": "cmd+w", "app": "Safari"}),  # close tab
-    ("key", {"combo": "cmd+shift+w", "app": "Safari"}),  # close window
-    ("key", {"combo": "cmd+q", "app": "Calculator"}),  # quit
     ("key", {"combo": "cmd+backspace", "app": "Finder"}),  # move to trash
     ("key", {"combo": "cmd+alt+escape", "app": ""}),  # force quit
     ("key", {"combo": "cmd+return", "app": "Mail"}),  # send
@@ -155,32 +175,30 @@ CONFIRM_CASES = [
     ("key", {"combo": "return", "app": "Safari"}),  # focus unknown: may submit a form
     ("key", {"combo": "enter", "app": "Safari"}),
     ("key", {"combo": "shift+return", "app": "Safari"}),
-    ("key", {"combo": "cmd+s", "app": "TextEdit"}),  # save
-    ("key", {"combo": "cmd+shift+s", "app": "TextEdit"}),  # save as
-    ("key", {"combo": "cmd+alt+s", "app": "Xcode"}),  # save all
-    ("key", {"combo": "cmd+S", "app": "Safari"}),
-    ("open_url", {"url": "https://example.com/?q=" + "x" * 201}),  # long query
-    ("open_url", {"url": "https://example.com/#" + "x" * 201}),  # long fragment
     ("key", {"combo": "l", "app": "Terminal"}),  # typing into a shell
     ("key", {"combo": "space", "app": "System Settings"}),  # toggling a setting
     ("type_text", {"app": "Terminal", "text": "ls"}),
     ("type_text", {"app": "iTerm2", "text": "ls"}),
     ("type_text", {"app": "Safari", "text": "hello\n"}),  # submits
     ("type_text", {"app": "Finder", "text": "new name"}),  # rename
-    ("menu_select", {"app": "Safari", "path": "File > Close Window"}),
-    ("menu_select", {"app": "Safari", "path": "File > Close Other Tabs"}),
     ("menu_select", {"app": "Finder", "path": "File > Move to Trash"}),
     ("menu_select", {"app": "Mail", "path": "Message > Send"}),
     ("menu_select", {"app": "App Store", "path": "Store > Buy"}),
-    ("menu_select", {"app": "Finder", "path": "File > Rename"}),
-    ("menu_select", {"app": "Calculator", "path": "Calculator > Quit Calculator"}),
+    ("menu_select", {"app": "Finder", "path": "Finder > Empty Trash"}),
+    ("menu_select", {"app": "Finder", "path": "Finder > Papierkorb leeren"}),
+    ("menu_select", {"app": "Finder", "path": "Finder > Vider la corbeille"}),
+    ("menu_select", {"app": "Safari", "path": "Safari > Force Quit"}),
+    ("type_text", {"app": "Messages", "text": "see you\n"}),  # sends
+    ("applescript", {"script": 'tell application "Safari" to do JavaScript "x" in document 1'}),
+    ("applescript", {"script": 'tell application "Safari" to email contents of document 1'}),
+    ("applescript", {"script": 'tell application "Mail" to activate'}),
+    ("applescript", {"script": "beep"}),
     ("menu_select", {"app": "System Settings", "path": "View > Network"}),
     ("click", {"element": "Send", "app": "Mail"}),
     ("click", {"element": "Löschen", "app": "Finder"}),
     ("click", {"element": "Supprimer", "app": "Finder"}),
     ("click", {"element": "Buy now", "app": "Safari"}),
     ("click", {"element": "Install", "app": "Safari"}),
-    ("applescript", {"script": 'tell application "Safari" to get URL of document 1'}),
     ("run_shortcut", {"name": "Morning routine"}),
     ("run_shortcut", {"name": "Delete old files"}),
     ("open_app", {"name": "Install macOS Sequoia"}),
@@ -202,8 +220,11 @@ def test_confirm_calls(tool: str, args: dict[str, Any]) -> None:
         ({"AXRole": "AXCheckBox", "AXTitle": "Do Not Disturb"}, "System Settings", SAFE),
         ({"AXRole": "AXCheckBox", "AXTitle": "Firewall"}, "System Settings", CONFIRM),
         ({"AXRole": "AXCheckBox", "AXTitle": "Safari"}, "System Settings", CONFIRM),
-        ({"AXRole": "AXButton", "AXSubrole": "AXCloseButton"}, "Safari", CONFIRM),
+        ({"AXRole": "AXButton", "AXSubrole": "AXCloseButton"}, "Safari", SAFE),  # closes
         ({"AXRole": "AXButton"}, "Messages", CONFIRM),  # unlabelled button
+        ({"AXRole": "AXButton"}, "Safari", SAFE),  # unlabelled, but an ordinary app
+        ({"AXRole": "AXButton", "AXTitle": "Empty Group"}, "Safari", SAFE),
+        ({"AXRole": "AXMenuItem", "AXTitle": "Empty Trash"}, "Finder", CONFIRM),
         (
             {"AXRole": "AXStaticText", "AXValue": "Send", "parent.AXRole": "AXButton"},
             "Mail",
@@ -211,7 +232,11 @@ def test_confirm_calls(tool: str, args: dict[str, Any]) -> None:
         ),
         ({"AXRole": "AXLink", "AXTitle": "Watch the video"}, "Safari", SAFE),
         ({"AXRole": "AXGroup"}, "Safari", SAFE),  # unlabelled benign role
-        (None, "Safari", CONFIRM),  # hit test failed → unknown → CONFIRM
+        (None, "Safari", SAFE),  # hit test failed in an ordinary app → runs
+        (None, "System Settings", CONFIRM),  # … but not where a click may change a setting
+        (None, "Finder", CONFIRM),
+        (None, "Terminal", CONFIRM),
+        (None, "Messages", CONFIRM),
     ],
 )
 def test_click_by_point_uses_the_element_under_it(
@@ -367,21 +392,77 @@ def test_focus_is_only_looked_up_for_return() -> None:
     assert calls == [1]
 
 
-def test_saving_is_confirm_in_every_app() -> None:
+def test_saving_closing_and_quitting_run_in_every_app() -> None:
     for app in ("TextEdit", "Safari", "Preview", "Calculator"):
-        for combo in ("cmd+s", "cmd+shift+s", "cmd+alt+s"):
+        for combo in ("cmd+s", "cmd+shift+s", "cmd+alt+s", "cmd+w", "cmd+q"):
             verdict = classify("key", {"combo": combo, "app": app}, ctx(front=app))
-            assert verdict.risk == CONFIRM, (app, combo)
+            assert verdict.risk == SAFE, (app, combo)
+    for combo in ("cmd+alt+escape", "cmd+shift+q", "cmd+ctrl+q"):  # force quit, log out, lock
+        assert classify("key", {"combo": combo, "app": "Safari"}, ctx()).risk == CONFIRM
 
 
-def test_long_url_query_is_confirm_but_url_is_not_refused() -> None:
-    at_cap = "https://example.com/search?q=" + "x" * 98 + "#" + "f" * 100  # 100 + 100
-    assert classify("open_url", {"url": at_cap}).risk == SAFE
-    assert classify("open_url", {"url": at_cap + "f"}).risk == CONFIRM
+def test_long_url_query_runs() -> None:
     long_q = "https://example.com/search?q=" + "x" * 300
     verdict = classify("open_url", {"url": long_q})
-    assert verdict.risk == CONFIRM and verdict.summary == "open example.com with a long query"
-    assert classify("open_url", {"url": "https://example.com/" + "p" * 500}).risk == SAFE
+    assert verdict.risk == SAFE and verdict.summary == "open example.com"
+
+
+def test_typing_into_a_password_field_is_confirm() -> None:
+    secure = {"AXRole": "AXTextField", "AXSubrole": "AXSecureTextField"}
+    labelled = {"AXRole": "AXTextField", "AXTitle": "Passwort"}
+    plain = {"AXRole": "AXTextField", "AXTitle": "Name"}
+    for focus, risk in ((secure, CONFIRM), (labelled, CONFIRM), (plain, SAFE), (None, SAFE)):
+        verdict = classify("type_text", {"app": "Safari", "text": "x"}, ctx(focused=focus))
+        assert verdict.risk == risk, focus
+
+
+def test_text_with_return_runs_only_in_a_search_or_address_field() -> None:
+    args = {"app": "Safari", "text": "cute cats\n"}
+    address = {**ADDRESS_BAR, "app.AXTitle": "Safari"}
+    assert classify("type_text", args, ctx(focused=address)).risk == SAFE
+    assert classify("type_text", args, ctx(focused=WEB_TEXTAREA)).risk == CONFIRM
+    slack = {**SEARCH, "app.AXTitle": "Slack"}
+    slack_args = {"app": "Slack", "text": "hi\n"}
+    assert classify("type_text", slack_args, ctx(focused=slack)).risk == CONFIRM
+
+
+SAFARI_SCRIPTS_SAFE = [
+    'tell application "Safari" to close (every tab of window 1 whose index is not 1)',
+    'tell application "Safari"\nrepeat with t in tabs of window 1\nclose t\nend repeat\nend tell',
+    'tell application "Safari" to set URL of current tab of front window to "https://a.ch"',
+    'tell application "Safari"\nactivate\nmake new document with properties {URL:"https://a.ch"}'
+    "\nend tell",
+    'tell application "System Events"\ntell process "Safari"\nset frontmost to true\n'
+    'keystroke "w" using {command down, shift down}\nend tell\nend tell',
+    'tell application "Safari" to return name of every tab of window 1 -- read the tabs',
+]
+SAFARI_SCRIPTS_CONFIRM = [
+    'tell application "Safari" to set URL of document 1 to "javascript:alert(1)"',
+    'tell application "Safari" to set URL of document 1 to "java" & "script:x"',
+    'tell application "Safari" to set URL of document 1 to "file:///etc/hosts"',
+    'tell application "Safari" to save document 1',
+    'tell application "Safari" to quit',
+    'tell application "Safari" to open location "https://a.ch"',
+    'tell application "System Events" to keystroke "w" using command down',  # no Safari
+    'tell application "System Events" to tell process "Safari" to keystroke "hello"',
+    'tell application "System Events" to tell process "Safari" to keystroke "q" using command down',
+    'tell application "System Events" to tell process "Safari" to click button 1 of window 1',
+    'set a to "Mail"\ntell application a to close windows\ntell application "Safari" to activate',
+    'tell application id "com.apple.mail" to activate',
+    '(* hidden *) tell application "Safari" to activate',
+]
+
+
+@pytest.mark.parametrize("script", SAFARI_SCRIPTS_SAFE)
+def test_safari_tab_scripts_run(script: str) -> None:
+    assert mac_risk.safari_tabs_script(script)
+    assert classify("applescript", {"script": script}).risk == SAFE
+
+
+@pytest.mark.parametrize("script", SAFARI_SCRIPTS_CONFIRM)
+def test_other_scripts_stay_confirm(script: str) -> None:
+    assert not mac_risk.safari_tabs_script(script)
+    assert classify("applescript", {"script": script}).risk == CONFIRM
 
 
 # -- safari_dom: a fixed read-only script, the selector is data -------------------------------
@@ -523,12 +604,12 @@ def _wait_blocked(call_dir: Path, timeout: float = 2.0) -> dict[str, Any]:
 def test_blocked_call_writes_blocked_file_and_runs_once_after_allow(call_dir: Path) -> None:
     runner = FakeRunner()
     broker = make_broker(call_dir, runner, confirm_timeout=3.0)
-    args = {"combo": "cmd+w", "app": "Safari"}
+    args = {"combo": "cmd+return", "app": "Mail"}
     thread, out = _run_in_thread(broker, "key", args)
     blocked = _wait_blocked(call_dir)
     sha = args_sha256("key", args)
     assert blocked["tool"] == "key" and blocked["sha256"] == sha
-    assert blocked["summary"] == "press cmd+w in Safari"
+    assert blocked["summary"] == "press cmd+return in Mail"
     path = call_dir / f"blocked-{sha}.json"
     assert path.stat().st_mode & 0o777 == 0o600
     assert runner.actions() == []  # nothing ran while blocked
@@ -543,7 +624,7 @@ def test_blocked_call_writes_blocked_file_and_runs_once_after_allow(call_dir: Pa
 def test_confirm_allows_exactly_one_call(call_dir: Path) -> None:
     runner = FakeRunner()
     broker = make_broker(call_dir, runner, confirm_timeout=3.0)
-    args = {"combo": "cmd+w", "app": "Safari"}
+    args = {"combo": "cmd+return", "app": "Mail"}
     thread, _ = _run_in_thread(broker, "key", args)
     blocked = _wait_blocked(call_dir)
     write_allow(call_dir, blocked["sha256"], blocked["nonce"])
@@ -553,16 +634,16 @@ def test_confirm_allows_exactly_one_call(call_dir: Path) -> None:
     broker.confirm_timeout = 0.3
     assert text(broker.call("key", args)) == DENIED
     # another risky call is not covered either
-    assert text(broker.call("key", {"combo": "cmd+q", "app": "Safari"})) == DENIED
+    assert text(broker.call("key", {"combo": "cmd+shift+d", "app": "Mail"})) == DENIED
     assert len(runner.actions()) == 1
 
 
 def test_allow_for_one_call_does_not_cover_another(call_dir: Path) -> None:
     runner = FakeRunner()
     broker = make_broker(call_dir, runner, confirm_timeout=0.5)
-    thread, out = _run_in_thread(broker, "key", {"combo": "cmd+q", "app": "Safari"})
+    thread, out = _run_in_thread(broker, "key", {"combo": "cmd+shift+d", "app": "Mail"})
     _wait_blocked(call_dir)
-    other = args_sha256("key", {"combo": "cmd+w", "app": "Safari"})
+    other = args_sha256("key", {"combo": "cmd+return", "app": "Mail"})
     mac_risk.write_0600(call_dir / f"allow-{other}.json", json.dumps({"sha256": other}))
     thread.join(timeout=3)
     assert text(out[0]) == DENIED and runner.actions() == []
@@ -571,7 +652,7 @@ def test_allow_for_one_call_does_not_cover_another(call_dir: Path) -> None:
 def test_confirmation_timeout_denies(call_dir: Path) -> None:
     runner = FakeRunner()
     broker = make_broker(call_dir, runner, confirm_timeout=0.2)
-    reply = broker.call("menu_select", {"app": "Safari", "path": "File > Close Window"})
+    reply = broker.call("menu_select", {"app": "Mail", "path": "Message > Send"})
     assert text(reply) == DENIED
     assert runner.actions() == []
     assert not list(call_dir.glob("blocked-*.json"))
