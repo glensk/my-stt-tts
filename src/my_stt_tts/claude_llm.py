@@ -147,6 +147,9 @@ def twin_body(main: Mapping[str, Any], model: str, secret_id: str) -> dict[str, 
     }
     # ElevenLabs stores False for a custom LLM whatever is sent; sending it keeps syncs idle
     prompt["enable_parallel_tool_calls"] = False
+    # Claude 5 models reject `temperature` (400 "deprecated for this model"); null makes
+    # ElevenLabs leave it out of the request
+    prompt["temperature"] = None
     ps = {
         k: copy.deepcopy(v)
         for k, v in (main.get("platform_settings") or {}).items()

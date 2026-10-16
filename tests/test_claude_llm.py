@@ -114,6 +114,7 @@ def test_twin_body_swaps_only_the_llm() -> None:
         "api_key": {"secret_id": "sec1"},
     }
     assert "tools" not in prompt  # legacy inline mirror never sent
+    assert prompt["temperature"] is None  # omitted from the request: Claude 5 rejects it
     assert prompt["tool_ids"] == ["tool_a", "tool_b"]  # same workspace tools
     assert prompt["prompt"] == "be brief"
     assert body["conversation_config"]["tts"] == MAIN["conversation_config"]["tts"]
