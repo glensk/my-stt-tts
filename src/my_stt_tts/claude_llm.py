@@ -15,9 +15,9 @@ twin from the main agent, so edits made to the main agent (dashboard,
 ``scripts/eleven_agent_config.py``) reach it.
 
 One-time setup, ``mac-voice -C``: reads the key from the Vaultwarden item
-``anthropic-api-private`` through ``secret-run`` (never printed), checks it with one tiny
-request, stores it as the ElevenLabs workspace secret ``anthropic-api-private`` (ElevenLabs
-must hold it to call Anthropic), creates or updates the twin and records its id in
+``anthropic-api-private-elevenlabs`` through ``secret-run`` (never printed), checks it
+with one tiny request, stores it as the ElevenLabs workspace secret of the same name
+(ElevenLabs must hold it to call Anthropic), creates or updates the twin and records its id in
 ``~/.local/state/mac-voice/claude-agent.json``.
 """
 
@@ -44,17 +44,20 @@ BACKENDS = ("elevenlabs", "claude")
 BACKEND_ENV = "MAC_VOICE_LLM_BACKEND"
 MODEL_ENV = "MAC_VOICE_CLAUDE_MODEL"
 TWIN_ENV = "ELEVENLABS_CLAUDE_AGENT_ID"
-#: Vaultwarden item (via ``secret-run``) holding the private-org Console API key.
-VAULT_ITEM = "anthropic-api-private"
+#: Vaultwarden item (via ``secret-run``): the private-org Console API key used only by
+#: ElevenLabs (its own key, so it can be revoked without touching other automations).
+VAULT_ITEM = "anthropic-api-private-elevenlabs"
 #: ElevenLabs workspace secret the twin's ``custom_llm.api_key`` points at.
-SECRET_NAME = "anthropic-api-private"
+SECRET_NAME = "anthropic-api-private-elevenlabs"
 KEY_ENV = "MAC_VOICE_ANTHROPIC_KEY"
 _UNDER_SECRET_RUN = "_MAC_VOICE_UNDER_SECRET_RUN"
 STATE_FILE = Path.home() / ".local" / "state" / "mac-voice" / "claude-agent.json"
 TWIN_SUFFIX = " (Claude API)"
 #: Platform settings the API manages itself or refuses on write.
 _PS_DROP = frozenset({"workspace_overrides", "archived"})
-SETUP_HINT = "run once: mac-voice -C (needs the Vaultwarden item anthropic-api-private, tp#1098)"
+SETUP_HINT = (
+    "run once: mac-voice -C (needs the Vaultwarden item anthropic-api-private-elevenlabs, tp#1098)"
+)
 
 
 class ClaudeBackendError(RuntimeError):

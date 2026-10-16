@@ -70,7 +70,7 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   `voice_gate.py` (ECAPA wake + call-domain profiles, `score_against`).
 - mac-voice LLM backend (`-B elevenlabs|claude`, tp#1097) → `claude_llm.py`: the Claude
   twin agent (ElevenLabs custom LLM → Anthropic's OpenAI-compatible endpoint), `-C` setup
-  (key via `secret-run` item `anthropic-api-private`), re-sync on every `-B claude` start.
+  (key via `secret-run` item `anthropic-api-private-elevenlabs`), re-sync on every `-B claude` start.
 - Claude bridge (tp#855, design in the local `PLAN_claude-bridge.md`; README section
   "Claude bridge"):
   - `bridge.py` → `BridgeController`, `Authoriser` (two risk tiers, 0.35 call-profile

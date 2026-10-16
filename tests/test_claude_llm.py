@@ -227,7 +227,12 @@ def test_reexec_runs_the_module_under_secret_run(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(claude_llm.subprocess, "run", fake_run)
     assert claude_llm.reexec_with_key(["-C"]) == 0
     cmd = seen["cmd"]
-    assert cmd[:4] == ["secret-run", "-e", f"{claude_llm.KEY_ENV}=anthropic-api-private", "--"]
+    assert cmd[:4] == [
+        "secret-run",
+        "-e",
+        f"{claude_llm.KEY_ENV}=anthropic-api-private-elevenlabs",
+        "--",
+    ]
     assert cmd[-3:] == ["-m", "my_stt_tts.eleven_voice", "-C"]
     assert seen["env"]["_MAC_VOICE_UNDER_SECRET_RUN"] == "1"
 

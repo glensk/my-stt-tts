@@ -317,9 +317,10 @@ effort, which would make Sonnet slower).
 | `./mac-voice -d -B claude`    | the daemon with the LLM on the Claude API                                           |
 | `./mac-voice -B elevenlabs`   | force the agent's own LLM (overrides `MAC_VOICE_LLM_BACKEND`)                       |
 
-`-C` reads the key from the Vaultwarden item `anthropic-api-private` through `secret-run`
-(never printed), checks it with one tiny request, stores it as the ElevenLabs workspace
-secret `anthropic-api-private` (ElevenLabs must hold it to call Anthropic) and records the
+`-C` reads the key from the Vaultwarden item `anthropic-api-private-elevenlabs` through `secret-run`
+(never printed; a private-org Console key used only by ElevenLabs, so it can be revoked on
+its own), checks it with one tiny request, stores it as the ElevenLabs workspace
+secret `anthropic-api-private-elevenlabs` (ElevenLabs must hold it to call Anthropic) and records the
 twin's id in `~/.local/state/mac-voice/claude-agent.json` (or set `ELEVENLABS_CLAUDE_AGENT_ID`).
 Without that setup `-B claude` stops with an ❌ that says so. After a new key, run `-C` again.
 The models line of each conversation then reads `LLM claude-haiku-5-5 via Claude API credits`,
