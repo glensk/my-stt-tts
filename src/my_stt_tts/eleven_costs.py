@@ -36,6 +36,9 @@ def agent_models(api_key: str, agent_id: str) -> str:
     prompt = cfg.get("agent", {}).get("prompt", {})
     effort = prompt.get("reasoning_effort")
     llm = prompt.get("llm", "?") + (f" (reasoning {effort})" if effort else "")
+    if prompt.get("llm") == "custom-llm":  # the Claude backend's twin agent (claude_llm.py)
+        custom = prompt.get("custom_llm") or {}
+        llm = f"{custom.get('model_id', '?')} via Claude API credits (custom LLM)"
     tts = cfg.get("tts", {}).get("model_id", "?")
     asr = cfg.get("asr", {}).get("provider", "?")
     return f"🧠 models: LLM {llm} · voice {tts} · speech-to-text {asr}"

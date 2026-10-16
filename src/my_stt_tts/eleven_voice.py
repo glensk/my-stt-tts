@@ -42,6 +42,8 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from .claude_llm import BACKENDS, Api, ClaudeBackendError, prepare, resolve_backend, setup_main
+
 # Native/optional backends (sounddevice, elevenlabs, PyObjC) are imported lazily on purpose.
 # pylint: disable=import-outside-toplevel
 
@@ -735,6 +737,32 @@ def _rebuild_voices() -> int:
     return 0
 
 
+def _llm_creds(creds: tuple[str, str], cli_backend: str | None) -> tuple[str, str]:
+    """``(agent_id, api_key)`` for the chosen LLM backend (the Claude twin, synced)."""
+    agent_id, api_key = creds
+    if resolve_backend(cli_backend) != "claude":
+        return creds
+    twin = prepare(Api(api_key), agent_id)
+    stamp(f"🧠 LLM backend: Claude API (twin agent {twin})")
+    return twin, api_key
+
+
+def _backend(
+    args: argparse.Namespace, creds: tuple[str, str] | None, argv: list[str]
+) -> tuple[str, str] | int:
+    """The credentials for the chosen LLM backend, or an exit code (``-C`` / a failure)."""
+    if creds is None:
+        print("❌ ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID must be set (repo .env).")
+        return 2
+    if args.claude_setup:
+        return setup_main(*creds, argv)
+    try:
+        return _llm_creds(creds, args.llm_backend)
+    except ClaudeBackendError as exc:
+        print(f"❌ {exc}")
+        return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point (``mac-voice``)."""
     parser = argparse.ArgumentParser(
@@ -747,9 +775,11 @@ def main(argv: list[str] | None = None) -> int:
             "  mac-voice -m headphones   raw mic + plain playback (headphones only)\n"
             "  mac-voice -l              list audio devices\n"
             "  mac-voice -i 2 -o 3       pick input/output device by index or name\n"
+            "  mac-voice -B claude       LLM on the Claude API credits (voice stays ElevenLabs)\n"
             "\n"
             "background daemon (wake word + chord + menu bar):\n"
             "  mac-voice -d              run the daemon in the foreground\n"
+            "  mac-voice -d -B claude    the daemon with the LLM on the Claude API\n"
             "  mac-voice -t              toggle the conversation (Karabiner v+o)\n"
             "  mac-voice -n / -f         conversation on / off\n"
             "  mac-voice -w off          disable the wake word (on: enable)\n"
@@ -758,7 +788,15 @@ def main(argv: list[str] | None = None) -> int:
             "  mac-voice -V              rebuild voice profiles (only enrolled voices may start)\n"
             "  mac-voice -D              doctor: Mac permissions for Mac control (✅/❌ + fix)\n"
             "  mac-voice -K              clear every open problem of the voice-on briefing\n"
-            "  mac-voice -K mac_action   clear only the open problems of one kind"
+            "  mac-voice -K mac_action   clear only the open problems of one kind\n"
+            "  mac-voice -C              one-time setup of the Claude backend (twin agent)\n"
+            "\n"
+            "LLM backend (-B): elevenlabs = the agent's own LLM, billed in ElevenLabs credits;\n"
+            "claude = the same agent (a synced twin) calling Claude through ElevenLabs' custom\n"
+            "LLM, billed to the private Console key (Vaultwarden item anthropic-api-private).\n"
+            "Speech-to-text and voice stay on ElevenLabs either way (Anthropic has neither).\n"
+            "Default: MAC_VOICE_LLM_BACKEND, else elevenlabs. Model: MAC_VOICE_CLAUDE_MODEL\n"
+            "(default claude-haiku-5-5)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -768,6 +806,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--output-device", help="output device (speakers/headphones modes)")
     parser.add_argument("-l", "--list-devices", action="store_true", help="list audio devices")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging (latency)")
+    parser.add_argument(
+        "-B",
+        "--llm-backend",
+        choices=BACKENDS,
+        help="who runs the LLM: elevenlabs or claude (default: MAC_VOICE_LLM_BACKEND/elevenlabs)",
+    )
     daemon = parser.add_argument_group("daemon")
     ctl = daemon.add_mutually_exclusive_group()
     ctl.add_argument("-d", "--daemon", action="store_true", help="run the control daemon")
@@ -792,6 +836,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="KIND",
         help="acknowledge every open problem (only KIND, e.g. mac_action, when given)",
     )
+    ctl.add_argument(
+        "-C",
+        "--claude-setup",
+        action="store_true",
+        help="one-time setup of the claude backend (key → ElevenLabs secret, twin agent)",
+    )
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)
 
@@ -811,10 +861,10 @@ def main(argv: list[str] | None = None) -> int:
     handled = _admin(args)
     if handled is not None:
         return handled
-    creds = credentials(args.agent_id)
-    if creds is None:
-        print("❌ ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID must be set (repo .env).")
-        return 2
+    chosen = _backend(args, credentials(args.agent_id), sys.argv[1:] if argv is None else argv)
+    if isinstance(chosen, int):
+        return chosen
+    creds = chosen
     try:
         if args.daemon:
             from .voice_control import daemon_main

@@ -296,6 +296,36 @@ dashboard changes before testing them here.
 
 Ctrl-C ends the conversation. Code: [`eleven_voice.py`](src/my_stt_tts/eleven_voice.py).
 
+**LLM on the Claude API credits: `-B claude`.** By default the agent's own LLM runs and
+ElevenLabs bills it in credits (about 40 % of a call's credits; the rest is the per-minute
+voice part). `-B claude` (or `MAC_VOICE_LLM_BACKEND=claude` in `.env`, so the LaunchAgent
+picks it up) moves only the LLM to Albert's private Console org and its monthly API
+credits; speech-to-text, the voice and turn-taking stay on ElevenLabs, because the
+Anthropic API has neither speech-to-text nor text-to-speech. It works through ElevenLabs'
+custom LLM: their servers call Anthropic's OpenAI-compatible endpoint
+`https://api.anthropic.com/v1`. ElevenLabs accepts a custom LLM only on an agent whose LLM
+is `custom-llm`, so the backend runs a **twin agent** — a copy of the main agent
+(prompt, tools, voice, overrides) — that every `-B claude` start re-syncs from the main
+agent. Model: `MAC_VOICE_CLAUDE_MODEL`, default `claude-haiku-5-5` (lowest time to first
+token and USD 0.10 / 0.50 per million tokens; the compatibility layer cannot lower thinking
+effort, which would make Sonnet slower).
+
+| Command                       | Meaning                                                                             |
+| :---------------------------- | :---------------------------------------------------------------------------------- |
+| `./mac-voice -C`              | one-time setup: key → ElevenLabs workspace secret, create + sync the twin agent     |
+| `./mac-voice -B claude`       | one conversation with the LLM on the Claude API                                     |
+| `./mac-voice -d -B claude`    | the daemon with the LLM on the Claude API                                           |
+| `./mac-voice -B elevenlabs`   | force the agent's own LLM (overrides `MAC_VOICE_LLM_BACKEND`)                       |
+
+`-C` reads the key from the Vaultwarden item `anthropic-api-private` through `secret-run`
+(never printed), checks it with one tiny request, stores it as the ElevenLabs workspace
+secret `anthropic-api-private` (ElevenLabs must hold it to call Anthropic) and records the
+twin's id in `~/.local/state/mac-voice/claude-agent.json` (or set `ELEVENLABS_CLAUDE_AGENT_ID`).
+Without that setup `-B claude` stops with an ❌ that says so. After a new key, run `-C` again.
+The models line of each conversation then reads `LLM claude-haiku-5-5 via Claude API credits`,
+and the cost line's `LLM $` is what ElevenLabs no longer bills. Code:
+[`claude_llm.py`](src/my_stt_tts/claude_llm.py).
+
 **Hands-free: the daemon.** `./mac-voice -d` (or `-I` to install it as a login LaunchAgent)
 owns the mic: while idle it listens for "voice on" (custom phrase via sherpa KWS,
 `MAC_VOICE_WAKE`) or "hey jarvis" (openWakeWord, threshold `MAC_VOICE_WAKE_THRESHOLD`=0.75);

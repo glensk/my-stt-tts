@@ -18,6 +18,12 @@ may still change.
 
 ### Added
 
+- **`mac-voice -B claude`: the agent's LLM on the Claude API credits** (tp#1097). A twin
+  of the ElevenLabs agent uses ElevenLabs' custom LLM pointed at Anthropic's
+  OpenAI-compatible endpoint, so the LLM tokens bill to the private Console key while
+  speech-to-text and voice stay on ElevenLabs; `-C` does the one-time setup, every start
+  re-syncs the twin. Default backend from `MAC_VOICE_LLM_BACKEND`.
+
 - **Wake detection cues + diagnostics**: a distinct `chime_wake` earcon played on
   detection (plus the existing `bus.wake()` GUI flash, once per detection);
   per-turn **source tagging** on `bus.transcript(..., source=…)` (`typed` /
