@@ -126,3 +126,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# certifi >= 2026.10.19 drops the eMudhra-compromised roots; exempt it from the
+# global 7-day exclude-newer window
+exclude-newer-package = { certifi = "2026-10-21" }
