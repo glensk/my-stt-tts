@@ -47,6 +47,7 @@ from typing import Any
 
 from .agent import AgentError, dispatch_to_agent
 from .config import Config, current_time_line, locale_prompt_line
+from .decide import PlateContext
 from .memory import ContextAggregator, make_memory_store
 from .music import music_state_line
 from .run_ledger import (
@@ -123,6 +124,12 @@ class Brain:  # pylint: disable=too-many-instance-attributes
                 )
             )
         self.tools = tools
+        # The decide hub's plate summary for a free question about decisions (never a
+        # secret: it is built from the plate's titles and counts); "" for other turns.
+        self._decide_ctx: PlateContext | None = (
+            PlateContext() if getattr(cfg, "decide_enabled", False) else None
+        )
+        self._decide_line = ""
 
     def set_speaker(self, name: str | None) -> None:
         """Set the current speaker (from speaker_id) so memory + recall are per-person (G7)."""
@@ -147,9 +154,15 @@ class Brain:  # pylint: disable=too-many-instance-attributes
         precisely so they work for ``claude-cli`` too, which has no tool access in
         this loop. The timezone is derived from ``cfg.location`` (Lausanne →
         Europe/Zurich) via stdlib ``zoneinfo``, falling back to the system local tz.
+        With ``DECIDE_VOICE=1`` a turn that asks about Albert's decisions also gets (d)
+        the decide hub's plate summary (:class:`~my_stt_tts.decide.PlateContext`).
         """
         base = locale_prompt_line(self.cfg.system_prompt, self.cfg.location, self.cfg.units)
-        return f"{base.rstrip()}\n\n{current_time_line(self.cfg.location)}\n{music_state_line()}"
+        prompt = f"{base.rstrip()}\n\n{current_time_line(self.cfg.location)}\n{music_state_line()}"
+        decide_line = getattr(self, "_decide_line", "")
+        if decide_line:  # a free question about Albert's decisions (DECIDE_VOICE=1)
+            prompt += f"\n{decide_line}"
+        return prompt
 
     def _home_dispatch(self, command: str) -> str:
         """Route a home_control tool call to the agent / HA dispatch (reuses agent.py).
@@ -222,6 +235,8 @@ class Brain:  # pylint: disable=too-many-instance-attributes
         if not self._rate.acquire():
             raise LLMError("request rate exceeded — slow down")
         use_deep = should_use_deep(self.cfg, user_text) if deep is None else deep
+        ctx = getattr(self, "_decide_ctx", None)
+        self._decide_line = ctx.for_text(user_text) if ctx is not None else ""
         model = self.cfg.llm_model_deep if use_deep else self.cfg.llm_model
         self.history.append({"role": "user", "content": user_text})
         self._trim()

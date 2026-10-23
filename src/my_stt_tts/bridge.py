@@ -86,7 +86,12 @@ from .turns import MIN_UTTERANCE_S, Ambiguous, Binding, SpeechDetector, TurnSour
 
 log = logging.getLogger("my_stt_tts.bridge")
 
-FLAGS = ("MAC_VOICE_CLAUDE_BRIDGE", "MAC_VOICE_MAC_CONTROL", "MAC_VOICE_OPERATOR")
+FLAGS = (
+    "MAC_VOICE_CLAUDE_BRIDGE",
+    "MAC_VOICE_MAC_CONTROL",
+    "MAC_VOICE_OPERATOR",
+    "MAC_VOICE_DECIDE",
+)
 AUTH_ENV = "MAC_VOICE_AUTHORIZED"
 AUTH_THRESHOLD = 0.35
 #: How long a proposal waits for "yes, do it" (= ``mac_broker.CONFIRM_TIMEOUT_S``).
@@ -967,28 +972,3 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
             log_refused(f"no executor for {result.kind}")
             return f"refused: {NOTHING_PENDING}"
         return executor(result)
-
-
-def build_bridge(
-    scorer: SpeakerScorer | None,
-    env: Mapping[str, str] | None = None,
-    *,
-    wire: bool = True,
-) -> BridgeController:
-    """The daemon's controller: identity from ``MAC_VOICE_AUTHORIZED`` + the voice gate.
-
-    With ``wire`` the components register themselves, each gated by its own flag
-    (:func:`my_stt_tts.bridge_wiring.wire`): attention inbox + monitor, Claude sessions,
-    Mac control and the Mac operator.
-    """
-    authoriser = Authoriser.from_env(scorer, env)
-    if authoriser.authorized is None:
-        log.warning("⚠️  %s unset — every bridge action will be refused", AUTH_ENV)
-    controller = BridgeController(authoriser)
-    if wire:
-        # pylint: disable-next=import-outside-toplevel  # it imports every component
-        from .bridge_wiring import wire as wire_components
-
-        wire_components(controller, env)
-    controller.preload()
-    return controller

@@ -463,6 +463,7 @@ must be set as for `./mac-voice`.
 | `MAC_VOICE_CLAUDE_BRIDGE`     | `1`                                 | the Claude session tools (list / read / brief / send / answer)                |
 | `MAC_VOICE_MAC_CONTROL`       | `1`                                 | the Mac fast-path tools (disabled while a `-D` doctor check fails)            |
 | `MAC_VOICE_OPERATOR`          | `1`                                 | the `do_on_mac` operator                                                      |
+| `MAC_VOICE_DECIDE`            | `1`                                 | the decide hub tools (section "Decide hub by voice" below)              |
 | `MAC_VOICE_AUTHORIZED`        | `albert`                            | the one voice profile that may act; unset → every bridge action is refused    |
 | `MAC_VOICE_READY_SOUND`       | `/System/Library/Sounds/Glass.aiff` | played once the daemon listens (default Glass); `0`, `off` or empty: no sound |
 | `MAC_VOICE_CCC_BIN`           | `~/.local/bin/ccc`                  | the ccc executable (default: `$PATH`, then `~/.local/bin/ccc`)                |
@@ -472,7 +473,7 @@ must be set as for `./mac-voice`.
 | `MAC_VOICE_WAKE_THRESHOLD`    | `0.75`                              | openWakeWord threshold for "hey jarvis"                                       |
 | `MAC_VOICE_WAKE_PHASES`       | `2`                                 | staggered openWakeWord copies while idle                                      |
 
-Any of the first three flags also turns on the attention inbox and its monitor. Each component
+Any of the first four flags also turns on the attention inbox and its monitor. Each component
 gates itself, and a failing one never stops the others.
 
 ### Setup
@@ -495,7 +496,7 @@ scripts/eleven_agent_config.py -a                        # apply, verify, roll b
   the same path a call uses (8 clips of 4 s, German / English / French hints), prints a
   leave-one-out calibration table and saves `enroll/call/<name>.npy`, which the in-call check
   prefers. Stop the daemon first: it owns the mic. `-n` records without writing.
-- **Agent config.** `eleven_agent_config.py` manages the 14 client tools (by name, idempotent),
+- **Agent config.** `eleven_agent_config.py` manages the 23 client tools (by name, idempotent),
   `client_tool_call` events, the first-message override (the voice-on briefing), the soft-timeout
   filler (off) and a marked section of the system prompt. Every run writes a sanitised 0600 backup
   to `~/.local/state/mac-voice/agent-backups/`; `-a` rolls back by itself on any failure, and
@@ -604,6 +605,66 @@ stops with the reset times.
   refused (tested with phone playback: scores 0.04 / 0.02 / -0.01).
 - **ECAPA is unreliable under about 1 s of speech**: short sentences can refuse you; say the
   full request ("tell scratch-idle: print hello", "yes, do it").
+
+<div align="right"><a href="#top">↑ back to top</a></div>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0e16,50:22e7ff,100:ff5cc8&height=14&section=header" width="100%" alt="">
+
+## 🗳️ Decide hub by voice
+
+[decide](https://decide.dom42.space) is Albert's hub for every decision that waits on him: open
+questions of his Claude Code sessions, staff agents, tp items and t.py tickets. By voice you hear
+what is on your plate, go through the decisions one by one and answer them. Code:
+[`decide.py`](src/my_stt_tts/decide.py) (hub client, spoken texts, the conversation),
+[`decide_tools.py`](src/my_stt_tts/decide_tools.py) (mac-voice client tools),
+[`decide_intents.py`](src/my_stt_tts/decide_intents.py) (the local pipeline's intent router).
+
+| You say                                                                                | You get                                                                         |
+| :------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------ |
+| "what's on my plate" / "what do I need to decide"                                      | counts per section, then the top three with one sentence of context each        |
+| "next decision"                                                                        | who asks, the question, the numbered options and the recommendation             |
+| "tell me more"                                                                         | background, what is being built, how it fits, the options with their trade-offs |
+| "answer option two" / "go with the recommendation" / "answer: \<your words\>" / "done" | the read-back of your answer — nothing is sent yet                              |
+| "add comment …"                                                                        | the comment joins the waiting answer, read back again                           |
+| "yes, do it" (mac-voice) / "yes" (local)                                               | the answer goes to the hub, which holds it 5 s before it is delivered           |
+| "undo"                                                                                 | the answer is taken back while the hub still holds it                           |
+| "skip" / "snooze until tomorrow"                                                       | the next decision; a snooze hides this one from voice until 08:00 tomorrow      |
+| "work only" / "private only" / "show everything"                                       | the focus of every later read                                                   |
+
+Every answer is read back and sent only after a spoken yes; the hub's 5 s undo is the safety
+net. Nothing destructive or bulk is offered by voice. Answers carry `channel: voice` in the hub.
+
+<details>
+<summary>Technical details</summary>
+
+<br>
+
+- **Auth.** The `decide-cli` Cloudflare Access service token, which the hub lists for answers
+  and as the only caller allowed `channel: voice`. Every call therefore goes through
+  Cloudflare, also at home (the direct LAN path would be refused with `channel_not_allowed`).
+  The client id comes from `DECIDE_VOICE_CF_CLIENT_ID` in `.env` (not secret). The secret is
+  `DECIDE_CLI_CF_CLIENT_SECRET` when the process already has it; otherwise each request runs
+  in a short child under `secret-run -e DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`
+  (`python -m my_stt_tts.decide -X`), so the value never enters the daemon. Nothing prints
+  or logs it. `secret-run` is found on `PATH`, else in `home/browser-login/bin` (the
+  LaunchAgent's `PATH` is short), or at `DECIDE_SECRET_RUN_BIN`.
+- **mac-voice** (`MAC_VOICE_DECIDE=1`, plus `scripts/eleven_agent_config.py -a` once so the
+  agent knows the tools): `decide_plate`, `decide_next`, `decide_more`, `decide_answer`,
+  `decide_comment`, `decide_undo`, `decide_skip`, `decide_snooze`, `decide_focus`.
+  `decide_answer` needs the voice-checked sentence that carries the choice (and the comment),
+  never sends, and makes the answer the pending "yes, do it" proposal; `confirm_action` then
+  posts it (executor `decide_answer`). A new call forgets the decision in discussion.
+- **Local pipeline** (`DECIDE_VOICE=1`): the intents run before the LLM, like the music
+  router. Answers, comments, the yes and undo are taken only from the voice named by
+  `DECIDE_VOICE_SPEAKER` (else `MAC_VOICE_AUTHORIZED`), as speaker identification resolved it
+  for the turn; reads are open. An answer waits 120 s for its yes. A free question about
+  decisions ("which decisions are urgent?") gets the plate summary as LLM context.
+- **Snoozes** stay in this client (`~/.local/state/mac-voice/decide-voice.json`, 0600): the hub
+  lets the voice token answer and undo, nothing else.
+- **Check it, read-only:** `uv run python -m my_stt_tts.decide -p` (the spoken plate summary),
+  `-n` (the next decision's brief), `-s ID` (one decision), `-F work`, `-j` (raw JSON).
+
+</details>
 
 <div align="right"><a href="#top">↑ back to top</a></div>
 

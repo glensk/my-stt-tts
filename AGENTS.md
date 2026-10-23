@@ -93,5 +93,12 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
     apply, rollback); `scripts/enroll_call.py` → call-domain voice profile;
     `scripts/acceptance_setup.sh` + `scripts/ACCEPTANCE_RUNBOOK.md` → attended acceptance
     fixtures and steps; `scripts/spikes/` → Phase-0 spike scripts.
+- Decide hub by voice (tp#1171; README section "Decide hub by voice") → `decide.py`
+  (`HubClient` through Cloudflare with the `decide-cli` service token, secret only in a
+  `secret-run` child; spoken plate / briefs; `resolve_choice`; `DecideDesk` conversation
+  state; read-only CLI `python -m my_stt_tts.decide -p`), `decide_tools.py` (mac-voice
+  `decide_*` tools, answers behind "yes, do it", `MAC_VOICE_DECIDE`), `decide_intents.py`
+  (local intent router, `DECIDE_VOICE`); the brain's plate context is `decide.PlateContext`.
+  Tests use a fake hub only — never answer the real hub from a test.
 - Private/local notes → `CLAUDE.local.md` (gitignored); `CLAUDE.md` is a gitignored
   shim that imports this file.

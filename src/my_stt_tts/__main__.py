@@ -667,6 +667,39 @@ def maybe_handle_music(cfg: Config, tts: TTSRouter, gate: audio.MicGate, text: s
     return True
 
 
+def maybe_handle_decide(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    cfg: Config,
+    tts: TTSRouter,
+    gate: audio.MicGate,
+    text: str,
+    speaker: str | None,
+    turn_source: str = "",
+) -> bool:
+    """Handle ``text`` locally as a decide-hub intent, returning True if it was one.
+
+    The second LOCAL INTENT ROUTER (next to music): "what's on my plate", "next decision",
+    "tell me more", "answer option two" (read back, then a spoken "yes" sends it), "undo",
+    "skip", "snooze", "work only" (:mod:`my_stt_tts.decide_intents`). Off unless
+    ``cfg.decide_enabled`` (``DECIDE_VOICE=1``). Answers, comments, the yes and undo are taken
+    only from the voice named by ``DECIDE_VOICE_SPEAKER`` / ``MAC_VOICE_AUTHORIZED``
+    (``speaker`` is the turn's identified speaker). Never raises: a failure is spoken."""
+    if not cfg.decide_enabled:
+        return False
+    from . import decide_intents  # pylint: disable=import-outside-toplevel  # opt-in feature
+
+    try:
+        reply = decide_intents.local_router().handle(text, speaker)
+    except Exception:  # pylint: disable=broad-exception-caught  # a turn never crashes
+        log.warning("decide intent failed", exc_info=True)
+        reply = None
+    if reply is None:
+        return False
+    bus.transcript(text, source=turn_source)
+    _music_respond(cfg, tts, gate, reply, reply)  # the generic local-reply path
+    bus.state("idle")
+    return True
+
+
 def _music_respond(
     cfg: Config, tts: TTSRouter, gate: audio.MicGate, display: str, spoken: str
 ) -> None:
@@ -798,6 +831,10 @@ def _respond(
     # song is played + a short confirmation is spoken, and the turn ends without
     # ever asking the model (which would otherwise answer "I can't play music").
     if maybe_handle_music(cfg, tts, gate, text):
+        return RespondResult()
+    # Decide hub intents ("what's on my plate", "answer option two", "yes", "undo") — the
+    # same local router, off unless DECIDE_VOICE=1; answers only from the authorised voice.
+    if maybe_handle_decide(cfg, tts, gate, text, turn_speakers.routed, turn_source):
         return RespondResult()
     metrics = TurnMetrics()
     metrics.note(transcript=text)

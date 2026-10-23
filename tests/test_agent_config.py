@@ -16,6 +16,7 @@ from typing import Any
 from my_stt_tts.attention import make_acknowledge_tool
 from my_stt_tts.bridge import EXPIRED, NOTHING_PENDING, BridgeController
 from my_stt_tts.claude_sessions import SessionTools
+from my_stt_tts.decide_tools import DecideTools
 from my_stt_tts.mac_control import TOOL_NAMES, MacControl
 from my_stt_tts.mac_operator import CONFIRMED_REPLY, MacOperator
 
@@ -334,6 +335,10 @@ def test_tool_specs_match_the_controller_tools() -> None:
     funcs["answer_decision"] = SessionTools.answer_decision
     funcs |= {n: getattr(MacControl, n) for n in TOOL_NAMES}
     funcs["do_on_mac"] = MacOperator.do_on_mac
+    funcs |= {
+        f"decide_{n}": getattr(DecideTools, n)
+        for n in ("plate", "next", "more", "answer", "comment", "undo", "skip", "snooze", "focus")
+    }
     funcs["acknowledge_problem"] = make_acknowledge_tool(None, None)  # type: ignore[arg-type]
     assert {s.name for s in cfg.TOOL_SPECS} == set(funcs)
     legacy = {"confirm_action": {"code"}}  # accepted and ignored, never offered to the agent

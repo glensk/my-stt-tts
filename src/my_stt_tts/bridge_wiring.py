@@ -1,6 +1,8 @@
 """Register the bridge components on a :class:`~my_stt_tts.bridge.BridgeController`.
 
-Called once from :func:`my_stt_tts.bridge.build_bridge` (``voice_control.daemon_main``).
+:func:`build_bridge` (called once from ``voice_control.daemon_main``) builds the controller
+and calls :func:`wire`. It lives here, not in :mod:`my_stt_tts.bridge`, because this module is
+the composition root: it imports every component, and the components import the bridge.
 Each component gates itself on its own flag and a failing one never stops the others:
 
 * :func:`my_stt_tts.attention.register` (any bridge flag) — the inbox becomes the
@@ -8,6 +10,8 @@ Each component gates itself on its own flag and a failing one never stops the ot
   new problems in a running call through :meth:`BridgeController.notify_in_call`;
 * :func:`my_stt_tts.claude_sessions.register` (``MAC_VOICE_CLAUDE_BRIDGE``);
 * :func:`my_stt_tts.mac_control.register` (``MAC_VOICE_MAC_CONTROL``);
+* :func:`my_stt_tts.decide_tools.register` (``MAC_VOICE_DECIDE``) — the decide hub's
+  plate, briefs and read-back answers (executor ``decide_answer`` behind "yes, do it");
 * :func:`my_stt_tts.mac_operator.register` (``MAC_VOICE_OPERATOR``) with
   :class:`OperatorNotices` — confirmation requests (and their one "still waiting"
   repeat) and every LATE final result are spoken in the call: a success as "done:
@@ -23,8 +27,9 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from .bridge import AUTH_ENV, Authoriser, BridgeController, SpeakerScorer
+
 if TYPE_CHECKING:
-    from .bridge import BridgeController
     from .mac_operator import MacOperator, OperatorResult
 
 log = logging.getLogger("my_stt_tts.bridge")
@@ -116,13 +121,14 @@ def _safely(name: str, fn: Callable[[], Any]) -> Any:
 def wire(controller: BridgeController, env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Register every enabled component; returns them by name (also ``controller.components``)."""
     # pylint: disable=import-outside-toplevel  # heavy / cyclic modules, loaded on demand
-    from . import attention, claude_sessions, mac_control, mac_operator
+    from . import attention, claude_sessions, decide_tools, mac_control, mac_operator
 
     monitor = _safely("attention", lambda: attention.register(controller, env=env))
     if monitor is not None:
         monitor.set_notifier(controller.notify_in_call)
     sessions = _safely("claude_sessions", lambda: claude_sessions.register(controller, env=env))
     mac = _safely("mac_control", lambda: mac_control.register(controller, env=env))
+    decide = _safely("decide_tools", lambda: decide_tools.register(controller, env=env))
     notices = OperatorNotices(controller)
     operator = _safely(
         "mac_operator",
@@ -136,9 +142,32 @@ def wire(controller: BridgeController, env: Mapping[str, str] | None = None) -> 
         "monitor": monitor,
         "sessions": sessions,
         "mac": mac,
+        "decide": decide,
         "operator": operator,
         "operator_notices": notices,
     }
     controller.components.update({k: v for k, v in parts.items() if v is not None})
     log.info("🌉 bridge tools: %s", ", ".join(sorted(controller.tools)))
     return parts
+
+
+def build_bridge(
+    scorer: SpeakerScorer | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    wire_components: bool = True,
+) -> BridgeController:
+    """The daemon's controller: identity from ``MAC_VOICE_AUTHORIZED`` + the voice gate.
+
+    With ``wire_components`` the components register themselves, each gated by its own flag
+    (:func:`wire`): attention inbox + monitor, Claude sessions, Mac control, the decide hub
+    and the Mac operator.
+    """
+    authoriser = Authoriser.from_env(scorer, env)
+    if authoriser.authorized is None:
+        log.warning("⚠️  %s unset — every bridge action will be refused", AUTH_ENV)
+    controller = BridgeController(authoriser)
+    if wire_components:
+        wire(controller, env)
+    controller.preload()
+    return controller

@@ -594,7 +594,8 @@ def voice_gate() -> Any:
 
 def _build_bridge() -> tuple[Any, Any]:
     """(controller, voice gate) when a bridge flag is on, else (None, None)."""
-    from .bridge import bridge_enabled, build_bridge
+    from .bridge import bridge_enabled
+    from .bridge_wiring import build_bridge
 
     if not bridge_enabled():
         return None, None

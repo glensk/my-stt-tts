@@ -11,8 +11,9 @@ delete only the tools this run created) when any step fails.
 
 Desired configuration:
 
-* one workspace client tool per bridge tool, keyed by NAME (an existing tool with that
-  name is updated, never duplicated; tools the script did not create are never deleted),
+* one workspace client tool per bridge tool (the decide tools included), keyed by NAME
+  (an existing tool with that name is updated, never duplicated; tools the script did not
+  create are never deleted),
   each with a JSON-schema ``parameters`` (``confirm_action`` takes none: its legacy
   ``code`` argument is accepted and ignored), ``expects_response: true`` and
   ``response_timeout_secs`` 10 (send / answer / confirm 30, do_on_mac 15). The API turns
@@ -90,6 +91,7 @@ You run on Albert's Mac and act on it and on his Claude Code sessions through to
 - Sessions: list_sessions; read_session(target, what: last_reply|last_prompt); brief_decision(target); send_message(target, text); answer_decision(target, choice). Target = a session name or its number from the last list; if unclear, ask. Background sessions are read-only.
 - Decision briefing: "The session <name>, which works on <aim>, needs a decision: <question>. Options: a) … b) …. It recommends <x> because <reason>." Discuss, then answer with answer_decision (a written to-do decision: send_message). After a briefing (or a read), "answer <option>" or "tell it …" without a session name applies to the session just briefed: call answer_decision / send_message with that session as target. When Albert addresses a session by name ("tell <name> …", "<name>: …"), the target is that name, never the briefed session; if no session has that name, ask which one he meant. Pass the option label exactly as the briefing listed it (e.g. "green", not "b) green" or "the green one").
 - Mac: open_url(target), open_app(name), set_volume(level|step|mute), set_brightness(step|level), media(command, seconds) for the video in Safari, youtube_play_first(). Levels may be "max" or "min" ("brightness to max" → set_brightness(level="max")); seek seconds are whole seconds ("the first minute" → 60); "go out of / exit / leave full screen" → media(command="exit_fullscreen"). One sentence may ask for up to three actions ("focus Safari, then skip a minute"): call the tools one after another. Anything else on the Mac: do_on_mac(request; background=true only if Albert says to do it even if he hangs up). While a Mac task runs, one more do_on_mac request is queued and starts by itself when the first ends.
+- Decisions on the decide hub (Albert's open questions from all sessions, agents and tickets): "what's on my plate" / "what do I need to decide" → decide_plate(); "next decision" → decide_next(); "tell me more" → decide_more(); read those answers aloud as they are (options are numbered from 1). "Answer option two" / "go with the recommendation" / "done" (a step) → decide_answer(choice=his words, e.g. "option two", "recommendation", "done"); "answer: <his words>" → decide_answer(free_text=his words); a comment he adds in the same sentence goes into comment. decide_answer NEVER sends: read its read-back aloud and ask for "yes, do it"; only his "yes, do it" lets confirm_action() send it, and its answer ("Sent. It waits 5 seconds …") is the outcome — say it. "Add comment …" while an answer waits → decide_comment(text). "Undo" → decide_undo(). "Skip" → decide_skip(); "snooze until tomorrow" → decide_snooze(); "work only" / "private only" / "everything" → decide_focus(scope). Never answer a decide question without that read-back and his "yes, do it".
 - acknowledge_problem(subject) when Albert says "got it, <subject>".
 - Never start a reply with an acknowledgement or filler (no "Right", "I see", "Duly noted", "Mm-hmm", "Okay then", "Understood"). After a successful action say nothing or one word; never repeat "Done" plus filler.
 - SUCCESSES ARE SILENT: after a tool succeeds say nothing, at most "done" (send_message: "sent", or "sent, not yet confirmed" exactly as the tool says). Never read routine results back. Say refusals and failures briefly. Never retry a refused call with the same sentence of Albert's: tell him what was refused and ask him to say it again.
@@ -136,10 +138,11 @@ class ToolSpec:
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "confirm_action",
-        "Let the Mac task step that waits for 'yes, do it' run. Call it ONLY right after"
-        " Albert said yes to a confirmation request you just spoke, never on your own. The"
-        " step only starts: its result comes later as a [system notice], so never say"
-        " 'done' on this answer.",
+        "Let the step that waits for 'yes, do it' run: a Mac task step, or a decide answer"
+        " you read back. Call it ONLY right after Albert said yes to a confirmation request"
+        " you just spoke, never on your own. A Mac task step only starts: its result comes"
+        " later as a [system notice], so never say 'done' on this answer. A decide answer"
+        " returns its outcome ('Sent. …'): say it.",
         _params({}, []),
         30,
     ),
@@ -182,6 +185,73 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             ["target", "choice"],
         ),
         30,
+    ),
+    ToolSpec(
+        "decide_plate",
+        "What is on Albert's plate on the decide hub: counts per section, then the top three"
+        " decisions with one sentence of context each.",
+        _params({}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_next",
+        "The next decision: who asks, the question, its numbered options and the"
+        " recommendation. It becomes the decision being discussed.",
+        _params({}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_more",
+        "The full brief of the decision being discussed (background, what is being built,"
+        " how it fits, the options with their trade-offs).",
+        _params({}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_answer",
+        "Prepare Albert's answer to the decision being discussed and get its read-back. It"
+        " sends nothing: read the read-back aloud, ask for 'yes, do it', and only then call"
+        " confirm_action.",
+        _params(
+            {
+                "choice": _string(
+                    "Albert's words for the choice: 'option two', 'recommendation', 'done'."
+                ),
+                "comment": _string("A comment Albert adds, in his words (optional)."),
+                "free_text": _string("Albert's own answer instead of an option, in his words."),
+            },
+            [],
+        ),
+        15,
+    ),
+    ToolSpec(
+        "decide_comment",
+        "Add Albert's comment to the decide answer waiting for 'yes, do it'; read the new"
+        " read-back aloud.",
+        _params({"text": _string("The comment, in Albert's words.")}, ["text"]),
+    ),
+    ToolSpec(
+        "decide_undo",
+        "Take back the last decide answer while the hub still holds it (about 5 seconds).",
+        _params({}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_skip",
+        "Leave the decision being discussed for now and go to the next one.",
+        _params({}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_snooze",
+        "Hide the decision being discussed from voice until tomorrow 08:00, then the next one.",
+        _params({"until": _string("When it comes back; only 'tomorrow' is supported.")}, []),
+        15,
+    ),
+    ToolSpec(
+        "decide_focus",
+        "Focus the decide reads on work, private, or all.",
+        _params({"scope": _string("work, private or all.", ["work", "private", "all"])}, []),
     ),
     ToolSpec(
         "acknowledge_problem",

@@ -1114,6 +1114,11 @@ class Config:
     tools_enabled: bool = True
     tools_max_iterations: int = 4  # cap tool-use loops so a model can't spin forever
 
+    # --- The decide hub (decide.dom42.space) by voice: the local intent router answers
+    # "what's on my plate" / "answer option two" before the LLM, and a free question about
+    # decisions gets the plate summary as context (decide_intents.py). Off by default. ---
+    decide_enabled: bool = False
+
     # --- Music from YouTube: a LOCAL intent router in the turn path resolves "play
     # <song>" with yt-dlp and plays it through a stoppable background player BEFORE
     # the LLM is asked, so it works for every brain (incl. claude-cli, which does
@@ -1293,6 +1298,7 @@ class Config:
             transport_token=env.get("TRANSPORT_TOKEN") or None,
             tools_enabled=_env_bool("TOOLS_ENABLED", default=True),
             music_enabled=_env_bool("MUSIC_ENABLED", default=True),
+            decide_enabled=_env_bool("DECIDE_VOICE", default=False),
             music_player=env.get("MUSIC_PLAYER", "auto"),
             music_playback=env.get("MUSIC_PLAYBACK", "hybrid"),
             speaker_id_enabled=_env_bool("SPEAKER_ID", default=False),
