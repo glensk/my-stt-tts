@@ -10,7 +10,10 @@ module is the voice client of its JSON API:
   options and recommendation;
 * ``POST /api/decisions/{id}/answer`` with ``channel: voice`` — an option index, the
   recommendation, free text or "done" (an action step), plus a comment;
-* ``POST /api/decisions/{id}/undo`` — withdraws the answer during the hub's 5 s grace.
+* ``POST /api/decisions/{id}/undo`` — withdraws the answer during the hub's answer grace
+  (``DECIDE_ANSWER_GRACE_S``, currently 3 s; :meth:`DecideDesk.send` reads the window from the
+  answer's ``release_at``). An "undo" spoken after "yes, do it" often comes too late: the
+  read-back before the yes is the real safety.
 
 Auth: the ``decide-cli`` Cloudflare Access service token. The hub accepts ``channel: voice``
 only from a service token on its voice list, so every call goes through Cloudflare — also at
@@ -419,13 +422,56 @@ def _sentence(text: str) -> str:
     return _end(text[:1].upper() + text[1:])
 
 
-_SECTIONS = (("code", "from Claude sessions"), ("agents", "from agents"), ("tickets", "tickets"))
+# The plate's section counts overlap: ``code`` = session + action, ``agents`` = staff + t.py,
+# ``tickets`` = tp + t.py (a t.py approval sits in both; hub ``docs/api.md`` "Built-in
+# perspectives"). Spoken buckets are disjoint, so they add up to the total:
+# (key, with count 1, with count > 1, as the only part of a one-decision plate).
+_BUCKETS = (
+    ("session", "from a Claude session", "from Claude sessions", "from a Claude session"),
+    ("tpy", "support ticket", "support tickets", "a support ticket"),
+    ("staff", "from a staff agent", "from staff agents", "from a staff agent"),
+    ("tp", "tp item", "tp items", "a tp item"),
+)
 _ORDINAL_WORDS = ("First", "Second", "Third", "Fourth", "Fifth")
 _FOCUS_WORDS = {"work": "work", "private": "private"}
 
 
 def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
+
+
+def _count(counts: Mapping[str, Any], key: str) -> int:
+    try:
+        return max(0, int(counts.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def plate_buckets(counts: Mapping[str, Any]) -> dict[str, int]:
+    """Disjoint per-source counts from the plate's overlapping sections.
+
+    Every source sits in ``code`` (session, action), ``agents`` (staff, t.py) or ``tickets``
+    (tp, t.py); only t.py is in two of them, so ``inbox = code + agents + tickets - tpy``.
+    """
+    code, agents, tickets = (_count(counts, k) for k in ("code", "agents", "tickets"))
+    tpy = min(agents, tickets, max(0, code + agents + tickets - _count(counts, "inbox")))
+    return {"session": code, "tpy": tpy, "staff": agents - tpy, "tp": tickets - tpy}
+
+
+def _plate_head(counts: Mapping[str, Any], total: int, scope: str) -> str:
+    """The first sentence, e.g. "38 work decisions wait for you: 1 from a Claude session and
+    37 support tickets"; one part alone is "all support tickets"."""
+    noun = "decision waits" if total == 1 else "decisions wait"
+    head = f"{total}{scope} {noun} for you"
+    buckets = plate_buckets(counts)
+    parts = [(buckets[key], one, many, solo) for key, one, many, solo in _BUCKETS if buckets[key]]
+    if len(parts) == 1 and parts[0][0] == total:
+        n, _one, many, solo = parts[0]
+        return f"{head}, {solo if n == 1 else 'all ' + many}"
+    said = [_plural(n, one, many) for n, one, many, _solo in parts]
+    if not said:
+        return head
+    return f"{head}: " + (", ".join(said[:-1]) + " and " if len(said) > 1 else "") + said[-1]
 
 
 def _brief_parts(item: Mapping[str, Any]) -> dict[str, str]:
@@ -474,21 +520,14 @@ def _project(item: Mapping[str, Any]) -> str:
 
 
 def plate_summary(plate: Mapping[str, Any], focus: str | None = None) -> str:
-    """The spoken answer to "what's on my plate": counts per section, then the top three."""
+    """The spoken answer to "what's on my plate": counts per source, then the top three."""
     counts = plate.get("counts") if isinstance(plate.get("counts"), Mapping) else {}
     counts = counts or {}
-    total = int(counts.get("inbox") or 0)
+    total = _count(counts, "inbox")
     scope = f" {_FOCUS_WORDS[focus]}" if focus in _FOCUS_WORDS else ""
     if total == 0:
-        return f"Nothing{scope} waits for you on the decide hub."
-    sections = [
-        f"{int(counts.get(k) or 0)} {label}" for k, label in _SECTIONS if int(counts.get(k) or 0)
-    ]
-    head = f"{_plural(total, 'decision', 'decisions')}{scope} wait for you"
-    if sections:
-        head += ": " + ", ".join(sections[:-1]) + (" and " if len(sections) > 1 else "")
-        head += sections[-1]
-    parts = [_sentence(head)]
+        return f"No{scope} decisions wait for you on the decide hub."
+    parts = [_sentence(_plate_head(counts, total, scope))]
     extra = [
         _plural(int(counts.get(k) or 0), one, many)
         for k, one, many in (

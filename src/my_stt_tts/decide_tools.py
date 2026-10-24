@@ -16,7 +16,8 @@ Tools (the voice agent's client tools):
   carry the choice (and the comment); the tool then makes the answer THE pending proposal and
   returns the read-back that ends with "say yes, do it". Only ``confirm_action`` after his
   new, voice-checked "yes, do it" posts it (executor ``decide_answer``), with ``channel:
-  voice``. The hub then holds it 5 s before the relay may deliver it.
+  voice``. The hub then holds it for its answer grace (currently 3 s) before the relay may
+  deliver it.
 * ``decide_comment(text)`` — adds a comment to the pending answer and reads it back again.
 * ``decide_undo()`` — takes the last voice answer back while the hub still holds it.
 * ``decide_skip()`` / ``decide_snooze(until)`` — next decision; a snooze hides the decision

@@ -621,18 +621,21 @@ what is on your plate, go through the decisions one by one and answer them. Code
 
 | You say                                                                                | You get                                                                         |
 | :------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------ |
-| "what's on my plate" / "what do I need to decide"                                      | counts per section, then the top three with one sentence of context each        |
+| "what's on my plate" / "what do I need to decide"                                      | counts per source, then the top three with one sentence of context each         |
 | "next decision"                                                                        | who asks, the question, the numbered options and the recommendation             |
 | "tell me more"                                                                         | background, what is being built, how it fits, the options with their trade-offs |
 | "answer option two" / "go with the recommendation" / "answer: \<your words\>" / "done" | the read-back of your answer — nothing is sent yet                              |
 | "add comment …"                                                                        | the comment joins the waiting answer, read back again                           |
-| "yes, do it" (mac-voice) / "yes" (local)                                               | the answer goes to the hub, which holds it 5 s before it is delivered           |
-| "undo"                                                                                 | the answer is taken back while the hub still holds it                           |
+| "yes, do it" (mac-voice) / "yes" (local)                                               | the answer goes to the hub, which holds it for its grace window (currently 3 s) |
+| "undo"                                                                                 | the answer is taken back while the hub still holds it — often already too late  |
 | "skip" / "snooze until tomorrow"                                                       | the next decision; a snooze hides this one from voice until 08:00 tomorrow      |
 | "work only" / "private only" / "show everything"                                       | the focus of every later read                                                   |
 
-Every answer is read back and sent only after a spoken yes; the hub's 5 s undo is the safety
-net. Nothing destructive or bulk is offered by voice. Answers carry `channel: voice` in the hub.
+Every answer is read back and sent only after a spoken yes — that read-back is the real safety.
+The hub holds a sent answer for its grace window (`DECIDE_ANSWER_GRACE_S`, currently 3 s; the
+client reads the window from the hub's answer and says how many seconds are left), but an "undo"
+spoken after "yes, do it" often arrives after it has passed. Nothing destructive or bulk is
+offered by voice. Answers carry `channel: voice` in the hub.
 
 <details>
 <summary>Technical details</summary>

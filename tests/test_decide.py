@@ -177,11 +177,16 @@ class FakeHub:
         if focus:
             open_ = [d for d in open_ if d["project"]["area"] == focus]
         top = int((query.get("top") or ["3"])[0])
+
+        def section(*sources: str) -> int:  # the hub's overlapping section counts
+            return sum(1 for d in open_ if d["source"] in sources)
+
         return {
             "schema_version": 1,
             "focus": focus,
             "top": [_plate_item(i, d) for i, d in enumerate(open_[:top], start=1)],
-            "counts": {"inbox": len(open_), "code": 1, "agents": 0, "tickets": 1,
+            "counts": {"inbox": len(open_), "code": section("session", "action"),
+                       "agents": section("staff", "tpy"), "tickets": section("tp", "tpy"),
                        "flagged": 0, "overdue": 1, "due_soon": 0, "snoozed": 0},
             "urgent": [],
             "blocked_sessions": [{"session_id": "s1", "name": "example session"}],
@@ -355,7 +360,7 @@ def test_urllib_exchange_adds_the_secret_only_with_a_client_id(
 def test_plate_summary_counts_sections_then_top_three_with_context() -> None:
     plate = FakeHub()._plate({})
     text = plate_summary(plate)
-    assert text.startswith("3 decisions wait for you: 1 from Claude sessions and 1 tickets.")
+    assert text.startswith("3 decisions wait for you: 2 from Claude sessions and 1 tp item.")
     assert "1 is overdue." in text and "1 session is blocked until you answer." in text
     assert (
         "First, Example session asks: Which storage engine should the example service use?"
@@ -374,8 +379,47 @@ def test_plate_summary_counts_sections_then_top_three_with_context() -> None:
 
 def test_plate_summary_empty_and_focus() -> None:
     assert plate_summary({"counts": {"inbox": 0}}, "work") == (
-        "Nothing work waits for you on the decide hub."
+        "No work decisions wait for you on the decide hub."
     )
+    assert plate_summary({"counts": {"inbox": 0}}) == "No decisions wait for you on the decide hub."
+
+
+def test_plate_buckets_are_disjoint_and_add_up() -> None:
+    # The live plate that read as 80: t.py approvals sit in both agents and tickets.
+    counts = {"inbox": 42, "code": 1, "agents": 41, "tickets": 38}
+    assert decide.plate_buckets(counts) == {"session": 1, "tpy": 38, "staff": 3, "tp": 0}
+    assert sum(decide.plate_buckets(counts).values()) == 42
+    both = {"inbox": 9, "code": 2, "agents": 4, "tickets": 5}  # 2 t.py, 2 staff, 3 tp
+    assert decide.plate_buckets(both) == {"session": 2, "tpy": 2, "staff": 2, "tp": 3}
+    # Inconsistent or missing numbers never go negative.
+    assert decide.plate_buckets({"inbox": 1, "agents": 3, "tickets": 2}) == {
+        "session": 0, "tpy": 2, "staff": 1, "tp": 0,
+    }  # fmt: skip
+    assert decide.plate_buckets({"inbox": "x"}) == {"session": 0, "tpy": 0, "staff": 0, "tp": 0}
+
+
+def test_plate_summary_parts_add_up_and_read_naturally() -> None:
+    counts = {"inbox": 42, "code": 1, "agents": 41, "tickets": 38}
+    assert plate_summary({"counts": counts}) == (
+        "42 decisions wait for you: 1 from a Claude session, 38 support tickets and 3 from "
+        "staff agents."
+    )
+    work = {"inbox": 38, "code": 0, "agents": 38, "tickets": 38}
+    assert plate_summary({"counts": work}, "work") == (
+        "38 work decisions wait for you, all support tickets."
+    )
+    one = {"inbox": 1, "code": 1, "agents": 0, "tickets": 0}
+    assert plate_summary({"counts": one}, "private") == (
+        "1 private decision waits for you, from a Claude session."
+    )
+    assert plate_summary({"counts": {"inbox": 1, "tickets": 1}}) == (
+        "1 decision waits for you, a tp item."
+    )
+    mixed = {"inbox": 5, "code": 0, "agents": 2, "tickets": 4}  # 1 t.py, 1 staff, 3 tp
+    assert plate_summary({"counts": mixed}) == (
+        "5 decisions wait for you: 1 support ticket, 1 from a staff agent and 3 tp items."
+    )
+    assert plate_summary({"counts": {"inbox": 2}}) == "2 decisions wait for you."
 
 
 def test_short_and_full_brief() -> None:
@@ -486,7 +530,7 @@ def test_desk_skip_snooze_and_focus(tmp_path: Path) -> None:
     fresh = _desk(hub, tmp_path)
     assert all(t["id"] != D2["id"] for t in fresh.plate()["top"])  # snooze survives
     assert fresh.set_focus("work") == "Focus: work only. "
-    assert "1 decision work wait" in fresh.summary() or "Nothing work" in fresh.summary()
+    assert fresh.summary().startswith("1 work decision waits for you, ")
     assert hub.calls[-1][1].endswith("focus=work")
     assert fresh.set_focus("everything") == "Focus: everything. "
     assert "work, private, or everything" in fresh.set_focus("hobby")
@@ -620,7 +664,7 @@ def test_router_pending_answer_expires(tmp_path: Path) -> None:
 def test_router_focus_and_skip(tmp_path: Path) -> None:
     hub = FakeHub()
     r = _router(hub, tmp_path)
-    assert str(r.handle("show work only")).startswith("Focus: work only. 1 decision work wait")
+    assert str(r.handle("show work only")).startswith("Focus: work only. 1 work decision waits")
     r.handle("next decision")
     assert "No more decisions" in str(r.handle("skip"))
 

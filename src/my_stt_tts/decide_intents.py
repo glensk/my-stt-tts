@@ -13,7 +13,8 @@ Intents (English, with common German and French forms):
   step → the read-back, then "Say yes to send it, or no to cancel.";
 * "add comment …" → the comment joins the waiting answer, read back again;
 * "yes" / "no" while an answer waits → send it (``channel: voice``) / drop it;
-* "undo" → the last voice answer is taken back while the hub still holds it (5 s);
+* "undo" → the last voice answer is taken back while the hub still holds it (its grace,
+  currently 3 s — often already over, so the read-back before "yes" is the safety);
 * "skip", "snooze until tomorrow", "work only" / "private only" / "show everything".
 
 Answers, comments, confirmations and undo are taken only from the voice named by
