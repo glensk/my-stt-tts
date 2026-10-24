@@ -626,15 +626,16 @@ what is on your plate, go through the decisions one by one and answer them. Code
 | "tell me more"                                                                         | background, what is being built, how it fits, the options with their trade-offs |
 | "answer option two" / "go with the recommendation" / "answer: \<your words\>" / "done" | the read-back of your answer — nothing is sent yet                              |
 | "add comment …"                                                                        | the comment joins the waiting answer, read back again                           |
-| "yes, do it" (mac-voice) / "yes" (local)                                               | the answer goes to the hub, which holds it for its grace window (currently 3 s) |
-| "undo"                                                                                 | the answer is taken back while the hub still holds it — often already too late  |
+| "yes, do it" (mac-voice) / "yes" (local)                                               | the answer goes to the hub, which holds a voice answer for 10 s before sending  |
+| "undo"                                                                                 | the answer is taken back while the hub still holds it (10 s after the yes)      |
 | "skip" / "snooze until tomorrow"                                                       | the next decision; a snooze hides this one from voice until 08:00 tomorrow      |
 | "work only" / "private only" / "show everything"                                       | the focus of every later read                                                   |
 
 Every answer is read back and sent only after a spoken yes — that read-back is the real safety.
-The hub holds a sent answer for its grace window (`DECIDE_ANSWER_GRACE_S`, currently 3 s; the
-client reads the window from the hub's answer and says how many seconds are left), but an "undo"
-spoken after "yes, do it" often arrives after it has passed. Nothing destructive or bulk is
+The hub holds a voice answer for its grace window (`DECIDE_ANSWER_GRACE_VOICE_S`, 10 s; answers
+from the browser wait 3 s), long enough for an "undo" spoken after "yes, do it" to arrive after the
+read-back and the transcription; the client reads the window from the hub's answer and says how
+many seconds are left. Nothing destructive or bulk is
 offered by voice. Answers carry `channel: voice` in the hub.
 
 <details>
