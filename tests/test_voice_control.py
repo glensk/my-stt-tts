@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import plistlib
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -365,3 +366,28 @@ def test_every_call_gets_a_fresh_follow_up_gate(monkeypatch: pytest.MonkeyPatch)
     assert made == [{"bridge": "b"}]  # wake switched off (-w off): nothing could reopen it
     monkeypatch.setenv("MAC_VOICE_FOLLOWUP_S", "0")
     assert vc.with_follow_up(factory, vc.WakeKit(Detector())) is factory
+
+
+def test_restart_hint_uses_launchctl_only_for_a_loaded_agent() -> None:
+    loaded = vc.restart_hint("it", loaded=True)
+    assert "launchctl kickstart -k" in loaded and vc.LAUNCH_LABEL in loaded
+    manual = vc.restart_hint("them", loaded=False)
+    assert "launchctl" not in manual and "Ctrl-C" in manual and "./mac-voice -d" in manual
+
+
+def test_stop_hint_by_setup() -> None:
+    assert "launchctl bootout" in vc.stop_hint(loaded=True)
+    manual = vc.stop_hint(77, loaded=False)
+    assert "pid 77" in manual and "launchctl" not in manual and "./mac-voice -d" in manual
+
+
+def test_launch_agent_loaded_follows_the_launchctl_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for code, expected in ((0, True), (113, False)):
+        monkeypatch.setattr(
+            vc.subprocess,
+            "run",
+            lambda *_a, _c=code, **_k: subprocess.CompletedProcess([], _c),
+        )
+        assert vc.launch_agent_loaded() is expected

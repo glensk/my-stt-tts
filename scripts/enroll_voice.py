@@ -63,6 +63,7 @@ import numpy as np  # noqa: E402, RUF100  # E402: the commit hook's ruff selects
 from enroll_call import Duplex, Recorder, SpeechDetector  # noqa: E402, RUF100
 
 from my_stt_tts import voice_profiles as vp  # noqa: E402, RUF100
+from my_stt_tts.voice_control import restart_hint  # noqa: E402, RUF100
 
 # pylint: enable=wrong-import-position,wrong-import-order
 
@@ -76,12 +77,6 @@ NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 LANGUAGE_NAMES = {"de": "German", "en": "English"}
 LAUNCH_LABEL = "com.albert.mac-voice"  # voice_control.LAUNCH_LABEL
 LAUNCH_AGENT = Path.home() / "Library/LaunchAgents" / f"{LAUNCH_LABEL}.plist"
-STOP_HINT = (
-    "❌ the mac-voice daemon is running and owns the mic — stop it first:\n"
-    "   launchctl bootout gui/$(id -u)/com.albert.mac-voice   (or: mac-voice -U)\n"
-    "   then re-run this script; afterwards start it again with mac-voice -I"
-)
-RESTART_HINT = "restart mac-voice to use them: launchctl kickstart -k gui/$(id -u)/" + LAUNCH_LABEL
 
 
 @dataclass(frozen=True)
@@ -216,12 +211,28 @@ def _default_embedder() -> Callable[[np.ndarray], np.ndarray]:
 
 
 class LaunchdDaemon:
-    """Stop / start the mac-voice LaunchAgent (the daemon owns the mic during a call)."""
+    """Stop / start the mac-voice LaunchAgent (the daemon owns the mic during a call).
+
+    A daemon started by hand (``./mac-voice -d`` in a tab) is detected (``managed()`` is False)
+    and never killed: the script prints how to stop and start it there instead.
+    """
 
     def running(self) -> bool:
         from my_stt_tts.voice_control import send
 
         return send("status", timeout=1.0) is not None
+
+    def managed(self) -> bool:
+        from my_stt_tts.voice_control import launch_agent_loaded
+
+        return launch_agent_loaded()
+
+    def stop_hint(self) -> str:
+        from my_stt_tts.voice_control import send, stop_hint
+
+        reply = send("status", timeout=1.0) or {}
+        pid = reply.get("pid")
+        return stop_hint(pid if isinstance(pid, int) else None, loaded=self.managed())
 
     def stop(self) -> bool:
         res = subprocess.run(
@@ -549,16 +560,19 @@ def _stop_daemon(args: argparse.Namespace, deps: Deps) -> bool | None:
     """None: not running; True: stopped (start it again later); False: refused / failed."""
     if not deps.daemon.running():
         return None
+    if not deps.daemon.managed():  # started by hand: launchctl cannot stop or restart it
+        deps.out(deps.daemon.stop_hint())
+        return False
     if not args.yes:
         answer = deps.ask(
             "mac-voice is running and holds the mic. Stop it now and start it again at the"
             " end? [Y/n] "
         )
         if answer.strip().lower() not in ("", "y", "yes", "j", "ja"):
-            deps.out(STOP_HINT)
+            deps.out(deps.daemon.stop_hint())
             return False
     if not deps.daemon.stop():
-        deps.out(STOP_HINT)
+        deps.out(deps.daemon.stop_hint())
         return False
     deps.out("✅ mac-voice stopped for the enrollment")
     return True
@@ -604,7 +618,7 @@ def run(args: argparse.Namespace, deps: Deps) -> int:
     if args.rebuild:
         code = _rebuild_and_report(args, deps, deps.vad(), None)
         if code == 0:
-            deps.out(RESTART_HINT)
+            deps.out(restart_hint("them"))
         return code
     stopped = _stop_daemon(args, deps)
     if stopped is False:

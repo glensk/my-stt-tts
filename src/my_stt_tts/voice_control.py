@@ -732,6 +732,55 @@ def daemon_main(
     return 0
 
 
+def launch_agent_loaded() -> bool:
+    """True when launchd has the mac-voice LaunchAgent loaded (``launchctl print`` exits 0)."""
+    try:
+        res = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/{LAUNCH_LABEL}"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0
+
+
+MANUAL_START = "./mac-voice -d"
+
+
+def restart_hint(what: str = "it", loaded: bool | None = None) -> str:
+    """How to restart the daemon so it picks up changes: the launchd or the by-hand way."""
+    if loaded is None:
+        loaded = launch_agent_loaded()
+    if loaded:
+        return (
+            f"restart mac-voice to use {what}: launchctl kickstart -k gui/$(id -u)/{LAUNCH_LABEL}"
+        )
+    return (
+        f"restart mac-voice to use {what}: Ctrl-C in the mac-voice tab, then {MANUAL_START}"
+        "  (not a LaunchAgent here)"
+    )
+
+
+def stop_hint(pid: int | None = None, loaded: bool | None = None) -> str:
+    """What to do when a script needs the mic but the daemon holds it."""
+    if loaded is None:
+        loaded = launch_agent_loaded()
+    if loaded:
+        return (
+            "❌ the mac-voice daemon is running and owns the mic — stop it first:\n"
+            f"   launchctl bootout gui/$(id -u)/{LAUNCH_LABEL}   (or: mac-voice -U)\n"
+            "   then re-run this script; afterwards start it again with mac-voice -I"
+        )
+    who = f" (pid {pid})" if pid else ""
+    return (
+        f"❌ the mac-voice daemon{who} was started by hand and owns the mic — stop it first:\n"
+        "   Ctrl-C in the mac-voice tab, then re-run this script;\n"
+        f"   afterwards start it again there with {MANUAL_START}"
+    )
+
+
 def launch_agent_plist(launcher: Path, state_dir: Path = STATE_DIR) -> bytes:
     """The LaunchAgent that keeps ``<launcher> -d`` running for this user."""
     log_file = str(state_dir / "daemon.log")

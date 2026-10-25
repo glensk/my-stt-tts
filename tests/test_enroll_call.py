@@ -47,6 +47,9 @@ class FakeDuplex:
         self.closed.set()
 
 
+STOP_TEXT = "stop the mac-voice daemon first"
+
+
 class FakeVad:
     def is_speech(self, frame: Any) -> bool:
         return bool(np.max(np.abs(frame)) > 0.05)
@@ -66,6 +69,7 @@ class Rig:
             vad=FakeVad,
             embedder=lambda: self.embed,
             daemon_running=lambda: daemon,
+            stop_hint=lambda: STOP_TEXT,
             ask=self.ask,
             out=self.lines.append,
         )
@@ -121,7 +125,7 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
 def test_refuses_while_the_daemon_runs(tmp_path: Path) -> None:
     rig = Rig([], daemon=True)
     assert ec.main(["albert", "-o", str(tmp_path)], rig.deps) == 2
-    assert rig.text == ec.STOP_HINT and "mac-voice" in rig.text
+    assert rig.text == STOP_TEXT
     assert not rig.duplex.started
 
 

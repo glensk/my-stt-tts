@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from my_stt_tts import voice_control as vc
 from my_stt_tts import voice_profiles as vp
 
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -66,13 +67,20 @@ def fake_embed(clip: np.ndarray) -> np.ndarray:
 
 
 class FakeDaemon:
-    def __init__(self, running: bool = False, stop_ok: bool = True) -> None:
+    def __init__(self, running: bool = False, stop_ok: bool = True, managed: bool = True) -> None:
         self.is_running = running
+        self.is_managed = managed
         self.stop_ok = stop_ok
         self.calls: list[str] = []
 
     def running(self) -> bool:
         return self.is_running
+
+    def managed(self) -> bool:
+        return self.is_managed
+
+    def stop_hint(self) -> str:
+        return "stop it first (hint)"
 
     def stop(self) -> bool:
         self.calls.append("stop")
@@ -249,6 +257,23 @@ def test_daemon_that_cannot_be_stopped_refuses(tmp_path: Path) -> None:
     rig = Rig(tmp_path, [], daemon=daemon)
     assert _run(tmp_path, rig, "-y", "-c", "3") == 2
     assert daemon.calls == ["stop"]
+
+
+def test_hand_started_daemon_is_not_killed_and_gets_the_manual_hint(tmp_path: Path) -> None:
+    daemon = FakeDaemon(running=True, managed=False)
+    rig = Rig(tmp_path, [], daemon=daemon)
+    assert _run(tmp_path, rig, "-y", "-c", "3") == 2
+    assert not daemon.calls and "stop it first" in rig.text
+    assert not (tmp_path / "enroll").exists()
+
+
+def test_launchd_daemon_hint_names_the_pid_of_a_hand_started_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vc, "send", lambda *_a, **_k: {"pid": 4242})
+    monkeypatch.setattr(vc, "launch_agent_loaded", lambda: False)
+    hint = ev.LaunchdDaemon().stop_hint()
+    assert "pid 4242" in hint and "Ctrl-C" in hint and "launchctl" not in hint
 
 
 def test_rebuild_only_uses_every_kept_session(tmp_path: Path) -> None:

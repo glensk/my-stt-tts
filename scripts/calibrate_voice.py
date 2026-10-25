@@ -58,6 +58,7 @@ from my_stt_tts import bridge  # noqa: E402, RUF100
 from my_stt_tts import interference as itf  # noqa: E402, RUF100
 from my_stt_tts import voice_calibration as vc  # noqa: E402, RUF100
 from my_stt_tts import voice_profiles as vp  # noqa: E402, RUF100
+from my_stt_tts.voice_control import restart_hint  # noqa: E402, RUF100
 
 # pylint: enable=wrong-import-position,wrong-import-order
 
@@ -65,9 +66,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = REPO_ROOT / "enroll"
 SYNTHETIC_SUBDIR = Path("negatives") / "synthetic"
 NEGATIVES_FILE = Path("negatives") / "call.npy"  # voice_gate.NEGATIVES_FILE
-RESTART_HINT = (
-    "restart mac-voice to use it: launchctl kickstart -k gui/$(id -u)/com.albert.mac-voice"
-)
 SAY_SENTENCES = {
     "de": ("Schick das bitte an Peter.", "Ja, mach das jetzt sofort, bitte."),
     "en": ("Answer option two, please.", "Yes, please do it now and send it."),
@@ -509,7 +507,7 @@ def run(args: argparse.Namespace, deps: Deps) -> int:  # pylint: disable=too-man
         return 1
     for line in apply(args.env_file, args.out, rec, matrix):
         deps.out(line)
-    deps.out(RESTART_HINT)
+    deps.out(restart_hint("it"))
     return 0
 
 

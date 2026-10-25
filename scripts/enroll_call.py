@@ -56,11 +56,6 @@ THRESHOLD = 0.35  # bridge.AUTH_THRESHOLD
 SAMPLE_RATE = 16000  # eleven_voice.SAMPLE_RATE
 FRAME_SAMPLES = 4000  # eleven_voice.INPUT_CHUNK: the frames the bridge's VAD sees in a call
 NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
-STOP_HINT = (
-    "❌ the mac-voice daemon is running and owns the mic — stop it first:\n"
-    "   launchctl bootout gui/$(id -u)/com.albert.mac-voice   (or: mac-voice -U)\n"
-    "   then re-run this script; afterwards start it again with mac-voice -I"
-)
 
 
 class Duplex(Protocol):
@@ -103,6 +98,13 @@ def _daemon_running() -> bool:
     return send("status", timeout=1.0) is not None
 
 
+def _stop_hint() -> str:
+    from my_stt_tts.voice_control import send, stop_hint
+
+    pid = (send("status", timeout=1.0) or {}).get("pid")
+    return stop_hint(pid if isinstance(pid, int) else None)
+
+
 @dataclass
 class Deps:
     """The hardware / model seams (tests replace them)."""
@@ -111,6 +113,7 @@ class Deps:
     vad: Callable[[], SpeechDetector] = _default_vad
     embedder: Callable[[], Callable[[np.ndarray], np.ndarray]] = _default_embedder
     daemon_running: Callable[[], bool] = _daemon_running
+    stop_hint: Callable[[], str] = _stop_hint
     ask: Callable[[str], str] = input
     out: Callable[[str], None] = print
 
@@ -282,7 +285,7 @@ def _record_clips(
 def run(args: argparse.Namespace, deps: Deps) -> int:
     """Record, calibrate and (unless ``--dry-run``) save; the exit code."""
     if deps.daemon_running():
-        deps.out(STOP_HINT)
+        deps.out(deps.stop_hint())
         return 2
     deps.out("⏳ loading the speaker model and the VAD …")
     embed = deps.embedder()
