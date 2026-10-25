@@ -236,6 +236,11 @@ def test_settings_from_the_environment() -> None:
     assert follow_up.window_from_env({follow_up.WINDOW_ENV: "soon"}) == 8.0
     assert follow_up.reopen_sound({}) == follow_up.DEFAULT_SOUND
     assert follow_up.reopen_sound({follow_up.SOUND_ENV: "off"}) is None
+    assert follow_up.reopen_sound({}) == "/System/Library/Sounds/Glass.aiff"  # = ready sound
+    assert follow_up.reopen_volume({}) == follow_up.DEFAULT_VOLUME
+    assert follow_up.reopen_volume({follow_up.VOLUME_ENV: " 3.5 "}) == 3.5
+    for junk in ("loud", "0", "-1", "inf", "nan"):
+        assert follow_up.reopen_volume({follow_up.VOLUME_ENV: junk}) == follow_up.DEFAULT_VOLUME
 
 
 class Kit:
@@ -264,4 +269,7 @@ def test_play_sound_never_raises() -> None:
 
     follow_up.play_sound("/x.aiff", popen=popen)
     follow_up.play_sound(None, popen=popen)
-    assert calls == [["/usr/bin/afplay", "/x.aiff"]]
+    assert calls == [["/usr/bin/afplay", "-v", "2", "/x.aiff"]]
+    calls.clear()
+    follow_up.play_sound("/x.aiff", popen=popen, volume=1.5)
+    assert calls == [["/usr/bin/afplay", "-v", "1.5", "/x.aiff"]]

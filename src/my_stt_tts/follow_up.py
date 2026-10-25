@@ -10,7 +10,8 @@ whether the agent hears it:
   :data:`MAX_SENTENCE_S`.
 * **closed** — the agent gets silence. The same frames go to the daemon's wake detector
   ("hey jarvis" / "voice on"); a fire whose voice matches an enrolled profile opens the
-  window again and plays a short tick (``MAC_VOICE_FOLLOWUP_SOUND``). The agent speaking
+  window again and plays a bell (``MAC_VOICE_REOPEN_SOUND``, Glass like the daemon's ready sound, at
+  ``MAC_VOICE_REOPEN_VOLUME``). The agent speaking
   again (a ``[system notice]``, a late answer) opens it too.
 * **paused** — "pause" / "wait" (:func:`is_pause`, matched on the transcript): closed, and
   only the wake word opens it again; agent audio does not.
@@ -43,8 +44,10 @@ log = logging.getLogger("my_stt_tts.follow_up")
 
 WINDOW_ENV = "MAC_VOICE_FOLLOWUP_S"
 DEFAULT_WINDOW_S = 8.0
-SOUND_ENV = "MAC_VOICE_FOLLOWUP_SOUND"
-DEFAULT_SOUND = "/System/Library/Sounds/Tink.aiff"
+SOUND_ENV = "MAC_VOICE_REOPEN_SOUND"
+DEFAULT_SOUND = "/System/Library/Sounds/Glass.aiff"  # the bell mac-voice -d plays on start
+VOLUME_ENV = "MAC_VOICE_REOPEN_VOLUME"
+DEFAULT_VOLUME = 2.0  # afplay -v: 1.0 = the file as recorded; the call's mic ducking needs more
 VOICE_LEVEL = 600.0 / 32768.0  # float RMS (~-35 dBFS) above which someone counts as speaking
 SPEECH_GAP_S = 0.6  # a pause this long ends the sentence that holds the window open
 MAX_SENTENCE_S = 30.0  # a sentence started inside the window holds it at most this long
@@ -101,7 +104,7 @@ def window_from_env(env: Mapping[str, str] | None = None) -> float:
 
 
 def reopen_sound(env: Mapping[str, str] | None = None) -> str | None:
-    """The tick played when the wake word opens the window; None when switched off."""
+    """The bell played when the wake word opens the window; None when switched off."""
     env = os.environ if env is None else env
     value = env.get(SOUND_ENV)
     if value is None:
@@ -110,19 +113,39 @@ def reopen_sound(env: Mapping[str, str] | None = None) -> str | None:
     return None if value.casefold() in {"", "0", "off"} else value
 
 
-def play_sound(path: str | None, popen: Callable[..., Any] = subprocess.Popen) -> None:
-    """Play ``path`` with ``afplay`` without waiting; failures only log."""
+def reopen_volume(env: Mapping[str, str] | None = None) -> float:
+    """``MAC_VOICE_REOPEN_VOLUME`` as an ``afplay -v`` factor (> 0); junk → the default."""
+    env = os.environ if env is None else env
+    raw = (env.get(VOLUME_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_VOLUME
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not 0.0 < value < float("inf"):
+        log.warning("⚠️  %s=%r is not a positive number; using %s", VOLUME_ENV, raw, DEFAULT_VOLUME)
+        return DEFAULT_VOLUME
+    return value
+
+
+def play_sound(
+    path: str | None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    volume: float = DEFAULT_VOLUME,
+) -> None:
+    """Play ``path`` with ``afplay -v <volume>`` without waiting; failures only log."""
     if not path:
         return
     try:
         popen(
-            ["/usr/bin/afplay", path],
+            ["/usr/bin/afplay", "-v", f"{volume:g}", path],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except Exception:  # pylint: disable=broad-exception-caught  # a tick never matters
-        log.debug("follow-up sound failed", exc_info=True)
+    except Exception:  # pylint: disable=broad-exception-caught  # a bell never matters
+        log.debug("reopen sound failed", exc_info=True)
 
 
 class FollowUpGate:  # pylint: disable=too-many-instance-attributes  # one call's gate state
@@ -316,6 +339,7 @@ def gate_factory(
         log.info("👂 follow-up window off: no wake word to reopen it")
         return None
     sound = reopen_sound(env)
+    volume = reopen_volume(env)
     log.info("👂 follow-up window %.0f s, then the wake word opens it again", window)
 
     def make() -> FollowUpGate:
@@ -324,7 +348,7 @@ def gate_factory(
             detector,
             gain=float(getattr(kit, "gain", 1.0) or 1.0),
             voice=getattr(kit, "gate", None),
-            on_reopen=lambda: play_sound(sound),
+            on_reopen=lambda: play_sound(sound, volume=volume),
         )
 
     return make
@@ -336,5 +360,6 @@ __all__ = [
     "gate_factory",
     "is_pause",
     "reopen_sound",
+    "reopen_volume",
     "window_from_env",
 ]

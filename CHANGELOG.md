@@ -18,6 +18,11 @@ may still change.
 
 ### Added
 
+- **Audible bell when the wake word reopens listening (tp#1234).** The in-call tick was
+  Tink at normal volume, too faint; it is now Glass (the sound `mac-voice -d` plays on
+  start) at `afplay -v 2`. `MAC_VOICE_REOPEN_SOUND` / `MAC_VOICE_REOPEN_VOLUME` in `.env`
+  change it (replaces `MAC_VOICE_FOLLOWUP_SOUND`).
+
 - **`mac-voice -B claude`: the agent's LLM on the Claude API credits** (tp#1097). A twin
   of the ElevenLabs agent uses ElevenLabs' custom LLM pointed at Anthropic's
   OpenAI-compatible endpoint, so the LLM tokens bill to the private Console key while

@@ -350,7 +350,7 @@ conversations that are not meant for it:
 
 | Layer                      | What happens                                                                                                                                      |
 | :------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Follow-up window (daemon)  | the agent hears the room while it speaks and for `MAC_VOICE_FOLLOWUP_S` (8 s) after; then it gets silence until the wake word, which plays a tick |
+| Follow-up window (daemon)  | the agent hears the room while it speaks and for `MAC_VOICE_FOLLOWUP_S` (8 s) after; then it gets silence until the wake word, which plays a bell |
 | "pause" / "wait" / "warte" | silence until the wake word, even when the agent speaks again; whatever it was saying stops                                                       |
 | Prompt + `skip_turn`       | inside the window the agent calls ElevenLabs' `skip_turn` (says nothing) for side talk, other people, TV or a switch of language                  |
 
@@ -358,9 +358,11 @@ A sentence you start inside the window keeps it open until you pause (0.6 s, at 
 The agent speaking again (a late answer, a `[system notice]`) opens the window again, except
 after "pause". Silenced audio does not count as activity, so the 60 s idle hang-up still
 works. The trade-off: after the window a new request needs "hey jarvis" / "voice on" and the
-tick first, and the start of a sentence said in the same breath as the wake word may be lost.
-`MAC_VOICE_FOLLOWUP_S=0` turns the window off; `MAC_VOICE_FOLLOWUP_SOUND` picks the tick
-(`off` for none). Without a wake word (`-W`, or none available) there is no window. Code:
+bell first, and the start of a sentence said in the same breath as the wake word may be lost.
+`MAC_VOICE_FOLLOWUP_S=0` turns the window off; `MAC_VOICE_REOPEN_SOUND` picks the bell that
+says "listening again" (default `/System/Library/Sounds/Glass.aiff`, the sound `mac-voice -d`
+plays on start; `off` for none) and `MAC_VOICE_REOPEN_VOLUME` its `afplay -v` volume (default
+`2`; 1 = as recorded). Without a wake word (`-W`, or none available) there is no window. Code:
 [`follow_up.py`](src/my_stt_tts/follow_up.py).
 
 Not built: dropping other voices per sentence. Measured on the repo's recordings
