@@ -367,8 +367,8 @@ def spread_table(samples: list[vc.Sample], min_s: float) -> list[str]:
         ("synthetic voices", [s for s in samples if s.source == "synthetic"]),
     ]
     lines = [
-        "| group                               |   n |  min |  p5 | median |  max |",
-        "| :---------------------------------- | --: | ---: | --: | -----: | ---: |",
+        "| group                               |   n |   min |    p5 | median |   max |",
+        "| :---------------------------------- | --: | ----: | ----: | -----: | ----: |",
     ]
     for name, picked in groups:
         if not picked:
@@ -376,8 +376,8 @@ def spread_table(samples: list[vc.Sample], min_s: float) -> list[str]:
         scores = sorted(s.score for s in picked)
         p5 = scores[int(0.05 * (len(scores) - 1))]
         lines.append(
-            f"| {name:<35} | {len(scores):3d} | {scores[0]:4.2f} | {p5:4.2f} |"
-            f" {statistics.median(scores):6.2f} | {scores[-1]:4.2f} |"
+            f"| {name:<35} | {len(scores):3d} | {scores[0]:5.2f} | {p5:5.2f} |"
+            f" {statistics.median(scores):6.2f} | {scores[-1]:5.2f} |"
         )
     return lines
 

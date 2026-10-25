@@ -368,8 +368,8 @@ Not built: dropping other voices per sentence. Measured on the repo's recordings
 against Albert's call profile while Albert's own clips score 0.30–0.60, so a per-sentence
 check would let other voices through and drop Albert's; doing it live would also hold back
 at least a second of every sentence before the agent hears it, and short commands ("yes",
-"pause") cannot be judged at all. It becomes worth trying once every family voice has
-call-domain clips (`scripts/enroll_call.py`) and the scores separate.
+"pause") cannot be judged at all. It becomes worth trying once the re-enrollment and the
+labelled in-call clips (section "Making voice recognise only you") show the scores separate.
 
 **"One moment."** When a client tool has not answered after `MAC_VOICE_WAIT_AFTER_S` (2 s),
 the daemon plays "One moment." (`MAC_VOICE_WAIT_PHRASE`; empty = off) through the call's
@@ -492,22 +492,26 @@ stay quiet; problems are spoken. Design and acceptance record: `PLAN_claude-brid
 Opt-in, in `.env` (read by `./mac-voice -d`); `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`
 must be set as for `./mac-voice`.
 
-| Variable                      | Example                             | Meaning                                                                       |
-| :---------------------------- | :---------------------------------- | :---------------------------------------------------------------------------- |
-| `MAC_VOICE_CLAUDE_BRIDGE`     | `1`                                 | the Claude session tools (list / read / brief / send / answer)                |
-| `MAC_VOICE_MAC_CONTROL`       | `1`                                 | the Mac fast-path tools (disabled while a `-D` doctor check fails)            |
-| `MAC_VOICE_OPERATOR`          | `1`                                 | the `do_on_mac` operator                                                      |
-| `MAC_VOICE_DECIDE`            | `1`                                 | the decide hub tools (section "Decide hub by voice" below)              |
-| `MAC_VOICE_AUTHORIZED`        | `albert`                            | the one voice profile that may act; unset → every bridge action is refused    |
-| `MAC_VOICE_READY_SOUND`       | `/System/Library/Sounds/Glass.aiff` | played once the daemon listens (default Glass); `0`, `off` or empty: no sound |
-| `MAC_VOICE_CCC_BIN`           | `~/.local/bin/ccc`                  | the ccc executable (default: `$PATH`, then `~/.local/bin/ccc`)                |
-| `MAC_VOICE_STATE_DIR`         | `~/.local/state/mac-voice`          | daemon control socket + status (inbox, operator dirs stay in the default)     |
-| `MAC_VOICE_SPEAKER_THRESHOLD` | `0.35`                              | wake-word voice gate only (the in-call check has its own two below)           |
-| `MAC_VOICE_AUTH_THRESHOLD`    | `0.35`                              | in-call voice check: minimum cosine against the call profile                  |
-| `MAC_VOICE_AUTH_MIN_S`        | `1.2`                               | in-call voice check: minimum length of the authorising sentence (floor 0.4 s) |
-| `MAC_VOICE_WAKE`              | `voice on`                          | custom wake phrase (sherpa KWS; "hey jarvis" stays active)                    |
-| `MAC_VOICE_WAKE_THRESHOLD`    | `0.75`                              | openWakeWord threshold for "hey jarvis"                                       |
-| `MAC_VOICE_WAKE_PHASES`       | `2`                                 | staggered openWakeWord copies while idle                                      |
+| Variable                         | Example                             | Meaning                                                                       |
+| :------------------------------- | :---------------------------------- | :---------------------------------------------------------------------------- |
+| `MAC_VOICE_CLAUDE_BRIDGE`        | `1`                                 | the Claude session tools (list / read / brief / send / answer)                |
+| `MAC_VOICE_MAC_CONTROL`          | `1`                                 | the Mac fast-path tools (disabled while a `-D` doctor check fails)            |
+| `MAC_VOICE_OPERATOR`             | `1`                                 | the `do_on_mac` operator                                                      |
+| `MAC_VOICE_DECIDE`               | `1`                                 | the decide hub tools (section "Decide hub by voice" below)                    |
+| `MAC_VOICE_AUTHORIZED`           | `albert`                            | the one voice profile that may act; unset → every bridge action is refused    |
+| `MAC_VOICE_READY_SOUND`          | `/System/Library/Sounds/Glass.aiff` | played once the daemon listens (default Glass); `0`, `off` or empty: no sound |
+| `MAC_VOICE_CCC_BIN`              | `~/.local/bin/ccc`                  | the ccc executable (default: `$PATH`, then `~/.local/bin/ccc`)                |
+| `MAC_VOICE_STATE_DIR`            | `~/.local/state/mac-voice`          | daemon control socket + status (inbox, operator dirs stay in the default)     |
+| `MAC_VOICE_SPEAKER_THRESHOLD`    | `0.35`                              | wake-word voice gate only (the in-call check has its own two below)           |
+| `MAC_VOICE_AUTH_THRESHOLD`       | `0.35`                              | in-call voice check: minimum cosine against the call profile                  |
+| `MAC_VOICE_AUTH_MIN_S`           | `1.2`                               | in-call voice check: minimum length of the authorising sentence (floor 0.4 s) |
+| `MAC_VOICE_AUTH_MARGIN`          | `0.05`                              | in-call voice check: margin over known other voices (unset: off; see below)   |
+| `MAC_VOICE_INTERFERENCE_CAPTURE` | `1`                                 | keep refused / ignored in-call speech as training clips (`0`: keep nothing)   |
+| `MAC_VOICE_INTERFERENCE_SAMPLE`  | `0.2`                               | share of accepted / answered in-call speech kept as well                      |
+| `MAC_VOICE_INTERFERENCE_DAYS`    | `90`                                | unlabelled training clips are deleted after this many days                    |
+| `MAC_VOICE_WAKE`                 | `voice on`                          | custom wake phrase (sherpa KWS; "hey jarvis" stays active)                    |
+| `MAC_VOICE_WAKE_THRESHOLD`       | `0.75`                              | openWakeWord threshold for "hey jarvis"                                       |
+| `MAC_VOICE_WAKE_PHASES`          | `2`                                 | staggered openWakeWord copies while idle                                      |
 
 Any of the first four flags also turns on the attention inbox and its monitor. Each component
 gates itself, and a failing one never stops the others.
@@ -520,7 +524,7 @@ uv sync --inexact --extra elevenlabs --extra operator    # mcp for the operator'
                                                          # Safari "Allow JavaScript from Apple Events",
                                                          # Accessibility, volume read — ✅/❌ + fix
 scripts/enroll_wakeword.py "voice on" -n 8 -w albert     # wake clips + wake profile enroll/albert.npy
-scripts/enroll_call.py albert                            # call-domain profile enroll/call/albert.npy
+scripts/enroll_voice.py                                  # 25 sentences → call + wake profiles (below)
 scripts/eleven_agent_config.py -n                        # dry run: backup + diff of the agent config
 scripts/eleven_agent_config.py -a                        # apply, verify, roll back on failure
 ./mac-voice -d                                           # the daemon, in an iTerm tab
@@ -532,6 +536,8 @@ scripts/eleven_agent_config.py -a                        # apply, verify, roll b
   the same path a call uses (8 clips of 4 s, German / English / French hints), prints a
   leave-one-out calibration table and saves `enroll/call/<name>.npy`, which the in-call check
   prefers. Stop the daemon first: it owns the mic. `-n` records without writing.
+  `enroll_voice.py` (next section) does the same with 25 fixed sentences, keeps the takes and
+  rebuilds both profiles; it is the one to use now.
 - **Agent config.** `eleven_agent_config.py` manages the 23 client tools (by name, idempotent),
   `client_tool_call` events, the first-message override (the voice-on briefing), the soft-timeout
   filler (off) and a marked section of the system prompt. Every run writes a sanitised 0600 backup
@@ -577,6 +583,64 @@ sentence is answered with "too short to recognise your voice — say it as a ful
   the request is repeated once; "no", "cancel" or "stop" drops it. A newer request replaces an
   older one.
 
+### Making voice recognise only you
+
+Voice is the only thing that decides whether a sentence may send, answer or confirm, so the
+voice check has to know Albert well and know what other voices sound like. Three steps, all
+local (tp#1235):
+
+**1. Re-enroll (about 15 minutes, once):**
+
+```bash
+cd ~/obsidian/42-Git/infra/my-stt-tts
+scripts/enroll_voice.py
+```
+
+It asks to stop mac-voice (it holds the mic) and starts it again at the end. Then it shows 25
+sentences one at a time, German and English, short commands ("Answer option two.", "Ja, bitte
+mach das jetzt.") and longer sentences. For each: press Enter, read it aloud in your normal voice
+at your normal distance, wait for `✅ 1.4 s of speech` (or `❌ only 0.6 s of speech — Enter to try
+again`; `s` skips, `q` finishes early). Each take is recorded through VoiceProcessingIO, the
+echo-cancelled path a call uses, and at the same time from the plain mic when macOS allows it
+(that copy improves the wake profile; without it the wake profile keeps using the wake-word
+clips, and without VoiceProcessingIO it records the plain mic and says so). At the end it
+rebuilds the call profile `enroll/call/albert.npy` from ALL kept takes (previous sessions too)
+and the wake profile `enroll/albert.npy` from the wake-word clips plus the plain-mic takes, copies
+the old profiles to `enroll/albert/backup/`, and prints a table: every take against the old call
+profile ("before") and leave-one-out against the new one ("after"), with how many short commands
+and long sentences reach the threshold. `-c 6` records only the first 6 sentences (a top-up
+later), `-R` rebuilds from the kept takes without recording.
+
+**2. Let calls collect other voices (automatic).** During calls mac-voice keeps the speech the
+voice check refused, the speech the agent ignored as not meant for it (it called `skip_turn`), and
+20 % of the accepted speech, in `debug/recordings/interference/YYYY-MM/` (see Privacy below).
+From time to time, label them:
+
+```bash
+scripts/label_voice_clips.py -p       # plays each new clip: a = albert, o = other, r, s, d, q
+scripts/label_voice_clips.py -l -A    # list all clips with decision, score, length, label
+```
+
+No names: everyone who is not Albert is `other` (family, TV, guests). Labelled clips stay;
+unlabelled ones are deleted after 90 days.
+
+**3. Calibrate:**
+
+```bash
+scripts/calibrate_voice.py       # dry run: score spread, how the current values do, a recommendation
+scripts/calibrate_voice.py -a    # write it to .env, then restart mac-voice (the command is printed)
+```
+
+It scores the enrollment takes (each leave-one-out), the clips labelled `albert` and `other`, and
+58 synthetic voices (`enroll/negatives/synthetic/`, made with macOS `say` and Piper; `-g` remakes
+them), and recommends `MAC_VOICE_AUTH_THRESHOLD` so that no negative passes while at least 95 %
+of Albert's short sentences (≥ 1.2 s) still do. Once 10 clips are labelled `other` it also
+recommends the margin rule: a sentence must then beat its best score against those other voices
+by `MAC_VOICE_AUTH_MARGIN` (their embeddings go to `enroll/negatives/call.npy`). When the two
+goals cannot both be met it keeps Albert's 95 % and lists the negatives that would still pass.
+`-a` refuses until the call profile was built by `enroll_voice.py`, so the current values stay
+until then. Re-run it after labelling more clips.
+
 ### The risk table (`mac_risk.py`)
 
 The broker classifies every operator step before it touches the Mac; anything unknown waits for
@@ -610,6 +674,12 @@ The bridge sends more than the local pipeline does — know what leaves the Mac:
   "yes, do it").
 - Local logs and audits hold one line per action, lengths and hashes — never message text. The
   inbox stores kind, subject, short reason and times, never message text.
+- **Training clips stay on the Mac**: enrollment takes (`enroll/albert/`) and in-call clips
+  (`debug/recordings/interference/`) are 0600 files in 0700 folders, both folders gitignored. An
+  in-call clip is the audio of one utterance plus decision, score, length, time and label —
+  no transcript. They can hold other people's voices (that is their purpose); unlabelled ones are
+  deleted after `MAC_VOICE_INTERFERENCE_DAYS` (90), and `MAC_VOICE_INTERFERENCE_CAPTURE=0` keeps
+  none. `label_voice_clips.py -x <id>` deletes one, `-e` runs the expiry now.
 
 ### Problems and the ready sound
 

@@ -71,6 +71,15 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   (tp#1234: `FollowUpGate` — the agent hears the mic only while it speaks + `MAC_VOICE_FOLLOWUP_S`
   after, then the wake word reopens it; "pause"/"wait"), `wait_hint.py` (spoken "One moment."
   when a client tool is slow).
+- Voice recognises only Albert (tp#1235; README section "Making voice recognise only you") →
+  `voice_profiles.py` (kept enrollment takes under `enroll/<who>/<stamp>/`, rebuild of the call
+  - wake profiles, 0600 files, `.env` reads), `interference.py` (`CallCapture`: refused /
+  agent-skipped / sampled in-call utterances → `debug/recordings/interference/YYYY-MM/`, 90-day
+  expiry, labels `albert` / `other`), `voice_calibration.py` (pure threshold + margin choice);
+  the margin rule itself is `Authoriser.margin` + `VoiceGate.score_detail` against
+  `enroll/negatives/call.npy`. Scripts: `scripts/enroll_voice.py` (guided 25-sentence
+  enrollment), `scripts/label_voice_clips.py`, `scripts/calibrate_voice.py` (dry run; `-a`
+  writes `.env`).
 - mac-voice LLM backend (`-B elevenlabs|claude`, tp#1097) → `claude_llm.py`: the Claude
   twin agent (ElevenLabs custom LLM → Anthropic's OpenAI-compatible endpoint), `-C` setup
   (key via `secret-run` item `anthropic-api-private-elevenlabs`), re-sync on every `-B claude` start.
