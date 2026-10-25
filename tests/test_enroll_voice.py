@@ -120,6 +120,8 @@ class Rig:
             out=self.lines.append,
             stamp=lambda: "20261025-200000",
             wake_clips=self.wake,
+            env_file=tmp / "absent-config",  # never the live config: its threshold is tuned
+            env={},
         )
 
     def ask(self, prompt: str) -> str:

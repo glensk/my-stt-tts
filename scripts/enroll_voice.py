@@ -49,7 +49,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -273,6 +273,9 @@ class Deps:  # pylint: disable=too-many-instance-attributes  # the hardware / mo
     stamp: Callable[[], str] = lambda: time.strftime("%Y%m%d-%H%M%S")
     #: Where the wake-word enrollment clips live (part of the wake profile).
     wake_clips: Path = vp.WAKE_CLIPS
+    #: Where the voice-check threshold is read from (dotenv file, then the environment).
+    env_file: Path = vp.ENV_FILE
+    env: Mapping[str, str] | None = None
 
 
 # -- recording -------------------------------------------------------------------------------
@@ -508,12 +511,14 @@ def _in_call_profile(path: Path, rebuild: vp.Rebuild) -> bool:
     return path.parent.name == rebuild.call_domain
 
 
-def thresholds() -> tuple[float, float]:
+def thresholds(
+    env_file: Path = vp.ENV_FILE, env: Mapping[str, str] | None = None
+) -> tuple[float, float]:
     """(voice-check threshold, minimum seconds) as the daemon would read them."""
     from my_stt_tts import bridge
 
-    threshold = vp.env_float(bridge.AUTH_THRESHOLD_ENV, bridge.AUTH_THRESHOLD)
-    min_s = vp.env_float(bridge.AUTH_MIN_S_ENV, bridge.AUTH_MIN_S)
+    threshold = vp.env_float(bridge.AUTH_THRESHOLD_ENV, bridge.AUTH_THRESHOLD, env_file, env)
+    min_s = vp.env_float(bridge.AUTH_MIN_S_ENV, bridge.AUTH_MIN_S, env_file, env)
     return threshold, max(min_s, 0.4)
 
 
@@ -590,7 +595,7 @@ def _rebuild_and_report(
     takes = [
         t for t in vp.usable_takes(args.who, args.out) if session is None or t.session == session
     ]
-    threshold, min_s = thresholds()
+    threshold, min_s = thresholds(deps.env_file, deps.env)
     rows = _rows(takes, rebuild, old_call, vad)
     if rows:
         deps.out("")
