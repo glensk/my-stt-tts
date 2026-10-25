@@ -5,8 +5,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import wave
+from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
 import pytest
 
 from my_stt_tts import eleven_voice
@@ -14,6 +17,8 @@ from my_stt_tts.attention import AttentionStore
 from my_stt_tts.bridge import Authoriser, BridgeController, Problem
 
 pytest.importorskip("elevenlabs")
+
+_RENDER = eleven_voice.render_phrase  # the real one; tests never write the real state dir
 
 
 class _FakeStream:
@@ -45,6 +50,7 @@ class _FakeSd:
 def _fake_sounddevice(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeStream.created.clear()
     monkeypatch.setattr(eleven_voice, "_sd", lambda: _FakeSd)
+    monkeypatch.setattr(eleven_voice, "render_phrase", lambda text: None)
 
 
 def _play(n: int) -> bytes:
@@ -576,3 +582,144 @@ def test_a_quiet_agent_gets_the_notice_at_once(sdk) -> None:
     assert time.monotonic() - started < 0.2
     session.end()
     session.wait()
+
+
+# -- tp#1234: follow-up gate, pause, "one moment" -------------------------------------------
+class _Gate:
+    """Stands in for follow_up.FollowUpGate: a fixed verdict, records what it saw."""
+
+    def __init__(self, admit: bool) -> None:
+        self.verdict = admit
+        self.seen: list[tuple[int, bool]] = []
+        self.paused = 0
+
+    def admit(self, frame: Any, agent_speaking: bool) -> bool:
+        self.seen.append((len(frame), agent_speaking))
+        return self.verdict
+
+    def pause(self) -> None:
+        self.paused += 1
+
+
+def test_a_closed_gate_sends_silence_and_it_is_no_activity() -> None:
+    sent: list[bytes] = []
+    frames: list[Any] = []
+    gate = _Gate(admit=False)
+    iface = eleven_voice.make_audio_interface("headphones", None, None, frames.append, gate=gate)
+    iface.start(sent.append)
+    iface.output(b"\x07" * 64)  # the agent is talking
+    _mic()(b"\xff\x7f" * 4000, 4000, None, None)
+    assert sent[-1] == b"\x00" * 8000
+    assert not frames[-1].any()  # the turn source sees the same silence
+    assert iface.last_user_audio == 0.0  # gated speech keeps nobody's call alive
+    assert gate.seen == [(4000, True)]
+    gate.verdict = True
+    _mic()(b"\xff\x7f" * 4000, 4000, None, None)
+    assert sent[-1] == b"\xff\x7f" * 4000 and iface.last_user_audio > 0
+
+
+def test_a_failing_gate_lets_the_frame_through() -> None:
+    class Broken:
+        def admit(self, *_a: Any) -> bool:
+            raise RuntimeError("boom")
+
+    sent: list[bytes] = []
+    iface = eleven_voice.make_audio_interface("headphones", None, None, gate=Broken())
+    iface.start(sent.append)
+    _mic()(b"\x11" * 8, 4, None, None)
+    assert sent[-1] == b"\x11" * 8
+
+
+def test_the_aec_capture_is_gated_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Duplex(_FakeDuplex):
+        def mic_frames(self) -> Any:
+            return iter([np.full(4000, 0.5, dtype=np.float32)])
+
+        def playing(self) -> bool:
+            return False
+
+    monkeypatch.setattr("my_stt_tts.aec.VoiceProcessingDuplex", Duplex)
+    sent: list[bytes] = []
+    frames: list[Any] = []
+    iface = eleven_voice.make_audio_interface("aec", None, None, frames.append, gate=_Gate(False))
+    iface.start(sent.append)
+    _wait(lambda: bool(sent))
+    assert sent == [b"\x00" * 8000] and not frames[0].any()
+
+
+def test_pause_closes_the_gate_and_stops_the_agent(sdk) -> None:
+    gate = _Gate(admit=True)
+    session = _session(_controller(), follow_up=gate, wait_hint=(0.0, ""))
+    interrupted: list[int] = []
+    session.audio.interrupt = lambda: interrupted.append(1)
+    sdk.last.on_user("Warte mal.")
+    assert gate.paused == 1 and interrupted == [1]
+    sdk.last.on_user("Wait, what was the second option?")
+    assert gate.paused == 1  # a question that starts with "wait" is not the command
+
+
+def test_pause_is_ignored_without_a_gate(sdk) -> None:
+    session = _session(_controller(), wait_hint=(0.0, ""))
+    session.audio.interrupt = lambda: pytest.fail("no gate: nothing to pause")
+    sdk.last.on_user("Pause.")
+
+
+def test_a_slow_tool_says_one_moment_once(sdk, monkeypatch: pytest.MonkeyPatch) -> None:
+    del sdk
+    monkeypatch.setattr(eleven_voice, "render_phrase", lambda text: b"\x01\x02" * 10)
+    ctl = _controller()
+
+    def plate() -> str:
+        time.sleep(0.3)
+        return "28 decisions wait for you."
+
+    ctl.register_tool("decide_plate", plate)
+    ctl.register_tool("open_url", lambda target: "ok: opened")
+    session = _session(ctl, wait_hint=(0.05, "One moment."))
+    played: list[bytes] = []
+    session.audio.output = played.append
+    tools = session.client_tools.tools
+    assert tools["decide_plate"][0]({}) == "28 decisions wait for you."
+    assert played == [b"\x01\x02" * 10]
+    assert tools["decide_plate"][0]({}) == "28 decisions wait for you."
+    assert len(played) == 1  # not again within WAIT_REPEAT_S
+    session._wait_said_at = -100.0  # pylint: disable=protected-access
+    assert tools["open_url"][0]({"target": "x"}) == "ok: opened"
+    time.sleep(0.1)
+    assert len(played) == 1  # a fast tool says nothing
+
+
+def test_the_one_moment_hint_can_be_switched_off(sdk, monkeypatch: pytest.MonkeyPatch) -> None:
+    del sdk
+    monkeypatch.setattr(eleven_voice, "render_phrase", lambda text: pytest.fail("rendered"))
+    ctl = _controller()
+
+    def plate() -> str:
+        time.sleep(0.15)
+        return "ok"
+
+    ctl.register_tool("decide_plate", plate)
+    session = _session(ctl, wait_hint=(0.01, ""))
+    assert session.client_tools.tools["decide_plate"][0]({}) == "ok"
+    assert eleven_voice.wait_settings({}) == (2.0, "One moment.")
+    assert eleven_voice.wait_settings({"MAC_VOICE_WAIT_PHRASE": ""}) == (2.0, "")
+    assert eleven_voice.wait_settings({"MAC_VOICE_WAIT_AFTER_S": "x"})[0] == 2.0
+
+
+def test_render_phrase_renders_once_and_checks_the_format(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], **_kw: Any) -> None:
+        calls.append(argv)
+        with wave.Wave_write(argv[2]) as clip:
+            clip.setnchannels(1)
+            clip.setsampwidth(2)
+            clip.setframerate(16000 if "One" in argv[-1] else 22050)
+            clip.writeframes(b"\x01\x00" * 160)
+
+    pcm = _RENDER("One moment.", tmp_path, runner)
+    assert pcm == b"\x01\x00" * 160
+    assert _RENDER("One moment.", tmp_path, runner) == pcm
+    assert len(calls) == 1 and "--data-format=LEI16@16000" in calls[0]
+    assert _RENDER("Other.", tmp_path, runner) is None  # wrong rate
+    assert _RENDER("", tmp_path, runner) is None

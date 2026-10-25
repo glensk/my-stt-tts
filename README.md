@@ -342,6 +342,37 @@ builds `enroll/NAME.npy`), or rebuild all profiles with `-V`; with no profiles a
 [`swiftbar/mac-voice.5s.sh`](swiftbar/mac-voice.5s.sh) — symlink it into your SwiftBar
 plugin folder. Code: [`voice_control.py`](src/my_stt_tts/voice_control.py).
 
+**It answers only when you talk to it** (tp#1234). Three layers keep the agent out of
+conversations that are not meant for it:
+
+| Layer                      | What happens                                                                                                                                      |
+| :------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Follow-up window (daemon)  | the agent hears the room while it speaks and for `MAC_VOICE_FOLLOWUP_S` (8 s) after; then it gets silence until the wake word, which plays a tick |
+| "pause" / "wait" / "warte" | silence until the wake word, even when the agent speaks again; whatever it was saying stops                                                       |
+| Prompt + `skip_turn`       | inside the window the agent calls ElevenLabs' `skip_turn` (says nothing) for side talk, other people, TV or a switch of language                  |
+
+A sentence you start inside the window keeps it open until you pause (0.6 s, at most 30 s).
+The agent speaking again (a late answer, a `[system notice]`) opens the window again, except
+after "pause". Silenced audio does not count as activity, so the 60 s idle hang-up still
+works. The trade-off: after the window a new request needs "hey jarvis" / "voice on" and the
+tick first, and the start of a sentence said in the same breath as the wake word may be lost.
+`MAC_VOICE_FOLLOWUP_S=0` turns the window off; `MAC_VOICE_FOLLOWUP_SOUND` picks the tick
+(`off` for none). Without a wake word (`-W`, or none available) there is no window. Code:
+[`follow_up.py`](src/my_stt_tts/follow_up.py).
+
+Not built: dropping other voices per sentence. Measured on the repo's recordings
+(2026-10-25, ECAPA cosine against Albert's profiles), the other enrolled voice scores 0.59
+against Albert's call profile while Albert's own clips score 0.30–0.60, so a per-sentence
+check would let other voices through and drop Albert's; doing it live would also hold back
+at least a second of every sentence before the agent hears it, and short commands ("yes",
+"pause") cannot be judged at all. It becomes worth trying once every family voice has
+call-domain clips (`scripts/enroll_call.py`) and the scores separate.
+
+**"One moment."** When a client tool has not answered after `MAC_VOICE_WAIT_AFTER_S` (2 s),
+the daemon plays "One moment." (`MAC_VOICE_WAIT_PHRASE`; empty = off) through the call's
+echo-cancelled output, in the Mac's voice: the agent itself cannot speak while it waits for
+a tool. Code: [`wait_hint.py`](src/my_stt_tts/wait_hint.py).
+
 </details>
 
 <div align="right"><a href="#top">↑ back to top</a></div>
@@ -647,10 +678,20 @@ offered by voice. Answers carry `channel: voice` in the hub.
   and as the only caller allowed `channel: voice`. Every call therefore goes through
   Cloudflare, also at home (the direct LAN path would be refused with `channel_not_allowed`).
   The client id comes from `DECIDE_VOICE_CF_CLIENT_ID` in `.env` (not secret). The secret is
-  `DECIDE_CLI_CF_CLIENT_SECRET` when the process already has it; otherwise each request runs
-  in a short child under `secret-run -e DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`
-  (`python -m my_stt_tts.decide -X`), so the value never enters the daemon. Nothing prints
-  or logs it. `secret-run` is found on `PATH`, else in `home/browser-login/bin` (the
+  `DECIDE_CLI_CF_CLIENT_SECRET` when the process already has it; otherwise the requests run in
+  ONE child under `secret-run -e DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`
+  (`python -m my_stt_tts.decide -S`, one JSON request per line), so the value never enters
+  the daemon. Nothing prints or logs it.
+- **Latency** (tp#1234). The child keeps its HTTPS connection to the hub open, so a call pays
+  for `secret-run`, the interpreter and the TLS handshake once: mac-voice starts it and
+  connects when a call begins and stops it when the call ends (it also exits after 10 min
+  without a request, or when the daemon goes away). Each request waits at most
+  `DECIDE_VOICE_TIMEOUT_S` (4 s); a child that does not answer is killed and a read is
+  retried once on a fresh child (an answer is never repeated); a new child gets 10 s more
+  for a cold `secret-run`, the warm-up at call start 20 s. Measured at home: a cold
+  `secret-run` (the login broker fetching the item after a few idle minutes) takes 6–7.6 s, a
+  warm one 0.1 s; a plate read on the running child takes 0.2 s. The 14 s seen on a phone
+  hotspot fits one child that started a cold `secret-run` and hit its old 13 s limit. `secret-run` is found on `PATH`, else in `home/browser-login/bin` (the
   LaunchAgent's `PATH` is short), or at `DECIDE_SECRET_RUN_BIN`.
 - **mac-voice** (`MAC_VOICE_DECIDE=1`, plus `scripts/eleven_agent_config.py -a` once so the
   agent knows the tools): `decide_plate`, `decide_next`, `decide_more`, `decide_answer`,

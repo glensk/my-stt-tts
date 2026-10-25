@@ -77,6 +77,10 @@ class DecideTools:
         focus = _guarded("decide_focus", self.focus, self.ctl)
         self.ctl.register_tool("decide_focus", focus, own_outcome=True)
         self.ctl.register_executor(EXECUTOR, self.execute)
+        client = self.desk.client
+        if client is not None:
+            # one secret-run child + keep-alive connection per call, ready before the first ask
+            self.ctl.on_call(begin=lambda: _warm(client), end=client.close)
 
     def _sync_call(self) -> None:
         """A new call forgets the decision in discussion and the skips (the focus stays)."""
@@ -191,6 +195,11 @@ class DecideTools:
         if refusal is not None:
             return refusal
         return self.desk.undo()
+
+
+def _warm(client: HubClient) -> None:
+    """Start the hub client's child and connection in the background (call start)."""
+    threading.Thread(target=client.warm, name="decide-warm", daemon=True).start()
 
 
 def register(

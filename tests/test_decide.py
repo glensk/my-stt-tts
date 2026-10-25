@@ -8,7 +8,6 @@ real hub, and nothing here is real decision content.
 from __future__ import annotations
 
 import json
-import subprocess
 import urllib.parse
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -32,7 +31,6 @@ from my_stt_tts.decide import (
     HubError,
     PlateContext,
     Proposal,
-    SecretRunTransport,
     Snoozes,
     plate_summary,
     resolve_choice,
@@ -240,7 +238,7 @@ def test_no_client_without_a_client_id() -> None:
 def test_transport_choice() -> None:
     assert decide.make_transport({decide.SECRET_ENV: "x"}) is decide.urllib_exchange
     chosen = decide.make_transport({decide.SECRET_RUN_ENV: "/opt/secret-run"})
-    assert isinstance(chosen, SecretRunTransport) and chosen.secret_run == "/opt/secret-run"
+    assert isinstance(chosen, decide.SecretRunTransport) and chosen.secret_run == "/opt/secret-run"
 
 
 def test_reads_send_the_token_id_and_answers_add_origin_and_voice() -> None:
@@ -288,28 +286,6 @@ def test_hub_errors_become_speakable_reasons() -> None:
     with pytest.raises(HubError) as edge:
         bad.plate()
     assert edge.value.code == "edge" and "Cloudflare" in edge.value.reason
-
-
-def test_secret_run_transport_keeps_the_secret_in_the_child() -> None:
-    seen: dict[str, Any] = {}
-
-    def runner(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
-        seen["argv"], seen["input"] = argv, kw["input"]
-        reply = {"status": 200, "content_type": "application/json", "body": '{"ok": 1}'}
-        return subprocess.CompletedProcess(argv, 0, json.dumps(reply), "")
-
-    transport = SecretRunTransport("/bin/secret-run", runner=runner, python="/py")
-    reply = transport("GET", "https://x/api/plate", {"CF-Access-Client-Id": "id"}, None, 5.0)
-    assert reply == HttpReply(200, "application/json", b'{"ok": 1}')
-    assert seen["argv"][:5] == [
-        "/bin/secret-run",
-        "-e",
-        "DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token",
-        "--",
-        "/py",
-    ]
-    assert seen["argv"][-4:] == ["-I", "-m", "my_stt_tts.decide", "-X"]
-    assert "Secret" not in seen["input"]
 
 
 def test_child_fetch_adds_the_secret_from_its_environment(monkeypatch: pytest.MonkeyPatch) -> None:

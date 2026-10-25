@@ -66,8 +66,11 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   Optional cloud backends: `stt.CloudTranscriber` + `tts.CloudTTS` (local-first, key-gated).
 - ElevenLabs daemon (`./mac-voice`) → `eleven_voice.py` (`VoiceSession`, CLI, client tools
   on a real `ClientTools`, `[system notice]` sending), `voice_control.py` (`VoiceDaemon`,
-  wake listener, control socket, ready sound, `daemon_main` builds the bridge),
-  `voice_gate.py` (ECAPA wake + call-domain profiles, `score_against`).
+  wake listener, control socket, ready sound, `daemon_main` builds the bridge, `WakeKit`),
+  `voice_gate.py` (ECAPA wake + call-domain profiles, `score_against`), `follow_up.py`
+  (tp#1234: `FollowUpGate` — the agent hears the mic only while it speaks + `MAC_VOICE_FOLLOWUP_S`
+  after, then the wake word reopens it; "pause"/"wait"), `wait_hint.py` (spoken "One moment."
+  when a client tool is slow).
 - mac-voice LLM backend (`-B elevenlabs|claude`, tp#1097) → `claude_llm.py`: the Claude
   twin agent (ElevenLabs custom LLM → Anthropic's OpenAI-compatible endpoint), `-C` setup
   (key via `secret-run` item `anthropic-api-private-elevenlabs`), re-sync on every `-B claude` start.
@@ -94,8 +97,8 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
     `scripts/acceptance_setup.sh` + `scripts/ACCEPTANCE_RUNBOOK.md` → attended acceptance
     fixtures and steps; `scripts/spikes/` → Phase-0 spike scripts.
 - Decide hub by voice (tp#1171; README section "Decide hub by voice") → `decide.py`
-  (`HubClient` through Cloudflare with the `decide-cli` service token, secret only in a
-  `secret-run` child; spoken plate / briefs; `resolve_choice`; `DecideDesk` conversation
+  (`HubClient` through Cloudflare with the `decide-cli` service token, secret only in ONE
+  `secret-run` child per call with a keep-alive connection (`SecretRunTransport`, `-S`); spoken plate / briefs; `resolve_choice`; `DecideDesk` conversation
   state; read-only CLI `python -m my_stt_tts.decide -p`), `decide_tools.py` (mac-voice
   `decide_*` tools, answers behind "yes, do it", `MAC_VOICE_DECIDE`), `decide_intents.py`
   (local intent router, `DECIDE_VOICE`); the brain's plate context is `decide.PlateContext`.

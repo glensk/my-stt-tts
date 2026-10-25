@@ -724,6 +724,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         self._vad: SpeechDetector | None = None
         self._latest: Transcript | None = None
         self._shutdown_hooks: list[Callable[[], None]] = []
+        self._call_hooks: list[tuple[Callable[[], None] | None, Callable[[], None] | None]] = []
         self._feed_failed = False
         self._notice_sink: Callable[[str], Any] | None = None
         self._in_flight: dict[str, int] = {}
@@ -757,6 +758,27 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         """Run ``fn`` at daemon shutdown (monitor, operator)."""
         self._shutdown_hooks.append(fn)
 
+    def on_call(
+        self,
+        begin: Callable[[], None] | None = None,
+        end: Callable[[], None] | None = None,
+    ) -> None:
+        """Run ``begin`` when a call starts and ``end`` when it ended (decide's hub client).
+
+        Hooks run on the caller's thread and must return quickly; a failing hook is logged.
+        """
+        self._call_hooks.append((begin, end))
+
+    def _run_call_hooks(self, which: int) -> None:
+        for hooks in self._call_hooks:
+            hook = hooks[which]
+            if hook is None:
+                continue
+            try:
+                hook()
+            except Exception:  # pylint: disable=broad-exception-caught
+                log.warning("⚠️  bridge call hook failed", exc_info=True)
+
     # -- call lifecycle -----------------------------------------------------------------
     def preload(self) -> None:
         """Load the VAD model in the background so the first call's audio is not delayed."""
@@ -779,6 +801,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         self._reset("call started")
         with self._lock:
             self.turns, self.cancel = turns, CancellationToken()
+        self._run_call_hooks(0)
 
     def end_call(self) -> None:
         """The call ended: stop listening, cancel running work, drop every right."""
@@ -787,6 +810,7 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
             cancel = self.cancel
         cancel.cancel("call ended")
         self._reset("call ended")
+        self._run_call_hooks(1)
 
     def _reset(self, reason: str) -> None:
         # Transcript seqs restart with every call: a call must not inherit the last one's

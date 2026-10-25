@@ -16,6 +16,10 @@ Control: a unix socket (``control.sock`` in the 0700 state dir) taking one-line 
 daemon writes ``status.json`` on every change (read by the SwiftBar plugin without
 starting Python) and asks SwiftBar to refresh the plugin.
 
+Inside a session the follow-up window (:mod:`my_stt_tts.follow_up`, tp#1234) lets the
+agent hear the mic only while it speaks and ``MAC_VOICE_FOLLOWUP_S`` seconds after; then the
+same wake detector (:class:`WakeKit`) opens it again.
+
 A session ends on ``off``/``toggle``, when the agent hangs up, after ``idle_timeout``
 seconds without the user speaking while the agent is silent, or at ``max_duration``. If
 a session cannot be reclaimed within ``stop_deadline`` the process exits non-zero so the
@@ -37,6 +41,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -540,7 +545,24 @@ def send(command: str, path: Path | None = None, timeout: float = 3.0) -> dict[s
     return reply if isinstance(reply, dict) else None
 
 
-def wake_listener_factory(gate: Any = None) -> Callable[[Callable[[], None]], Listener] | None:
+@dataclass
+class WakeKit:
+    """The daemon's one wake detector + voice gate; calling it makes a :class:`WakeListener`.
+
+    The same detector also reopens a call's follow-up window (:mod:`my_stt_tts.follow_up`):
+    the idle listener is stopped before a call opens and re-armed after it ended, so the
+    two never feed it at the same time.
+    """
+
+    detector: Any
+    gain: float = 1.0
+    gate: Any = None
+
+    def __call__(self, on_wake: Callable[[], None]) -> WakeListener:
+        return WakeListener(self.detector, on_wake, gain=self.gain, gate=self.gate)
+
+
+def wake_listener_factory(gate: Any = None) -> WakeKit | None:
     """Build the configured wake detector once; None when openWakeWord is unavailable.
 
     ``gate`` reuses an already built :func:`voice_gate` (the bridge shares it).
@@ -572,7 +594,7 @@ def wake_listener_factory(gate: Any = None) -> Callable[[Callable[[], None]], Li
         return None
     gain = float(getattr(cfg, "wake_gain", 1.0))
     gate = gate if gate is not None else voice_gate()
-    return lambda on_wake: WakeListener(detector, on_wake, gain=gain, gate=gate)
+    return WakeKit(detector, gain, gate)
 
 
 def voice_gate() -> Any:
@@ -635,6 +657,31 @@ def play_ready_sound(
         log.debug("ready sound failed", exc_info=True)
 
 
+def with_follow_up(
+    session_factory: Callable[..., Session],
+    kit: Any,
+    enabled: Callable[[], bool] | None = None,
+) -> Callable[..., Session]:
+    """``session_factory`` that hands every call a fresh follow-up gate (when it is on).
+
+    ``enabled`` (the daemon's wake switch, ``mac-voice -w on|off``) is asked per call: with
+    the wake word switched off nothing could reopen the window, so the call has none.
+    """
+    from .follow_up import gate_factory
+
+    gates = gate_factory(kit) if kit is not None else None
+    if gates is None:
+        return session_factory
+
+    def factory(**kwargs: Any) -> Session:
+        if enabled is not None and not enabled():
+            log.info("👂 no follow-up window: the wake word is switched off")
+            return session_factory(**kwargs)
+        return session_factory(follow_up=gates(), **kwargs)
+
+    return factory
+
+
 def daemon_main(
     session_factory: Callable[..., Session],
     *,
@@ -659,6 +706,7 @@ def daemon_main(
         if wake
         else None
     )
+    session_factory = with_follow_up(session_factory, listeners, lambda: daemon.wake_enabled)
     daemon = VoiceDaemon(session_factory, listener_factory=listeners, bridge=bridge)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

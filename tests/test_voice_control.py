@@ -328,3 +328,40 @@ def test_daemon_main_chimes_once_it_listens(
     monkeypatch.setattr(vc.signal, "signal", lambda *_a: None)
     assert vc.daemon_main(lambda **_kw: FakeSession(), wake=False, chime=chime) == 0
     assert order == ["chime", "serve"]
+
+
+def test_wake_kit_makes_listeners_on_one_detector() -> None:
+    detector = object()
+    kit = vc.WakeKit(detector, 2.0, None)
+    listener = kit(lambda: None)
+    assert isinstance(listener, vc.WakeListener)
+    assert listener.detector is detector and listener.gain == 2.0
+
+
+def test_every_call_gets_a_fresh_follow_up_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MAC_VOICE_FOLLOWUP_S", raising=False)
+    made: list[dict[str, object]] = []
+
+    def factory(**kwargs: object) -> FakeSession:
+        made.append(kwargs)
+        return FakeSession()
+
+    class Detector:
+        def detect(self, _frame: object) -> bool:
+            return False
+
+        def reset(self) -> None:
+            pass
+
+    wrapped = vc.with_follow_up(factory, vc.WakeKit(Detector()))
+    wrapped(bridge="b")
+    wrapped(bridge="b")
+    gates = [m["follow_up"] for m in made]
+    assert all(m["bridge"] == "b" for m in made)
+    assert gates[0] is not gates[1] and getattr(gates[0], "window_s", None) == 8.0
+    assert vc.with_follow_up(factory, None) is factory  # no wake word: no window
+    made.clear()
+    vc.with_follow_up(factory, vc.WakeKit(Detector()), enabled=lambda: False)(bridge="b")
+    assert made == [{"bridge": "b"}]  # wake switched off (-w off): nothing could reopen it
+    monkeypatch.setenv("MAC_VOICE_FOLLOWUP_S", "0")
+    assert vc.with_follow_up(factory, vc.WakeKit(Detector())) is factory

@@ -43,6 +43,8 @@ from typing import Any, ClassVar
 import numpy as np
 
 from .claude_llm import BACKENDS, Api, ClaudeBackendError, prepare, resolve_backend, setup_main
+from .follow_up import is_pause
+from .wait_hint import WAIT_REPEAT_S, render_phrase, wait_settings
 
 # Native/optional backends (sounddevice, elevenlabs, PyObjC) are imported lazily on purpose.
 # pylint: disable=import-outside-toplevel
@@ -121,12 +123,16 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
     in_dev: int | str | None,
     out_dev: int | str | None,
     on_frame: Callable[[np.ndarray], None] | None = None,
+    gate: Any = None,
 ) -> Any:
     """Build an SDK ``AudioInterface`` for ``mode`` (see module docstring).
 
     ``on_frame`` (optional, the Claude bridge's turn source) also receives every mic frame
-    sent to the agent, as 16 kHz float32. The class is nested so the optional
-    ``elevenlabs`` base class is imported lazily.
+    sent to the agent, as 16 kHz float32. ``gate`` (optional
+    :class:`~my_stt_tts.follow_up.FollowUpGate`) decides per frame whether the agent hears
+    it; a refused frame is sent (and handed to ``on_frame``) as silence and does not count
+    as the user's activity. The class is nested so the optional ``elevenlabs`` base class
+    is imported lazily.
     """
     from elevenlabs.conversational_ai.conversation import AudioInterface
 
@@ -146,10 +152,24 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
         def _send(self, cb: Callable[[bytes], None], pcm: bytes) -> None:
             if self.mode == "speakers" and self.playback.speaking():
                 pcm = b"\x00" * len(pcm)  # gate the mic while the agent talks
-            self._note_level(pcm)
+            frame = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            if self._admit(frame):
+                self._note_level(pcm)
+            else:
+                pcm, frame = b"\x00" * len(pcm), np.zeros_like(frame)
             cb(pcm)
             if on_frame is not None:
-                on_frame(np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0)
+                on_frame(frame)
+
+        def _admit(self, frame: np.ndarray) -> bool:
+            """The follow-up gate's verdict for one frame (always True without a gate)."""
+            if gate is None:
+                return True
+            try:
+                return bool(gate.admit(frame, self.speaking()))
+            except Exception:  # pylint: disable=broad-exception-caught  # never drop the call
+                log.warning("⚠️  follow-up gate failed; frame passed", exc_info=True)
+                return True
 
         def _note_level(self, pcm: bytes) -> None:
             samples = np.frombuffer(pcm, dtype="<i2")
@@ -193,7 +213,10 @@ def make_audio_interface(  # pylint: disable=too-many-statements  # one nested c
                     if self._stop.is_set():
                         break
                     pcm = (np.clip(frame, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-                    self._note_level(pcm)
+                    if self._admit(frame):
+                        self._note_level(pcm)
+                    else:
+                        pcm, frame = b"\x00" * len(pcm), np.zeros_like(frame)
                     input_callback(pcm)
                     if on_frame is not None:
                         on_frame(frame)
@@ -360,6 +383,12 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
     receive thread ending before the conversation opened, e.g. ``3000 [quota_exceeded]``)
     sets :attr:`start_failure`, ends the session, posts a content-free banner and files an
     attention item — with or without a bridge.
+
+    ``follow_up`` (the daemon's :class:`~my_stt_tts.follow_up.FollowUpGate`, tp#1234) gates
+    the mic per frame; a "pause" / "wait" transcript closes it until the wake word and
+    stops the agent's audio. ``wait_hint`` (seconds, phrase; default from the environment,
+    :func:`~my_stt_tts.wait_hint.wait_settings`) speaks "One moment." when a client tool is
+    slow.
     """
 
     def __init__(  # pylint: disable=too-many-arguments
@@ -375,6 +404,8 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         start_timeout: float = START_TIMEOUT_S,
         tool_guard: float = TOOL_GUARD_S,
         notice_wait: float = NOTICE_WAIT_S,
+        follow_up: Any = None,
+        wait_hint: tuple[float, str] | None = None,
     ) -> None:
         from elevenlabs.client import ElevenLabs
         from elevenlabs.conversational_ai.conversation import (
@@ -400,10 +431,17 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         self._start_error: BaseException | None = None
         self._sdk_errors = _SdkErrors()
         self._briefing_pending = False
+        self.follow_up = follow_up  # follow_up.FollowUpGate (daemon only), else None
+        self.wait_after, self.wait_phrase = wait_hint if wait_hint is not None else wait_settings()
+        self._wait_clip: bytes | None = None
+        self._wait_said_at = -WAIT_REPEAT_S
+        self._wait_lock = threading.Lock()
         self.client_tools = ClientTools()
         override = self._briefing_override()
         on_frame = bridge.feed_audio if bridge is not None else None
-        self.audio = make_audio_interface(mode, _device(in_dev), _device(out_dev), on_frame)
+        self.audio = make_audio_interface(
+            mode, _device(in_dev), _device(out_dev), on_frame, gate=follow_up
+        )
         self.conversation = Conversation(
             ElevenLabs(api_key=api_key),
             agent_id,
@@ -433,9 +471,12 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             started = time.monotonic()
             bridge.tool_started(name)
             reply: str | None = None
+            hint = self._arm_wait_hint()
             try:
                 reply = run_tool(name, fn, args, self.tool_guard)
             finally:
+                if hint is not None:
+                    hint.cancel()
                 bridge.tool_finished(name)
                 # external content voids unused rights; a refusal does not
                 bridge.note_tool_result(name, reply)
@@ -444,6 +485,38 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
 
         handler.__name__ = name
         return handler
+
+    # -- "one moment" while a tool is slow -------------------------------------------------
+    def _arm_wait_hint(self) -> threading.Timer | None:
+        """A timer that says :attr:`wait_phrase` if the tool is still running then."""
+        if not self.wait_phrase or self.wait_after <= 0:
+            return None
+        timer = threading.Timer(self.wait_after, self._say_wait)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def _say_wait(self) -> None:
+        with self._wait_lock:
+            now = time.monotonic()
+            if now - self._wait_said_at < WAIT_REPEAT_S:
+                return
+            self._wait_said_at = now
+            if self._wait_clip is None:
+                self._wait_clip = render_phrase(self.wait_phrase)
+            clip = self._wait_clip
+        if not clip:
+            return
+        log.info("⏳ a tool is slow: %r", self.wait_phrase)
+        try:
+            self.audio.output(clip)
+        except Exception:  # pylint: disable=broad-exception-caught  # a hint never matters
+            log.debug("wait hint failed", exc_info=True)
+
+    def _prerender_wait(self) -> None:
+        with self._wait_lock:
+            if self._wait_clip is None and self.wait_phrase and self.wait_after > 0:
+                self._wait_clip = render_phrase(self.wait_phrase)
 
     def _briefing_override(self) -> dict[str, Any] | None:
         """``{"agent": {"first_message": …}}`` when open problems wait to be briefed."""
@@ -504,12 +577,22 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             self._mark_briefed()  # the first agent turn is the briefing: it was spoken
         if who == "🧑" and self.bridge is not None:
             self._forward(text, self.last_activity)
+        if who == "🧑" and self.follow_up is not None and is_pause(text):
+            self._pause()
         if who == "🧑" and is_voice_off(text) and not self.end_reason:
             self.end_reason = f"you said {text.strip()!r}"
             # end off the SDK's receive thread: end_session() tears that thread down
             threading.Thread(target=self.end, name="voice-off", daemon=True).start()
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
             stamp(f"{who} │ {text}")  # both emoji are 2 columns wide: transcripts line up
+
+    def _pause(self) -> None:
+        """ "pause" / "wait": the agent hears nothing until the wake word, and stops talking."""
+        try:
+            self.follow_up.pause()
+            self.audio.interrupt()
+        except Exception:  # pylint: disable=broad-exception-caught  # never break the SDK thread
+            log.warning("⚠️  pause failed", exc_info=True)
 
     def _forward(self, text: str, received_at: float) -> None:
         """Hand a user transcript to the bridge (never breaks the SDK's receive thread)."""
@@ -537,6 +620,8 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
         if self.bridge is not None:
             self.bridge.set_notice_sink(self._send_notice)
         threading.Thread(target=self._watch_start, name="voice-start", daemon=True).start()
+        if self.bridge is not None:
+            threading.Thread(target=self._prerender_wait, name="wait-clip", daemon=True).start()
         if self.echo:
             threading.Thread(target=self._print_models, name="models", daemon=True).start()
 
@@ -870,13 +955,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.daemon:
             from .voice_control import daemon_main
 
-            def factory(bridge: Any = None) -> VoiceSession:
+            def factory(bridge: Any = None, follow_up: Any = None) -> VoiceSession:
                 return VoiceSession(
                     *creds,
                     mode=args.mode,
                     in_dev=args.input_device,
                     out_dev=args.output_device,
                     bridge=bridge,
+                    follow_up=follow_up,
                 )
 
             return daemon_main(factory, wake=not args.no_wake)

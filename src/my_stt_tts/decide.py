@@ -19,11 +19,16 @@ Auth: the ``decide-cli`` Cloudflare Access service token. The hub accepts ``chan
 only from a service token on its voice list, so every call goes through Cloudflare — also at
 home, never the direct LAN path. The client id comes from ``DECIDE_VOICE_CF_CLIENT_ID`` (or
 the decide CLI's ``DECIDE_CLI_CF_CLIENT_ID``). The secret is never read into this process
-when it is not already there: without ``DECIDE_CLI_CF_CLIENT_SECRET`` in the environment each
-request runs in a short child under ``secret-run -e
-DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`` (``python -m my_stt_tts.decide -X``,
-request on stdin, response on stdout), so the value only lives in that child. Nothing here
-prints, logs or returns it.
+when it is not already there: without ``DECIDE_CLI_CF_CLIENT_SECRET`` in the environment the
+requests run in ONE long-lived child under ``secret-run -e
+DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`` (``python -m my_stt_tts.decide -S``,
+one JSON request per line on stdin, one JSON reply per line on stdout), so the value only lives
+in that child. The child keeps its HTTPS connection to the hub open (keep-alive), so a
+conversation pays for ``secret-run``, the interpreter start and the TLS handshake once
+(tp#1234): mac-voice starts it when a call begins and stops it when the call ends; it also
+exits by itself after :data:`SERVE_IDLE_S` without a request or when its parent goes away.
+A request that gets no reply within its timeout kills the child; the next request starts a
+fresh one (a read is retried once that way). Nothing here prints, logs or returns the secret.
 
 :class:`DecideDesk` keeps the conversation state that both voice front ends share (the mac-voice
 client tools in :mod:`my_stt_tts.decide_tools`, the local intent router in
@@ -49,10 +54,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import http.client
 import json
 import logging
 import os
 import re
+import select
 import shutil
 import ssl
 import subprocess
@@ -66,6 +73,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -81,8 +89,15 @@ SECRET_ENV = "DECIDE_CLI_CF_CLIENT_SECRET"
 SECRET_ITEM = "decide-cli-cf-service-token"
 SECRET_ITEM_ENV = "DECIDE_VOICE_SECRET_ITEM"
 USER_AGENT = "my-stt-tts-voice/1"
-TIMEOUT_S = 8.0
-CHILD_TIMEOUT_S = 5.0  # secret-run + interpreter start on top of the request timeout
+TIMEOUT_S = 4.0  # per request; a read that times out is retried once on a fresh child
+TIMEOUT_ENV = "DECIDE_VOICE_TIMEOUT_S"
+#: A new serving child: secret-run + interpreter start on top of the request timeout. A cold
+#: secret-run (the login broker fetching the item) took 6-7.6 s at home, a warm one 0.1 s.
+CHILD_START_S = 10.0
+WARM_START_S = 20.0  # the same at call start, in the background: nobody waits on it
+REPLY_MARGIN_S = 1.0  # a running serving child: pipe + JSON on top of the request timeout
+SERVE_IDLE_S = 600.0  # a serving child with no request for this long exits (secret gone)
+STALE_CONN_S = 60.0  # a keep-alive connection idle this long is replaced before a request
 SECRET_RUN_ENV = "DECIDE_SECRET_RUN_BIN"
 #: Where secret-run lives when launchd's PATH does not have it (the browser-login repo).
 SECRET_RUN_FALLBACK = Path.home() / "obsidian" / "42-Git" / "home" / "browser-login" / "bin"
@@ -163,23 +178,55 @@ def urllib_exchange(
         return HttpReply(exc.code, exc.headers.get("content-type", ""), exc.read())
 
 
-Runner = Callable[..., subprocess.CompletedProcess[str]]
+class _ChildGone(Exception):
+    """The serving child died, hung or answered garbage (the reason is speakable-safe)."""
 
 
-class SecretRunTransport:
-    """Each exchange in a child under ``secret-run``: the secret stays in the child."""
+class SecretRunTransport:  # pylint: disable=too-many-instance-attributes  # one child's state
+    """Every exchange in ONE long-lived child under ``secret-run``: the secret stays there.
 
-    def __init__(
+    The child (``python -I -m my_stt_tts.decide -S``) is started on the first request (or by
+    :meth:`warm`, which also gives a cold ``secret-run`` more time), serves requests one at a
+    time on a keep-alive HTTPS connection and is stopped by :meth:`close`. A request without
+    a reply in time kills it; the next request starts a fresh one. A request that arrives
+    while :meth:`warm` runs waits for it and then uses the warm child.
+    """
+
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         secret_run: str,
         item: str = SECRET_ITEM,
-        runner: Runner = subprocess.run,
+        popen: Callable[..., Any] = subprocess.Popen,
         python: str = sys.executable,
+        *,
+        start_s: float = CHILD_START_S,
+        margin_s: float = REPLY_MARGIN_S,
+        warm_s: float = WARM_START_S,
     ) -> None:
         self.secret_run = secret_run
         self.item = item
-        self.runner = runner
+        self.popen = popen
         self.python = python
+        self.start_s = start_s
+        self.margin_s = margin_s
+        self.warm_s = warm_s
+        self._proc: Any = None
+        self._replies: Queue[str | None] = Queue()
+        self._lock = threading.Lock()
+
+    def argv(self) -> list[str]:
+        """The child's command line (the item name only, never a value)."""
+        return [
+            self.secret_run,
+            "-e",
+            f"{SECRET_ENV}={self.item}",
+            "--",
+            self.python,
+            "-I",
+            "-m",
+            "my_stt_tts.decide",
+            "-S",
+        ]
 
     def __call__(  # pylint: disable=too-many-positional-arguments  # the Transport signature
         self, method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float
@@ -191,38 +238,222 @@ class SecretRunTransport:
             "body": body.decode() if body is not None else None,
             "timeout": timeout,
         }
-        argv = [
-            self.secret_run,
-            "-e",
-            f"{SECRET_ENV}={self.item}",
-            "--",
-            self.python,
-            "-I",
-            "-m",
-            "my_stt_tts.decide",
-            "-X",
-        ]
+        reply = self._ask(request, timeout, self.start_s)
         try:
-            done = self.runner(
-                argv,
-                input=json.dumps(request),
-                capture_output=True,
-                text=True,
-                timeout=timeout + CHILD_TIMEOUT_S,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise HubError(0, "unreachable", type(exc).__name__) from None
-        try:
-            reply = json.loads(done.stdout)
             return HttpReply(
-                int(reply["status"]), str(reply["content_type"]), reply["body"].encode()
+                int(reply["status"]), str(reply["content_type"]), str(reply["body"]).encode()
             )
-        except (ValueError, KeyError, TypeError, AttributeError):
-            log.warning("⚠️  decide: secret-run child failed (exit %s)", done.returncode)
-            raise HubError(
-                0, "unreachable", f"the secret-run child gave no answer (exit {done.returncode})"
-            ) from None
+        except (KeyError, TypeError, ValueError):
+            raise HubError(0, "unreachable", "the secret-run child gave no answer") from None
+
+    def warm(self, url: str, timeout: float = TIMEOUT_S) -> bool:
+        """Start the child and open its connection to ``url`` now (call start); never raises."""
+        try:
+            reply = self._ask(
+                {"op": "connect", "url": url, "timeout": timeout}, timeout, self.warm_s
+            )
+        except HubError as exc:
+            log.info("decide: warm-up failed (%s)", exc)
+            return False
+        return bool(reply.get("ok"))
+
+    def close(self) -> None:
+        """Stop the child (the secret leaves memory with it)."""
+        with self._lock:
+            self._stop_locked()
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    # -- internals ----------------------------------------------------------------------
+    def _ask(self, request: Mapping[str, Any], timeout: float, start_s: float) -> dict[str, Any]:
+        """One request/reply; a new child gets ``start_s`` on top of ``timeout``."""
+        with self._lock:
+            try:
+                fresh = self._ensure_locked()
+                line = self._exchange_locked(
+                    json.dumps(request), timeout + (start_s if fresh else self.margin_s)
+                )
+                reply = json.loads(line)
+                if not isinstance(reply, dict):
+                    raise _ChildGone("bad reply")
+                return reply
+            except (_ChildGone, OSError, ValueError) as exc:
+                self._stop_locked()
+                reason = str(exc) if isinstance(exc, _ChildGone) else type(exc).__name__
+                raise HubError(0, "unreachable", reason) from None
+
+    def _ensure_locked(self) -> bool:
+        """Start the child unless it runs; True when it was started now."""
+        if self.running:
+            return False
+        self._stop_locked()
+        self._replies = Queue()
+        self._proc = self.popen(
+            self.argv(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        replies, out = self._replies, self._proc.stdout
+        threading.Thread(target=_pump_lines, args=(out, replies), daemon=True).start()
+        return True
+
+    def _exchange_locked(self, line: str, deadline_s: float) -> str:
+        proc = self._proc
+        try:
+            proc.stdin.write(line + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            raise _ChildGone("the secret-run child is gone") from None
+        try:
+            reply = self._replies.get(timeout=deadline_s)
+        except Empty:
+            log.info("decide: no reply within %.1f s; restarting the child", deadline_s)
+            raise _ChildGone("TimeoutExpired") from None
+        if reply is None:
+            code = proc.poll()
+            log.warning("⚠️  decide: secret-run child ended (exit %s)", code)
+            raise _ChildGone(f"the secret-run child gave no answer (exit {code})")
+        return reply
+
+    def _stop_locked(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        with contextlib.suppress(OSError, ValueError):
+            proc.stdin.close()
+        with contextlib.suppress(OSError):
+            proc.kill()
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            proc.wait(timeout=2)
+
+
+def _pump_lines(stream: Any, out: Queue[str | None]) -> None:
+    """Child stdout → ``out``, one line each; None once it closes."""
+    try:
+        for line in stream:
+            out.put(line)
+    except (OSError, ValueError):
+        pass
+    out.put(None)
+
+
+class KeepAlive:
+    """One HTTPS connection kept open between requests (in the serving child)."""
+
+    def __init__(self, stale_s: float = STALE_CONN_S) -> None:
+        self.stale_s = stale_s
+        self._conn: http.client.HTTPSConnection | None = None
+        self._host = ""
+        self._used = 0.0
+
+    def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            with contextlib.suppress(OSError):
+                conn.close()
+
+    def _connection(self, host: str, timeout: float) -> tuple[http.client.HTTPSConnection, bool]:
+        stale = time.monotonic() - self._used > self.stale_s
+        if self._conn is not None and (host != self._host or stale):
+            self.close()
+        if self._conn is not None:
+            if self._conn.sock is not None:
+                self._conn.sock.settimeout(timeout)
+            return self._conn, False
+        self._conn = http.client.HTTPSConnection(
+            host, timeout=timeout, context=ssl.create_default_context()
+        )
+        self._host = host
+        return self._conn, True
+
+    def connect(self, url: str, timeout: float) -> None:
+        """Open the connection (DNS + TCP + TLS) without sending a request."""
+        conn, _ = self._connection(urllib.parse.urlsplit(url).netloc, timeout)
+        if conn.sock is None:
+            conn.connect()
+        self._used = time.monotonic()
+
+    def exchange(  # pylint: disable=too-many-positional-arguments  # the Transport signature
+        self, method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float
+    ) -> HttpReply:
+        """One request; adds the service-token secret from the environment like urllib."""
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "https":
+            raise ValueError("https only")
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        sent = dict(headers)
+        secret = os.environ.get(SECRET_ENV, "")
+        if secret and "CF-Access-Client-Id" in sent:
+            sent["CF-Access-Client-Secret"] = secret
+        while True:
+            conn, fresh = self._connection(parts.netloc, timeout)
+            try:
+                conn.request(method, path, body=body, headers=sent)
+                resp = conn.getresponse()
+                data = resp.read()
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
+                self.close()
+                if fresh or method != "GET":
+                    raise
+                continue  # the hub closed the idle connection: once more on a new one
+            except Exception:
+                self.close()
+                raise
+            self._used = time.monotonic()
+            if resp.will_close:
+                self.close()
+            return HttpReply(resp.status, resp.getheader("content-type", "") or "", data)
+
+
+def child_serve(stdin: Any = None, stdout: Any = None, idle_s: float = SERVE_IDLE_S) -> int:
+    """``-S``: serve JSON requests line by line on one keep-alive connection until EOF/idle."""
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    conn = KeepAlive()
+    fd = stdin.fileno()
+    pending = b""
+    try:
+        while True:
+            while b"\n" not in pending:
+                ready, _, _ = select.select([fd], [], [], idle_s)
+                if not ready:
+                    return 0  # idle: exit, the secret goes with this process
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    return 0  # the parent went away
+                pending += chunk
+            line, pending = pending.split(b"\n", 1)
+            reply = _serve_one(conn, line.decode("utf-8", errors="replace"))
+            stdout.write(json.dumps(reply) + "\n")
+            stdout.flush()
+    finally:
+        conn.close()
+
+
+def _serve_one(conn: KeepAlive, line: str) -> dict[str, Any]:
+    try:
+        req = json.loads(line)
+        timeout = float(req.get("timeout") or TIMEOUT_S)
+        if req.get("op") == "connect":
+            conn.connect(str(req["url"]), timeout)
+            return {"ok": True}
+        body = req.get("body")
+        reply = conn.exchange(
+            str(req["method"]),
+            str(req["url"]),
+            dict(req.get("headers") or {}),
+            body.encode() if isinstance(body, str) else None,
+            timeout,
+        )
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError) as exc:
+        return {"ok": False, "status": 0, "content_type": "", "body": type(exc).__name__}
+    text = reply.body.decode("utf-8", errors="replace")
+    return {"status": reply.status, "content_type": reply.content_type, "body": text}
 
 
 def child_fetch(stdin: str) -> str:
@@ -282,6 +513,16 @@ def resolve_secret_run(env: Mapping[str, str] | None = None) -> str | None:
     return str(fallback) if fallback.is_file() else None
 
 
+def timeout_from_env(env: Mapping[str, str] | None = None) -> float:
+    """``DECIDE_VOICE_TIMEOUT_S`` (seconds per request), else :data:`TIMEOUT_S`."""
+    env = os.environ if env is None else env
+    try:
+        value = float(env.get(TIMEOUT_ENV) or TIMEOUT_S)
+    except ValueError:
+        return TIMEOUT_S
+    return value if value > 0 else TIMEOUT_S
+
+
 def make_transport(env: Mapping[str, str] | None = None) -> Transport | None:
     """The stdlib transport when the secret is in the environment, else ``secret-run``."""
     env = os.environ if env is None else env
@@ -300,6 +541,17 @@ class HubClient:
         self.cfg = cfg
         self.transport = transport
         self.timeout = timeout
+
+    def warm(self) -> bool:
+        """Start the transport's child and connect now (a call began); False when it cannot."""
+        warm = getattr(self.transport, "warm", None)
+        return bool(warm(self.cfg.origin, self.timeout)) if callable(warm) else False
+
+    def close(self) -> None:
+        """Stop the transport's child (the call ended)."""
+        close = getattr(self.transport, "close", None)
+        if callable(close):
+            close()
 
     def _headers(self, mutation: bool) -> dict[str, str]:
         headers = {
@@ -383,7 +635,7 @@ def build_client(env: Mapping[str, str] | None = None) -> HubClient | None:
     transport = make_transport(env)
     if transport is None:
         return None
-    return HubClient(cfg, transport)
+    return HubClient(cfg, transport, timeout_from_env(env))
 
 
 # -- speaking ---------------------------------------------------------------------------------
@@ -1157,12 +1409,15 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("-n", "--next", action="store_true", help="the brief of the top decision")
     group.add_argument("-s", "--show", metavar="ID", help="the full brief of one decision")
     group.add_argument("-X", "--fetch", action="store_true", help=argparse.SUPPRESS)
+    group.add_argument("-S", "--serve", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-F", "--focus", choices=FOCUS_SCOPES, help="work or private only")
     parser.add_argument("-j", "--json", action="store_true", help="raw JSON instead of speech")
     args = parser.parse_args(argv)
     if args.fetch:
         sys.stdout.write(child_fetch(sys.stdin.read()))
         return 0
+    if args.serve:
+        return child_serve()
     with contextlib.suppress(ImportError):
         from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
 

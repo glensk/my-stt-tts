@@ -25,6 +25,9 @@ Desired configuration:
 * the platform's soft-timeout filler off: ``conversation_config.turn.soft_timeout_config``
   ``timeout_seconds: -1`` and ``use_llm_generated_message: false`` (it made the agent open
   turns with "Right, I see…" / "Mm-hmm…" while the LLM was still thinking);
+* the built-in system tool ``skip_turn`` on (``prompt.built_in_tools.skip_turn``): the agent
+  calls it to stay silent for speech that is not addressed to it (tp#1234); the other
+  built-in tools are never touched;
 * a marked section in the system prompt between ``<!-- mac-voice bridge start -->`` and
   ``<!-- mac-voice bridge end -->``, replaced idempotently; the rest of the prompt is
   never touched.
@@ -65,6 +68,19 @@ MARK_END = "<!-- mac-voice bridge end -->"
 CLIENT_EVENT = "client_tool_call"
 #: The soft-timeout filler off (-1 disables it; no LLM-made filler either).
 SOFT_TIMEOUT_OFF: dict[str, Any] = {"timeout_seconds": -1, "use_llm_generated_message": False}
+#: Built-in system tools the script manages (name → config when on); others stay untouched.
+SYSTEM_TOOLS: dict[str, dict[str, Any]] = {
+    "skip_turn": {
+        "type": "system",
+        "name": "skip_turn",
+        "description": (
+            "Stay silent for this turn. Call it when the speech was not addressed to you"
+            " (Albert talking to someone else, other people, TV, another language than the"
+            " conversation's) or when Albert said only 'pause' or 'wait'."
+        ),
+        "params": {"system_tool_type": "skip_turn"},
+    }
+}
 #: Keys of a tool config the script owns (compared for idempotency, written on update).
 TOOL_KEYS = (
     "type",
@@ -86,6 +102,15 @@ TOKEN_VALUE = re.compile(
 )
 
 SECTION = f"""{MARK_START}
+# Only answer what is said to you
+The mic hears the whole room, not only what is meant for you. Answer only speech addressed to you. For anything else call skip_turn and say nothing:
+- Albert talking to someone else (his children, his partner, a phone call), other people talking, TV or radio, Albert reading or thinking aloud.
+- A switch to another language in the middle of the conversation is usually Albert talking to someone else (German to his son, for example): call skip_turn, unless the sentence is clearly for you (it asks you something, continues what you just talked about, or gives you a command). This narrows the language rule above: switch language only for speech addressed to you.
+- Remarks that ask nothing of you ("it's half past six", "I may eat now") are not for you.
+- When unsure, stay silent with skip_turn. A wrong silence costs Albert one repeat; a wrong answer talks over his family.
+- "pause", "wait", "warte" or "Moment" on its own: call skip_turn and say nothing. You stay paused until he says the wake word again.
+- A message starting with "[system notice]" is never skipped.
+
 # Mac and Claude Code tools
 You run on Albert's Mac and act on it and on his Claude Code sessions through tools.
 - Sessions: list_sessions; read_session(target, what: last_reply|last_prompt); brief_decision(target); send_message(target, text); answer_decision(target, choice). Target = a session name or its number from the last list; if unclear, ask. Background sessions are read-only.
@@ -457,6 +482,25 @@ def _first_message_allowed(overrides: Mapping[str, Any]) -> Any:
     return (ccov.get("agent") or {}).get("first_message")
 
 
+def _built_in(agent: Mapping[str, Any]) -> dict[str, Any]:
+    cc = agent.get("conversation_config") or {}
+    prompt = (cc.get("agent") or {}).get("prompt") or {}
+    return dict(prompt.get("built_in_tools") or {})
+
+
+def _system_tools(agent: Mapping[str, Any]) -> dict[str, dict[str, Any] | None]:
+    """The managed built-in tools as configured (None = off)."""
+    built_in = _built_in(agent)
+    return {name: (built_in.get(name) or None) for name in SYSTEM_TOOLS}
+
+
+def _system_view(tools: Mapping[str, Mapping[str, Any] | None]) -> dict[str, str | None]:
+    """name → its description when on, None when off (what the diff and verify compare)."""
+    return {
+        name: (str(cfg.get("description") or "") if cfg else None) for name, cfg in tools.items()
+    }
+
+
 def _soft_timeout(agent: Mapping[str, Any]) -> dict[str, Any] | None:
     """The managed soft-timeout fields (None when the agent has no soft-timeout config)."""
     turn = (agent.get("conversation_config") or {}).get("turn") or {}
@@ -479,7 +523,7 @@ def upsert_section(prompt: str, section: str = SECTION) -> str:
 
 
 @dataclass
-class Target:
+class Target:  # pylint: disable=too-many-instance-attributes  # one per managed setting
     """What the agent should look like after the run."""
 
     prompt: str
@@ -489,6 +533,14 @@ class Target:
     updates: dict[str, dict[str, Any]] = field(default_factory=dict)  # id → config subset
     creates: dict[str, dict[str, Any]] = field(default_factory=dict)  # name → config subset
     soft_timeout: dict[str, Any] | None = None  # managed soft-timeout fields (None: untouched)
+    #: managed built-in tools: name → config (None = off); a name not listed stays untouched
+    system_tools: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+
+
+def _with_live_fields(state: State, name: str, want: Mapping[str, Any]) -> dict[str, Any]:
+    """``want`` on top of the live config of the built-in tool ``name`` (API defaults kept)."""
+    live = _built_in(state.agent).get(name)
+    return {**(copy.deepcopy(live) if isinstance(live, Mapping) else {}), **copy.deepcopy(want)}
 
 
 def desired_target(state: State, specs: tuple[ToolSpec, ...] = TOOL_SPECS) -> Target:
@@ -505,6 +557,9 @@ def desired_target(state: State, specs: tuple[ToolSpec, ...] = TOOL_SPECS) -> Ta
         overrides=overrides,
         tool_ids=state.tool_ids,
         soft_timeout=dict(SOFT_TIMEOUT_OFF),
+        system_tools={
+            name: _with_live_fields(state, name, cfg) for name, cfg in SYSTEM_TOOLS.items()
+        },
     )
     existing = state.client_tools()
     for spec in specs:
@@ -526,6 +581,7 @@ def restore_target(state: State, backup: Mapping[str, Any]) -> Target:
         overrides=_overrides(old.agent),
         tool_ids=old.tool_ids,
         soft_timeout=_soft_timeout(old.agent),
+        system_tools=_system_tools(old.agent),
     )
     for tid in old.tool_ids:
         want = _subset(old.tools.get(tid) or {})
@@ -541,6 +597,7 @@ def view_of(state: State) -> dict[str, Any]:
         "client_events": _events(state.agent),
         "first_message_override": _first_message_allowed(_overrides(state.agent)),
         "soft_timeout": _soft_timeout(state.agent),
+        "system_tools": _system_view(_system_tools(state.agent)),
         "tools": {
             name: _subset(cfg)
             for name, (tid, cfg) in sorted(state.client_tools().items())
@@ -563,6 +620,7 @@ def view_of_target(state: State, target: Target) -> dict[str, Any]:
         "soft_timeout": (
             _soft_timeout(state.agent) if target.soft_timeout is None else target.soft_timeout
         ),
+        "system_tools": _system_view(_system_tools(state.agent) | target.system_tools),
         "tools": dict(sorted(tools.items())),
     }
 
@@ -590,6 +648,7 @@ def render_diff(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str
             f"~ soft-timeout filler: {_soft_text(before.get('soft_timeout'))} → "
             f"{_soft_text(after.get('soft_timeout'))}"
         )
+    lines += _system_diff(before.get("system_tools") or {}, after.get("system_tools") or {})
     old_tools, new_tools = before["tools"], after["tools"]
     for name in sorted(set(old_tools) | set(new_tools)):
         old, new = old_tools.get(name), new_tools.get(name)
@@ -603,6 +662,23 @@ def render_diff(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str
             keys = [k for k in TOOL_KEYS if old.get(k) != new.get(k)]
             lines.append(f"~ client tool {name}: {', '.join(keys)}")
     return lines
+
+
+def _system_diff(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
+    lines = []
+    for name in sorted(set(before) | set(after)):
+        old, new = before.get(name), after.get(name)
+        if old == new:
+            continue
+        if old is None or new is None:
+            lines.append(f"~ system tool {name}: {_on(old)} → {_on(new)}")
+        else:
+            lines.append(f"~ system tool {name}: description")
+    return lines
+
+
+def _on(desc: str | None) -> str:
+    return "off" if desc is None else "on"
 
 
 def _soft_text(soft: Mapping[str, Any] | None) -> str:
@@ -650,6 +726,10 @@ def agent_body(state: State, target: Target) -> dict[str, Any]:
     prompt.pop("tools", None)  # inline tools are a legacy mirror of tool_ids: never sent
     prompt["prompt"] = target.prompt
     prompt["tool_ids"] = list(target.tool_ids)
+    if target.system_tools:
+        built_in = dict(prompt.get("built_in_tools") or {})
+        built_in.update(copy.deepcopy(target.system_tools))
+        prompt["built_in_tools"] = built_in
     config: dict[str, Any] = {
         "agent": {"prompt": prompt},
         "conversation": {"client_events": list(target.client_events)},
@@ -671,7 +751,7 @@ def _invariants(agent: Mapping[str, Any]) -> dict[str, Any]:
         "llm": prompt.get("llm"),
         "first_message": (cc.get("agent") or {}).get("first_message"),
         "voice_id": (cc.get("tts") or {}).get("voice_id"),
-        "built_in_tools": sorted(k for k, v in built_in.items() if v),
+        "built_in_tools": sorted(k for k, v in built_in.items() if v and k not in SYSTEM_TOOLS),
     }
 
 
@@ -710,6 +790,7 @@ class Run:
             target.overrides,
             tool_ids,
             soft_timeout=target.soft_timeout,
+            system_tools=target.system_tools,
         )
         now = self.api.request("GET", f"/v1/convai/agents/{self.agent_id}")
         if stamp_of(now) != stamp_of(state.agent):

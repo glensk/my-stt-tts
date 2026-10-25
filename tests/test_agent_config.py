@@ -417,3 +417,52 @@ def test_media_offers_exit_fullscreen_and_do_on_mac_mentions_the_queue() -> None
     from my_stt_tts.mac_sites import MEDIA_COMMANDS  # pylint: disable=import-outside-toplevel
 
     assert set(media.parameters["properties"]["command"]["enum"]) == set(MEDIA_COMMANDS)
+
+
+def test_skip_turn_is_switched_on_and_shown_in_the_diff(tmp_path: Path) -> None:
+    api = FakeApi()
+    code, out = _run(api, tmp_path)
+    assert code == 0
+    assert "  ~ system tool skip_turn: off → on" in out
+    assert _run(api, tmp_path, apply=True)[0] == 0
+    built_in = api.agent["conversation_config"]["agent"]["prompt"]["built_in_tools"]
+    assert built_in["skip_turn"]["params"] == {"system_tool_type": "skip_turn"}
+    assert built_in["skip_turn"]["type"] == "system"
+    assert built_in["end_call"] == {"type": "system", "name": "end_call"}  # untouched
+
+
+def test_skip_turn_keeps_the_live_defaults_and_restore_switches_it_off(tmp_path: Path) -> None:
+    api = FakeApi()
+    _run(api, tmp_path)
+    backup = next((tmp_path / "backups").glob("*.json"))
+    prompt = api.agent["conversation_config"]["agent"]["prompt"]
+    prompt["built_in_tools"]["skip_turn"] = None
+    assert _run(api, tmp_path, apply=True)[0] == 0
+    assert _run(api, tmp_path, apply=True, restore=backup)[0] == 0
+    built_in = api.agent["conversation_config"]["agent"]["prompt"]["built_in_tools"]
+    assert built_in.get("skip_turn") is None
+    assert built_in["end_call"] == {"type": "system", "name": "end_call"}
+
+
+def test_skip_turn_update_keeps_api_fields_of_the_live_tool() -> None:
+    api = FakeApi()
+    api.agent["conversation_config"]["agent"]["prompt"]["built_in_tools"]["skip_turn"] = {
+        "type": "system",
+        "name": "skip_turn",
+        "description": "",
+        "response_timeout_secs": 20,
+        "params": {"system_tool_type": "skip_turn"},
+    }
+    target = cfg.desired_target(cfg.fetch_state(api, AGENT))
+    want = target.system_tools["skip_turn"]
+    assert want["response_timeout_secs"] == 20
+    assert want["description"] == cfg.SYSTEM_TOOLS["skip_turn"]["description"]
+
+
+def test_prompt_tells_the_agent_to_stay_silent_unless_addressed() -> None:
+    assert "Answer only speech addressed to you" in cfg.SECTION
+    assert "call skip_turn and say nothing" in cfg.SECTION
+    assert "When unsure, stay silent with skip_turn" in cfg.SECTION
+    assert '"pause", "wait"' in cfg.SECTION
+    assert "switch language only for speech addressed to you" in cfg.SECTION
+    assert '"[system notice]" is never skipped' in cfg.SECTION
