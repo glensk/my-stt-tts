@@ -161,7 +161,8 @@ def build_bridge(
 
     With ``wire_components`` the components register themselves, each gated by its own flag
     (:func:`wire`): attention inbox + monitor, Claude sessions, Mac control, the decide hub
-    and the Mac operator.
+    and the Mac operator — plus the interference capture (``interference.attach``, on unless
+    ``MAC_VOICE_INTERFERENCE_CAPTURE=0``).
     """
     authoriser = Authoriser.from_env(scorer, env)
     if authoriser.authorized is None:
@@ -169,5 +170,9 @@ def build_bridge(
     controller = BridgeController(authoriser)
     if wire_components:
         wire(controller, env)
+        # pylint: disable-next=import-outside-toplevel  # only the daemon keeps clips
+        from .interference import attach
+
+        _safely("interference", lambda: attach(controller, scorer, env))
     controller.preload()
     return controller

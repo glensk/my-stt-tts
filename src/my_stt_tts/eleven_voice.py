@@ -575,6 +575,7 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             self._agent_said_at = self.last_activity
         if who == "🤖" and self.bridge is not None:
             self._mark_briefed()  # the first agent turn is the briefing: it was spoken
+            self._agent_reply(text)
         if who == "🧑" and self.bridge is not None:
             self._forward(text, self.last_activity)
         if who == "🧑" and self.follow_up is not None and is_pause(text):
@@ -585,6 +586,16 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
             threading.Thread(target=self.end, name="voice-off", daemon=True).start()
         if self.echo and text.strip(" .…"):  # "..." marks a silent turn, not speech
             stamp(f"{who} │ {text}")  # both emoji are 2 columns wide: transcripts line up
+
+    def _agent_reply(self, text: str) -> None:
+        """Tell the bridge what the agent said (``...`` = it skipped the turn; tp#1235)."""
+        note = getattr(self.bridge, "note_agent_said", None)
+        if not callable(note):
+            return
+        try:
+            note(text)  # pylint: disable=not-callable  # checked just above
+        except Exception:  # pylint: disable=broad-exception-caught  # never break the SDK thread
+            log.warning("⚠️  bridge rejected an agent reply", exc_info=True)
 
     def _pause(self) -> None:
         """ "pause" / "wait": the agent hears nothing until the wake word, and stops talking."""

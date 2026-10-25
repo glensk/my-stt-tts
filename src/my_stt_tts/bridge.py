@@ -211,6 +211,11 @@ class Authoriser:
         self.authorized = (authorized or "").strip() or None
         self.threshold = threshold
         self.min_utterance_s = min_utterance_s
+        #: Called after every decision with (transcript, refusal code or None, the scored
+        #: utterances as (utterance, cosine)) — the interference capture (tp#1235).
+        self.observer: (
+            Callable[[Transcript, str | None, list[tuple[Utterance, float]]], Any] | None
+        ) = None
 
     @classmethod
     def from_env(
@@ -227,11 +232,13 @@ class Authoriser:
         """None when the transcript may act, else the :class:`Refusal`."""
         refusal = self._precheck(transcript)
         notes: list[str] = []
+        scored: list[tuple[Utterance, float]] = []
         if refusal is None:
             for utt in _candidates(transcript.binding):
-                refusal = self._check_utterance(utt, notes)
+                refusal = self._check_utterance(utt, notes, scored)
                 if refusal is not None:
                     break
+        self._observe(transcript, refusal, scored)
         if refusal is not None:
             ambiguous = isinstance(transcript.binding, Ambiguous)
             diag = ", ".join([refusal.code, *(["ambiguous"] if ambiguous else []), *notes])
@@ -254,8 +261,25 @@ class Authoriser:
             return _refuse("no_utterance")
         return None
 
-    def _check_utterance(self, utt: Utterance, notes: list[str]) -> Refusal | None:
+    def _observe(
+        self, transcript: Transcript, refusal: Refusal | None, scored: list[tuple[Utterance, float]]
+    ) -> None:
+        """Tell the observer (never lets it break the decision)."""
+        observer = self.observer
+        if not callable(observer) or transcript.injected:
+            return
+        try:
+            code = None if refusal is None else refusal.code
+            observer(transcript, code, scored)  # pylint: disable=not-callable  # set later
+        except Exception:  # pylint: disable=broad-exception-caught  # diagnostics only
+            log.warning("⚠️  voice-check observer failed", exc_info=True)
+
+    def _check_utterance(
+        self, utt: Utterance, notes: list[str], scored: list[tuple[Utterance, float]] | None = None
+    ) -> Refusal | None:
         """Check one utterance; append ``<duration>s[ score[ kind]]`` to ``notes`` (no content).
+
+        Every utterance that got a score is appended to ``scored`` as (utterance, cosine).
 
         ``kind`` (``call`` / ``wake``) is the profile the scorer used, when it can tell
         (``VoiceGate.profile_kind``); scorers without that method just omit it.
@@ -271,6 +295,8 @@ class Authoriser:
             return _refuse("model_failure")
         if score is None:
             return _refuse("no_profile")
+        if scored is not None:
+            scored.append((utt, score))
         notes[-1] += f" {score:.2f}"
         kind = self._profile_kind()
         if kind:
@@ -286,6 +312,7 @@ class Authoriser:
         try:
             kind = kind_of(self.authorized)
         except Exception:  # pylint: disable=broad-exception-caught  # diagnostics only
+            log.debug("profile kind unavailable", exc_info=True)
             return None
         return kind if isinstance(kind, str) else None
 
@@ -767,6 +794,8 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         #: call start for this daemon's lifetime, so a refused override cannot break every call.
         self.first_message_ok = True
         self.components: dict[str, Any] = {}  # what bridge_wiring.wire registered (by name)
+        #: interference.CallCapture (tp#1235): keeps refused / ignored in-call speech.
+        self.capture: Any = None
         self._lock = threading.Lock()
 
     # -- registries ---------------------------------------------------------------------
@@ -888,8 +917,22 @@ class BridgeController:  # pylint: disable=too-many-instance-attributes,too-many
         transcript = Transcript(seq, text, received_at, binding=binding)
         with self._lock:
             self._latest = transcript
+        self._to_capture("on_transcript", transcript)
         self.pending.decline(transcript)  # "no" / "cancel" drops a waiting proposal
         return transcript
+
+    def note_agent_said(self, text: str) -> None:
+        """The agent's reply text (``...`` = it stayed silent) — for the interference capture."""
+        self._to_capture("on_agent_said", text)
+
+    def _to_capture(self, event: str, arg: Any) -> None:
+        capture = self.capture
+        if capture is None:
+            return
+        try:
+            getattr(capture, event)(arg)
+        except Exception:  # pylint: disable=broad-exception-caught  # never break the call
+            log.warning("⚠️  interference capture failed (%s)", event, exc_info=True)
 
     def on_injected(
         self, text: str, *, seq: int = -1, received_at: float | None = None
