@@ -76,7 +76,7 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   (key via `secret-run` item `anthropic-api-private-elevenlabs`), re-sync on every `-B claude` start.
 - Claude bridge (tp#855, design in the local `PLAN_claude-bridge.md`; README section
   "Claude bridge"):
-  - `bridge.py` → `BridgeController`, `Authoriser` (two risk tiers, 0.35 call-profile
+  - `bridge.py` → `BridgeController`, `Authoriser` (two risk tiers, 0.35 / ≥ 1.2 s call-profile
     check), `CapabilityStore` (≤ 3 actions per sentence), `PendingActions` ("yes, do it"),
     `before_mutation`; `bridge_problems.py` → `Problem` / sinks / briefing interfaces;
     `bridge_text.py` → normalising, number words, hosts, `derivable`, `spoken_name`

@@ -212,7 +212,7 @@ class Rig:
         self.seq = 0
 
     def say(self, text: str) -> None:
-        for _ in range(10):
+        for _ in range(15):  # 1.5 s: above the 1.2 s minimum of the voice check
             self.clock.now += 0.1
             self.ctl.feed_audio(np.full(FRAME, ALBERT, dtype=np.float32))
         for _ in range(6):

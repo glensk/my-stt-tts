@@ -5,7 +5,10 @@ writes for the main pipeline's speaker ID). :func:`build_profile` makes one from
 wake-word clips a person recorded with ``scripts/enroll_wakeword.py -w <name>`` (saved as
 ``debug/recordings/wake/<word>/*-enroll_<name>-*.wav``), dropping outlier clips (silent,
 clipped, someone else). :class:`VoiceGate` compares the audio around a wake fire with all
-profiles; with no profiles at all it lets everyone through (and says so).
+profiles; with no profiles at all it lets everyone through (and says so). Once someone is
+enrolled it fails CLOSED: when the speaker model fails to load (or is not loaded yet, or
+crashes on a clip) no wake fire passes, so no call starts — one error line in the log and
+one macOS banner say why (tp#1235).
 
 Call-domain profiles in ``enroll/call/<name>.npy`` (``scripts/enroll_call.py``) are built
 from sentences recorded through the same VoiceProcessingIO path a call uses. The wake gate
@@ -19,8 +22,10 @@ re-check with their recordings.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +44,8 @@ CALL_SUBDIR = "call"  # enroll/call/<name>.npy: call-domain profiles (scripts/en
 WAKE_CLIPS = REPO_ROOT / "debug" / "recordings" / "wake"
 THRESHOLD = 0.35
 OUTLIER_COS = 0.2  # a clip this far from the others' mean is not the person (or no voice)
+#: The one banner when the speaker model fails to load (no quotes: goes into AppleScript).
+UNAVAILABLE_BANNER = "Voice check unavailable: wake word refused, no call starts. See the log."
 
 
 def _l2(vec: np.ndarray) -> np.ndarray:
@@ -64,6 +71,19 @@ def default_embedder() -> Callable[[np.ndarray], np.ndarray]:
     model = EcapaEmbedder()
     model.embed(np.zeros(16000, dtype=np.float32), 16000)  # load + warm up
     return lambda audio: np.asarray(model.embed(audio, 16000), dtype=np.float32)
+
+
+def mac_banner(text: str) -> None:
+    """Show ``text`` as a macOS notification titled mac-voice (never raises)."""
+    script = f'display notification "{text}" with title "mac-voice"'
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
 
 
 def centroid(embeddings: list[np.ndarray]) -> tuple[np.ndarray, int]:
@@ -116,8 +136,8 @@ def _load_profiles(directory: Path) -> dict[str, np.ndarray]:
     return {p.stem: _l2(np.load(p).astype(np.float32)) for p in sorted(directory.glob("*.npy"))}
 
 
-class VoiceGate:
-    """Accept a wake fire only if its audio matches an enrolled profile."""
+class VoiceGate:  # pylint: disable=too-many-instance-attributes  # profiles + load state
+    """Accept a wake fire only if its audio matches an enrolled profile (fail closed)."""
 
     def __init__(
         self,
@@ -125,11 +145,16 @@ class VoiceGate:
         *,
         threshold: float = THRESHOLD,
         embed: Callable[[np.ndarray], np.ndarray] | None = None,
+        notify: Callable[[str], None] | None = None,
     ) -> None:
         self.threshold = threshold
         self.profiles = _load_profiles(profile_dir)  # wake gate (non-recursive: no call/)
         self.call_profiles = _load_profiles(profile_dir / CALL_SUBDIR)
         self._embed = embed
+        self._notify = notify or mac_banner
+        #: True once the speaker model failed to load: every wake fire is refused.
+        self.load_failed = False
+        self._notified = False
         self._ready = threading.Event()
         if embed is not None or not (self.profiles or self.call_profiles):
             self._ready.set()
@@ -147,23 +172,50 @@ class VoiceGate:
             try:
                 self._embed = default_embedder()
             except Exception:  # pylint: disable=broad-exception-caught
-                log.warning("⚠️  voice check unavailable; anyone can start", exc_info=True)
-                self.profiles = {}
+                log.exception(
+                    "❌ voice check unavailable: the speaker model failed to load — the wake"
+                    " word is refused and no call starts until mac-voice is restarted"
+                )
+                self._load_failed()
             self._ready.set()
 
         threading.Thread(target=_load, name="voice-gate-load", daemon=True).start()
 
+    def _load_failed(self) -> None:
+        """Fail closed from now on, and show the one banner that says so."""
+        self.load_failed = True
+        if not self._notified:
+            self._notified = True
+            self._notify(UNAVAILABLE_BANNER)
+
+    def unavailable(self) -> str | None:
+        """Why :meth:`check` refuses everyone right now (the model), or None."""
+        if not self.profiles:
+            return None
+        if self.load_failed:
+            return "speaker model failed to load"
+        if self._embed is None:
+            return "speaker model not loaded yet"
+        return None
+
     def check(self, audio: Any) -> tuple[bool, str, float]:
-        """(accepted, best profile name, cosine). Everyone passes when nobody is enrolled."""
+        """(accepted, best profile name, cosine). Everyone passes when nobody is enrolled.
+
+        With profiles it fails closed: the model failed to load, is not loaded within 30 s
+        or raises on the clip → refused (:meth:`unavailable` says why for the first two).
+        """
         if not self.profiles:
             return True, "", 0.0
-        self._ready.wait(30)
-        if self._embed is None:
-            return True, "", 0.0
+        if not self._ready.wait(30) or self._embed is None:
+            return False, "", 0.0
         clip = np.asarray(audio, dtype=np.float32).ravel()
         if clip.size < 4000:  # < 0.25 s: nothing to judge
             return False, "", 0.0
-        emb = _l2(self._embed(clip))
+        try:
+            emb = _l2(self._embed(clip))
+        except Exception:  # pylint: disable=broad-exception-caught  # fail closed
+            log.warning("⚠️  voice check failed on a wake clip — refused", exc_info=True)
+            return False, "", 0.0
         name, score = max(
             ((n, float(emb @ c)) for n, c in self.profiles.items()), key=lambda kv: kv[1]
         )

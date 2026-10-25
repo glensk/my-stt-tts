@@ -132,3 +132,71 @@ def test_wake_listener_only_fires_for_accepted_voices() -> None:
     assert accepted._accept(clip) is True  # pylint: disable=protected-access
     assert rejected._accept(clip) is False  # pylint: disable=protected-access
     assert vc.WakeListener(_Det(), lambda: None)._accept(None) is True  # pylint: disable=protected-access
+
+
+# -- fail closed (tp#1235) -------------------------------------------------------------------
+def _broken_model() -> Any:
+    raise RuntimeError("speechbrain import failed")
+
+
+def _failed_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, banners: list[str]
+) -> vg.VoiceGate:
+    np.save(tmp_path / "albert.npy", np.array([1.0, 0.0]))
+    monkeypatch.setattr(vg, "default_embedder", _broken_model)
+    gate = vg.VoiceGate(tmp_path, notify=banners.append)
+    gate.preload()
+    assert gate._ready.wait(5)  # pylint: disable=protected-access
+    return gate
+
+
+def test_model_load_failure_refuses_every_wake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    banners: list[str] = []
+    with caplog.at_level("ERROR", logger="my_stt_tts.voice_gate"):
+        gate = _failed_gate(tmp_path, monkeypatch, banners)
+    assert gate.active and gate.load_failed  # the profiles stay: nobody gets in
+    assert gate.check(np.full(16000, 0.5, dtype=np.float32)) == (False, "", 0.0)
+    assert gate.unavailable() == "speaker model failed to load"
+    assert any("voice check unavailable" in r.getMessage() for r in caplog.records)
+    gate.preload()  # a second preload neither reloads nor notifies again
+    gate.check(np.full(16000, 0.5, dtype=np.float32))
+    assert banners == [vg.UNAVAILABLE_BANNER]
+    assert '"' not in vg.UNAVAILABLE_BANNER  # it goes into an AppleScript string
+
+
+def test_wake_listener_logs_why_a_failed_gate_starts_no_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gate = _failed_gate(tmp_path, monkeypatch, [])
+    listener = vc.WakeListener(_Det(), lambda: None, gate=gate)
+    with caplog.at_level("INFO", logger="my_stt_tts.voice_control"):
+        assert listener._accept(np.zeros(32000, dtype=np.float32)) is False  # pylint: disable=protected-access
+    assert [r.getMessage() for r in caplog.records if r.name == "my_stt_tts.voice_control"] == [
+        (
+            "🚫 wake refused: hey_jarvis (score 0.97) · voice check unavailable"
+            " (speaker model failed to load) — no call"
+        )
+    ]
+
+
+def test_gate_refuses_while_the_model_is_not_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    np.save(tmp_path / "albert.npy", np.array([1.0, 0.0]))
+    gate = vg.VoiceGate(tmp_path, notify=lambda _text: None)
+    ready = gate._ready  # pylint: disable=protected-access
+    monkeypatch.setattr(ready, "wait", lambda timeout=None: False)  # still loading after 30 s
+    assert gate.check(np.full(16000, 0.5, dtype=np.float32))[0] is False
+    assert gate.unavailable() == "speaker model not loaded yet"
+
+
+def test_gate_refuses_when_the_model_raises_on_a_clip(tmp_path: Path) -> None:
+    np.save(tmp_path / "albert.npy", np.array([1.0, 0.0]))
+
+    def crash(_audio: np.ndarray) -> np.ndarray:
+        raise RuntimeError("ECAPA crashed")
+
+    gate = vg.VoiceGate(tmp_path, embed=crash)
+    assert gate.check(np.full(16000, 0.5, dtype=np.float32)) == (False, "", 0.0)

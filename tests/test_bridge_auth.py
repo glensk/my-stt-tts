@@ -86,7 +86,7 @@ class Call:
         self.ctl.begin_call()
         self.seq = 0
 
-    def speak(self, level: float, seconds: float = 1.0) -> None:
+    def speak(self, level: float, seconds: float = 1.5) -> None:
         for _ in range(round(seconds * 10)):
             self.clock.now += 0.1
             self.ctl.feed_audio(np.full(FRAME, level, dtype=np.float32))
@@ -102,7 +102,7 @@ class Call:
         self.seq += 1
         return self.ctl.on_transcript(self.seq, text, self.clock.now)
 
-    def say(self, text: str, level: float = ALBERT, seconds: float = 1.0) -> Transcript:
+    def say(self, text: str, level: float = ALBERT, seconds: float = 1.5) -> Transcript:
         self.speak(level, seconds)
         return self.hear(text)
 
@@ -158,6 +158,60 @@ def test_model_failure_refuses() -> None:
     call = Call(FakeScorer("fail"))
     call.say("open youtube")
     refused(call.ctl.mint(), "model_failure")
+
+
+def test_sensitive_actions_need_1_2_s_of_speech() -> None:
+    call = Call()
+    call.say("send it to scratch", seconds=1.0)  # Albert, but too short to judge reliably
+    result = call.ctl.mint()
+    refused(result, "too_short")
+    assert isinstance(result, Refusal) and result.reason == bridge.TOO_SHORT
+    assert "say it as a full sentence" in result.reason
+    assert call.scorer.calls == 0  # never scored
+    call.say("send it to scratch please", seconds=1.3)
+    cap_or_fail(call.ctl.mint())
+
+
+def test_too_short_still_logs_the_diagnostics(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
+    call = Call()
+    call.say("louder secret plan", seconds=1.0)
+    refused(call.ctl.mint(), "too_short")
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (too_short, 1.00s)"]
+
+
+def test_auth_threshold_and_minimum_come_from_env() -> None:
+    auth = Authoriser.from_env(FakeScorer(), {"MAC_VOICE_AUTHORIZED": "albert"})
+    assert (auth.threshold, auth.min_utterance_s) == (0.35, 1.2)
+    env = {
+        "MAC_VOICE_AUTHORIZED": "albert",
+        "MAC_VOICE_AUTH_THRESHOLD": "0.6",
+        "MAC_VOICE_AUTH_MIN_S": " 2 ",
+    }
+    auth = Authoriser.from_env(FakeScorer(), env)
+    assert (auth.threshold, auth.min_utterance_s) == (0.6, 2.0)
+
+
+@pytest.mark.parametrize("raw", ["abc", "-1", "nan", "inf"])
+def test_invalid_auth_env_falls_back_to_the_defaults(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    env = {"MAC_VOICE_AUTH_THRESHOLD": raw, "MAC_VOICE_AUTH_MIN_S": raw}
+    auth = Authoriser.from_env(FakeScorer(), env)
+    assert (auth.threshold, auth.min_utterance_s) == (0.35, 1.2)
+    assert "MAC_VOICE_AUTH_MIN_S" in caplog.text
+
+
+def test_auth_minimum_never_drops_under_the_turn_minimum() -> None:
+    auth = Authoriser.from_env(FakeScorer(), {"MAC_VOICE_AUTH_MIN_S": "0.1"})
+    assert auth.min_utterance_s == 0.4
+
+
+def test_a_raised_auth_threshold_refuses_a_lower_score() -> None:
+    call = Call()
+    call.ctl.authoriser.threshold = 0.6  # Albert's fake score is 0.52
+    call.say("open youtube")
+    refused(call.ctl.mint(), "other_speaker")
 
 
 def test_authorized_env_unset_refuses() -> None:
@@ -248,13 +302,13 @@ def test_stale_binding_is_refused() -> None:
 
 def test_ambiguous_binding_needs_every_candidate() -> None:
     call = Call()
-    call.speak(ALBERT, 0.6)
-    call.say("open youtube", level=ALBERT, seconds=0.6)
+    call.speak(ALBERT, 1.5)
+    call.say("open youtube", level=ALBERT, seconds=1.5)
     cap_or_fail(call.ctl.mint())
 
     call = Call()
-    call.speak(OTHER, 0.6)  # the TV right before Albert
-    call.say("open youtube", level=ALBERT, seconds=0.6)
+    call.speak(OTHER, 1.5)  # the TV right before Albert
+    call.say("open youtube", level=ALBERT, seconds=1.5)
     refused(call.ctl.mint(), "other_speaker")
 
 
@@ -278,19 +332,19 @@ def test_refusal_log_names_other_speaker_and_the_score(
     call = Call()
     call.say("louder secret plan", level=OTHER)
     refused(call.ctl.mint(), "other_speaker")
-    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.00s 0.18)"]
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.50s 0.18)"]
     assert "secret plan" not in caplog.text
 
 
 def test_refusal_log_marks_an_ambiguous_binding(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
     call = Call()
-    call.speak(ALBERT, 0.6)
-    transcript = call.say("open secret plan", level=OTHER, seconds=0.6)
+    call.speak(ALBERT, 1.5)
+    transcript = call.say("open secret plan", level=OTHER, seconds=1.5)
     assert isinstance(transcript.binding, Ambiguous)
     refused(call.ctl.mint(), "other_speaker")
     assert refusal_lines(caplog) == [
-        "🚫 refused: voice not verified (other_speaker, ambiguous, 0.60s 0.52, 0.60s 0.18)"
+        "🚫 refused: voice not verified (other_speaker, ambiguous, 1.50s 0.52, 1.50s 0.18)"
     ]
     assert "secret plan" not in caplog.text
 
@@ -309,12 +363,14 @@ class KindScorer(FakeScorer):
 def test_refusal_log_names_the_profile_kind(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
     call = Call(KindScorer("wake"))
-    call.speak(ALBERT, 0.6)
-    call.say("open secret plan", level=OTHER, seconds=0.6)
+    call.speak(ALBERT, 1.5)
+    call.say("open secret plan", level=OTHER, seconds=1.5)
     refused(call.ctl.mint(), "other_speaker")
     assert refusal_lines(caplog) == [
-        "🚫 refused: voice not verified "
-        "(other_speaker, ambiguous, 0.60s 0.52 wake, 0.60s 0.18 wake)"
+        (
+            "🚫 refused: voice not verified "
+            "(other_speaker, ambiguous, 1.50s 0.52 wake, 1.50s 0.18 wake)"
+        )
     ]
     assert "secret plan" not in caplog.text
 
@@ -326,12 +382,12 @@ def verified_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_success_logs_one_verified_line_per_utterance(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="my_stt_tts.bridge")
     call = Call(KindScorer("call"))
-    call.speak(ALBERT, 0.6)
-    call.say("open secret plan", seconds=0.6)
+    call.speak(ALBERT, 1.5)
+    call.say("open secret plan", seconds=1.5)
     cap_or_fail(call.ctl.mint())
     assert verified_lines(caplog) == [
-        "🔓 voice verified (0.60s 0.52 call)",
-        "🔓 voice verified (0.60s 0.52 call)",
+        "🔓 voice verified (1.50s 0.52 call)",
+        "🔓 voice verified (1.50s 0.52 call)",
     ]
     assert not refusal_lines(caplog)
     assert "secret plan" not in caplog.text
@@ -342,7 +398,7 @@ def test_verified_line_without_a_profile_kind(caplog: pytest.LogCaptureFixture) 
     call = Call()  # FakeScorer cannot tell which profile it used
     call.say("open youtube")
     cap_or_fail(call.ctl.mint())
-    assert verified_lines(caplog) == ["🔓 voice verified (1.00s 0.52)"]
+    assert verified_lines(caplog) == ["🔓 voice verified (1.50s 0.52)"]
 
 
 def test_a_failing_profile_kind_is_left_out(caplog: pytest.LogCaptureFixture) -> None:
@@ -354,7 +410,7 @@ def test_a_failing_profile_kind_is_left_out(caplog: pytest.LogCaptureFixture) ->
     call = Call(Broken())
     call.say("open youtube", level=OTHER)
     refused(call.ctl.mint(), "other_speaker")
-    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.00s 0.18)"]
+    assert refusal_lines(caplog) == ["🚫 refused: voice not verified (other_speaker, 1.50s 0.18)"]
 
 
 def test_no_transcript_yet_is_refused() -> None:
@@ -722,14 +778,16 @@ def test_other_speaker_cannot_confirm() -> None:
     assert call.ctl.pending.live()  # a refused voice burns nothing
 
 
-def test_a_bare_yes_is_too_short_and_asks_for_yes_do_it() -> None:
+def test_a_bare_yes_is_too_short_and_asks_for_a_full_sentence() -> None:
     call = Call()
     propose(call)
     call.say("yes", seconds=0.3)
     result = call.ctl.confirm()
     refused(result, "too_short")
-    assert isinstance(result, Refusal) and "yes, do it" in result.reason
-    call.say("yes, do it")
+    assert isinstance(result, Refusal) and "full sentence" in result.reason
+    call.say("yes, do it", seconds=1.0)  # still under 1.2 s of speech
+    refused(call.ctl.confirm(), "too_short")
+    call.say("yes, please do it now")
     assert call.ctl.confirm_action().startswith("refused: nothing is waiting")  # no executor
 
 

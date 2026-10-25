@@ -205,7 +205,8 @@ Pass: Calculator frontmost; silence.
 
 3. Albert says: **"delete the file delete-me"** → the agent speaks a summary and asks
    for "yes, do it"; Albert says **"yes, do it"** (two words — a bare "yes" is too short
-   for the voice check). The request waits up to 120 s for the yes; when nothing is said
+   for the voice check; if the agent says it was too short, say it as a full sentence,
+   e.g. **"yes, please do it now"**: the voice check needs 1.2 s of speech). The request waits up to 120 s for the yes; when nothing is said
    for 25 s it is repeated once ("still waiting: … — say yes, do it"). The agent must not
    call `confirm_action` before Albert's yes, nor say "running it" before then.
 

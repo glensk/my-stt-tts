@@ -151,8 +151,13 @@ class WakeListener:
             log.info("🔔 wake: %s", what)
             return True
         ok, name, sim = self.gate.check(clip if clip is not None else [])
+        reason = self.gate.unavailable() if not ok and hasattr(self.gate, "unavailable") else None
         if ok:
             log.info("🔔 wake: %s · 🗣️  %s (voice match %.2f)", what, name, sim)
+        elif reason:
+            log.warning(
+                "🚫 wake refused: %s · voice check unavailable (%s) — no call", what, reason
+            )
         else:
             log.info(
                 "🚫 wake ignored: %s · voice not enrolled (closest %s %.2f < %.2f)",

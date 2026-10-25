@@ -17,8 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
+from mac_fakes import ALBERT, OTHER, Clock, FakeScorer, FakeVad, speak
 
 from my_stt_tts import mac_broker, mac_operator
 from my_stt_tts.bridge import Authoriser, BridgeController, MemoryProblemSink
@@ -38,31 +38,8 @@ from my_stt_tts.mac_operator import (
     register,
 )
 
-FRAME = 1600
-ALBERT, OTHER = 0.5, 0.3
-SCORES = {ALBERT: 0.52, OTHER: 0.18}
 
-
-# -- an authorised call (same fakes as test_bridge_auth) -----------------------------------
-class FakeVad:
-    def is_speech(self, frame: np.ndarray) -> bool:
-        return bool(np.max(np.abs(frame)) > 0.05)
-
-
-class FakeScorer:
-    def score_against(self, audio: Any, name: str, *, timeout: float = 5.0) -> float | None:
-        del timeout
-        return SCORES[round(float(np.max(np.abs(audio))), 2)] if name == "albert" else None
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
+# -- an authorised call (the fakes of mac_fakes) -------------------------------------------
 class Call:
     def __init__(self) -> None:
         self.clock = Clock()
@@ -75,12 +52,7 @@ class Call:
         self.seq = 0
 
     def say(self, text: str, level: float = ALBERT) -> None:
-        for _ in range(10):
-            self.clock.now += 0.1
-            self.ctl.feed_audio(np.full(FRAME, level, dtype=np.float32))
-        for _ in range(6):
-            self.clock.now += 0.1
-            self.ctl.feed_audio(np.zeros(FRAME, dtype=np.float32))
+        speak(self.ctl, self.clock, level)
         self.clock.now += 1.5
         self.seq += 1
         self.ctl.on_transcript(self.seq, text, self.clock.now)

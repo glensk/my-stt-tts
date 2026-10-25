@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines  # authorisation, capabilities, proposals and the controller
 """Bridge between the voice agent and the Mac / Claude Code sessions: who may act, and how.
 
 Built once in ``voice_control.daemon_main`` when one of the opt-in flags
@@ -15,8 +16,10 @@ Authorisation (two risk tiers, fail closed):
   verified request sentence (no "yes, do it"): Albert said clearly what to send.
   :class:`Authoriser`: the utterance a transcript binds to must match the profile named
   by ``MAC_VOICE_AUTHORIZED`` (its call-domain profile ``enroll/call/<name>.npy`` when
-  there is one, else the wake profile) with cosine ≥ 0.35. No such variable, no profile,
-  a model failure, no / stale binding, an utterance under 0.4 s → refused. With several
+  there is one, else the wake profile) with cosine ≥ ``MAC_VOICE_AUTH_THRESHOLD`` (default
+  0.35). No such variable, no profile, a model failure, no / stale binding, an utterance
+  shorter than ``MAC_VOICE_AUTH_MIN_S`` (default 1.2 s: speaker scores on shorter speech are
+  noise) → refused; a too-short one asks Albert to say it as a full sentence. With several
   candidate utterances every one must pass. ``[system notice]`` messages never pass.
 * Low-risk, no voice check — the reversible Mac fast-path tools
   (:mod:`~my_stt_tts.mac_control`: open a site or app, volume, brightness, media) mint
@@ -39,7 +42,8 @@ Authorisation (two risk tiers, fail closed):
 * :class:`PendingActions` — a high-stakes Mac operator step becomes THE pending proposal
   (a newer one replaces it), valid :data:`CONFIRM_TTL_S` (the broker's confirm wait),
   single use, confirmed only by a NEW transcript that passes the full voice check and says
-  yes ("yes, do it" — a bare "yes" is too short to verify); a new transcript saying no /
+  yes ("yes, do it"; it must reach the same minimum length — a bare "yes" never does, and a
+  too-short yes is asked for again as a full sentence); a new transcript saying no /
   cancel / stop drops it. A "yes" up to :data:`EXPIRED_GRACE_S` after a proposal lapsed is
   told that the request expired (ask again with the full sentence), and a "yes" with
   nothing pending is told not to claim that anything runs.
@@ -93,7 +97,14 @@ FLAGS = (
     "MAC_VOICE_DECIDE",
 )
 AUTH_ENV = "MAC_VOICE_AUTHORIZED"
+#: Minimum cosine against the authorised profile (``MAC_VOICE_AUTH_THRESHOLD`` overrides it).
 AUTH_THRESHOLD = 0.35
+AUTH_THRESHOLD_ENV = "MAC_VOICE_AUTH_THRESHOLD"
+#: Minimum length of an authorising utterance, seconds (``MAC_VOICE_AUTH_MIN_S``). Speaker
+#: scores on under ~1 s of speech are noise: Albert's own 0.5–0.9 s sentences scored as low
+#: as other voices (tp#1235).
+AUTH_MIN_S = 1.2
+AUTH_MIN_S_ENV = "MAC_VOICE_AUTH_MIN_S"
 #: How long a proposal waits for "yes, do it" (= ``mac_broker.CONFIRM_TIMEOUT_S``).
 CONFIRM_TTL_S = 120.0
 #: A "yes" this long after a proposal lapsed hears "the request expired", not "nothing".
@@ -128,6 +139,8 @@ class Refusal:
 
 
 VOICE_NOT_VERIFIED = "voice not verified"
+#: An authorising sentence that was too short to check the speaker (the agent says this).
+TOO_SHORT = "too short to recognise your voice — say it as a full sentence"
 
 
 def _refuse(code: str, reason: str = VOICE_NOT_VERIFIED) -> Refusal:
@@ -192,7 +205,7 @@ class Authoriser:
         authorized: str | None,
         *,
         threshold: float = AUTH_THRESHOLD,
-        min_utterance_s: float = MIN_UTTERANCE_S,
+        min_utterance_s: float = AUTH_MIN_S,
     ) -> None:
         self.scorer = scorer
         self.authorized = (authorized or "").strip() or None
@@ -204,7 +217,11 @@ class Authoriser:
         cls, scorer: SpeakerScorer | None, env: Mapping[str, str] | None = None
     ) -> Authoriser:
         env = os.environ if env is None else env
-        return cls(scorer, env.get(AUTH_ENV))
+        threshold = _env_float(env, AUTH_THRESHOLD_ENV, AUTH_THRESHOLD)
+        min_s = max(_env_float(env, AUTH_MIN_S_ENV, AUTH_MIN_S), MIN_UTTERANCE_S)
+        if (threshold, min_s) != (AUTH_THRESHOLD, AUTH_MIN_S):
+            log.info("🔐 voice check: cosine ≥ %.2f, utterances ≥ %.2f s", threshold, min_s)
+        return cls(scorer, env.get(AUTH_ENV), threshold=threshold, min_utterance_s=min_s)
 
     def verify(self, transcript: Transcript) -> Refusal | None:
         """None when the transcript may act, else the :class:`Refusal`."""
@@ -218,7 +235,9 @@ class Authoriser:
         if refusal is not None:
             ambiguous = isinstance(transcript.binding, Ambiguous)
             diag = ", ".join([refusal.code, *(["ambiguous"] if ambiguous else []), *notes])
-            log_refused(f"{refusal.reason} ({diag})")
+            # the speakable too-short hint would crowd the diagnostics out of the log line
+            said = VOICE_NOT_VERIFIED if refusal.code == "too_short" else refusal.reason
+            log_refused(f"{said} ({diag})")
             return refusal
         for note in notes:
             log.info("🔓 voice verified (%s)", note)
@@ -243,7 +262,7 @@ class Authoriser:
         """
         notes.append(f"{utt.duration:.2f}s")
         if utt.duration < self.min_utterance_s:
-            return _refuse("too_short")
+            return _refuse("too_short", TOO_SHORT)
         assert self.scorer is not None and self.authorized is not None
         try:
             score = self.scorer.score_against(utt.pcm, self.authorized)
@@ -269,6 +288,21 @@ class Authoriser:
         except Exception:  # pylint: disable=broad-exception-caught  # diagnostics only
             return None
         return kind if isinstance(kind, str) else None
+
+
+def _env_float(env: Mapping[str, str], name: str, default: float) -> float:
+    """``env[name]`` as a finite, non-negative float; ``default`` when unset or invalid."""
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not np.isfinite(value) or value < 0:
+        log.warning("⚠️  %s=%r is not a number ≥ 0 — using %.2f", name, raw, default)
+        return default
+    return value
 
 
 def _candidates(binding: Binding) -> tuple[Utterance, ...]:
@@ -561,7 +595,7 @@ class PendingActions:
             return _refused(result)
         voice = self.authoriser.verify(transcript)  # logs its own refusal
         if voice is not None and voice.code == "too_short":
-            return _refuse("too_short", f"too short to recognise your voice — say {CONFIRM_PHRASE}")
+            return _refuse("too_short", f'{TOO_SHORT}, e.g. "yes, please do it now"')
         if voice is not None:
             return voice
         with self._lock:

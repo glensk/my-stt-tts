@@ -66,6 +66,13 @@ class Clock:
         return self.now
 
 
+def speak(ctl: BridgeController, clock: Clock, level: float) -> None:
+    """1.5 s of speech at ``level`` (above the voice check's 1.2 s), then 0.6 s of silence."""
+    for amp in [level] * 15 + [0.0] * 6:
+        clock.now += 0.1
+        ctl.feed_audio(np.full(FRAME, amp, dtype=np.float32))
+
+
 class FakeDisplay:
     def __init__(self, builtin: bool = True, values: Sequence[float | None] = (0.5, 0.625)):
         self.builtin = builtin
@@ -191,12 +198,7 @@ class Call:
         self.clock.now += seconds
 
     def say(self, text: str, level: float = ALBERT) -> Transcript:
-        for _ in range(10):
-            self.clock.now += 0.1
-            self.ctl.feed_audio(np.full(FRAME, level, dtype=np.float32))
-        for _ in range(6):
-            self.clock.now += 0.1
-            self.ctl.feed_audio(np.zeros(FRAME, dtype=np.float32))
+        speak(self.ctl, self.clock, level)
         self.clock.now += 1.5
         self.seq += 1
         return self.ctl.on_transcript(self.seq, text, self.clock.now)

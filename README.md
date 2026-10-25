@@ -338,7 +338,10 @@ seconds after it ends, the $ LLM price of every agent sentence, the call's credi
 (voice vs LLM) and the billing period's credits so far ([`eleven_costs.py`](src/my_stt_tts/eleven_costs.py)). `-n`/`-f` force on/off, `-w on|off` toggles the wake
 word (remembered), `-s` prints the state. **Only enrolled voices start it**: record your
 wake phrase with `scripts/enroll_wakeword.py "voice on" -n 8 -w NAME` (hands-free; it also
-builds `enroll/NAME.npy`), or rebuild all profiles with `-V`; with no profiles anyone can. The menu-bar plugin is
+builds `enroll/NAME.npy`), or rebuild all profiles with `-V`; with no profiles anyone can. Once a
+profile exists the check fails closed: if the speaker model does not load, no wake word passes
+and no call starts (an error line in the log and one macOS banner say so; restart after fixing
+it). The menu-bar plugin is
 [`swiftbar/mac-voice.5s.sh`](swiftbar/mac-voice.5s.sh) — symlink it into your SwiftBar
 plugin folder. Code: [`voice_control.py`](src/my_stt_tts/voice_control.py).
 
@@ -499,7 +502,9 @@ must be set as for `./mac-voice`.
 | `MAC_VOICE_READY_SOUND`       | `/System/Library/Sounds/Glass.aiff` | played once the daemon listens (default Glass); `0`, `off` or empty: no sound |
 | `MAC_VOICE_CCC_BIN`           | `~/.local/bin/ccc`                  | the ccc executable (default: `$PATH`, then `~/.local/bin/ccc`)                |
 | `MAC_VOICE_STATE_DIR`         | `~/.local/state/mac-voice`          | daemon control socket + status (inbox, operator dirs stay in the default)     |
-| `MAC_VOICE_SPEAKER_THRESHOLD` | `0.35`                              | wake-word voice gate only (the bridge's in-call check is fixed at 0.35)       |
+| `MAC_VOICE_SPEAKER_THRESHOLD` | `0.35`                              | wake-word voice gate only (the in-call check has its own two below)           |
+| `MAC_VOICE_AUTH_THRESHOLD`    | `0.35`                              | in-call voice check: minimum cosine against the call profile                  |
+| `MAC_VOICE_AUTH_MIN_S`        | `1.2`                               | in-call voice check: minimum length of the authorising sentence (floor 0.4 s) |
 | `MAC_VOICE_WAKE`              | `voice on`                          | custom wake phrase (sherpa KWS; "hey jarvis" stays active)                    |
 | `MAC_VOICE_WAKE_THRESHOLD`    | `0.75`                              | openWakeWord threshold for "hey jarvis"                                       |
 | `MAC_VOICE_WAKE_PHASES`       | `2`                                 | staggered openWakeWord copies while idle                                      |
@@ -537,14 +542,18 @@ scripts/eleven_agent_config.py -a                        # apply, verify, roll b
 
 Only the voice named by `MAC_VOICE_AUTHORIZED` may act. Each user transcript is bound to the
 utterance it came from (Silero VAD segments of the call's mic stream, 5 s window), and the check
-fails closed: no profile, a model failure, no or an ambiguous binding, or an utterance under
-0.4 s is refused.
+fails closed: no profile, a model failure, no or an ambiguous binding, or an utterance shorter
+than `MAC_VOICE_AUTH_MIN_S` (default 1.2 s) is refused. Speaker scores on under about 1 s of
+speech are noise (Albert's own short sentences scored as low as other voices), so a too-short
+sentence is answered with "too short to recognise your voice — say it as a full sentence".
 
 - **Two risk tiers.** The Mac fast-path tools (open a site or app, volume, brightness, media)
   need no voice match: one-word commands like "Play." score unreliably, and a call only starts
   after a voice-checked wake word. Everything else — session sends and answers,
-  acknowledgements, `do_on_mac`, confirmations — needs the call-profile voice check with a cosine
-  of at least 0.35.
+  acknowledgements, `do_on_mac`, confirmations, decide answers / comments / undo — needs the
+  call-profile voice check with a cosine of at least `MAC_VOICE_AUTH_THRESHOLD` (default 0.35).
+  To tune, read the log: `🔓 voice verified (1.43s 0.52 call)` and
+  `🚫 refused: voice not verified (other_speaker, 1.50s 0.18)` give length and score.
 - **Up to 3 actions per sentence** ("open YouTube and make it louder"). Each action's arguments
   must come from what was said (host, app, number, keyword; most words of a message or a choice).
   Any external content reaching the agent (a session read, a briefing, an operator result, a
@@ -562,7 +571,9 @@ fails closed: no profile, a model failure, no or an ambiguous binding, or an utt
   confirmed", never as failed.
 - **Confirmations** exist only for high-stakes operator steps. The agent reads the step back
   ("move delete-me.txt to the Trash — say yes, do it"); a voice-checked **"yes, do it"** within
-  120 s runs exactly that step once (a bare "yes" is too short to verify). After 25 s of silence
+  120 s runs exactly that step once (a bare "yes" is too short to verify; a yes under
+  `MAC_VOICE_AUTH_MIN_S` is asked for again as a full sentence, e.g. "yes, please do it now").
+  After 25 s of silence
   the request is repeated once; "no", "cancel" or "stop" drops it. A newer request replaces an
   older one.
 

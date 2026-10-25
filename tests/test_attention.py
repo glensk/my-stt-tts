@@ -709,7 +709,7 @@ class Call:
         self.seq = 0
 
     def say(self, text: str, level: float = ALBERT) -> None:
-        for amp in [level] * 10 + [0.0] * 6:
+        for amp in [level] * 15 + [0.0] * 6:  # 1.5 s: above the voice check's 1.2 s
             self.now += 0.1
             self.ctl.feed_audio(np.full(FRAME, amp, dtype=np.float32))
         self.now += 1.5
