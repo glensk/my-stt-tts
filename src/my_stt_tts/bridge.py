@@ -17,9 +17,11 @@ Authorisation (two risk tiers, fail closed):
   :class:`Authoriser`: the utterance a transcript binds to must match the profile named
   by ``MAC_VOICE_AUTHORIZED`` (its call-domain profile ``enroll/call/<name>.npy`` when
   there is one, else the wake profile) with cosine ≥ ``MAC_VOICE_AUTH_THRESHOLD`` (default
-  0.35). No such variable, no profile, a model failure, no / stale binding, an utterance
-  shorter than ``MAC_VOICE_AUTH_MIN_S`` (default 1.2 s: speaker scores on shorter speech are
-  noise) → refused; a too-short one asks Albert to say it as a full sentence. With several
+  0.35) and, with ``MAC_VOICE_AUTH_MARGIN`` set, beat its best score against the negative
+  clips (``enroll/negatives/call.npy``) by that margin (tp#1235). No such variable, no
+  profile, a model failure, no / stale binding, an utterance shorter than
+  ``MAC_VOICE_AUTH_MIN_S`` (default 1.2 s: speaker scores on shorter speech are noise) →
+  refused; a too-short one asks Albert to say it as a full sentence. With several
   candidate utterances every one must pass. ``[system notice]`` messages never pass.
 * Low-risk, no voice check — the reversible Mac fast-path tools
   (:mod:`~my_stt_tts.mac_control`: open a site or app, volume, brightness, media) mint
@@ -105,6 +107,10 @@ AUTH_THRESHOLD_ENV = "MAC_VOICE_AUTH_THRESHOLD"
 #: as other voices (tp#1235).
 AUTH_MIN_S = 1.2
 AUTH_MIN_S_ENV = "MAC_VOICE_AUTH_MIN_S"
+#: Margin rule (``MAC_VOICE_AUTH_MARGIN``, unset = off; tp#1235): the score against the
+#: authorised profile must beat the best score against the negative clips
+#: (``enroll/negatives/call.npy``) by at least this much. Written by scripts/calibrate_voice.py.
+AUTH_MARGIN_ENV = "MAC_VOICE_AUTH_MARGIN"
 #: How long a proposal waits for "yes, do it" (= ``mac_broker.CONFIRM_TIMEOUT_S``).
 CONFIRM_TTL_S = 120.0
 #: A "yes" this long after a proposal lapsed hears "the request expired", not "nothing".
@@ -206,11 +212,13 @@ class Authoriser:
         *,
         threshold: float = AUTH_THRESHOLD,
         min_utterance_s: float = AUTH_MIN_S,
+        margin: float | None = None,
     ) -> None:
         self.scorer = scorer
         self.authorized = (authorized or "").strip() or None
         self.threshold = threshold
         self.min_utterance_s = min_utterance_s
+        self.margin = margin
         #: Called after every decision with (transcript, refusal code or None, the scored
         #: utterances as (utterance, cosine)) — the interference capture (tp#1235).
         self.observer: (
@@ -224,9 +232,14 @@ class Authoriser:
         env = os.environ if env is None else env
         threshold = _env_float(env, AUTH_THRESHOLD_ENV, AUTH_THRESHOLD)
         min_s = max(_env_float(env, AUTH_MIN_S_ENV, AUTH_MIN_S), MIN_UTTERANCE_S)
+        margin = _env_margin(env)
         if (threshold, min_s) != (AUTH_THRESHOLD, AUTH_MIN_S):
             log.info("🔐 voice check: cosine ≥ %.2f, utterances ≥ %.2f s", threshold, min_s)
-        return cls(scorer, env.get(AUTH_ENV), threshold=threshold, min_utterance_s=min_s)
+        if margin is not None:
+            log.info("🔐 voice check: margin ≥ %.2f over the negative clips", margin)
+        return cls(
+            scorer, env.get(AUTH_ENV), threshold=threshold, min_utterance_s=min_s, margin=margin
+        )
 
     def verify(self, transcript: Transcript) -> Refusal | None:
         """None when the transcript may act, else the :class:`Refusal`."""
@@ -287,14 +300,14 @@ class Authoriser:
         notes.append(f"{utt.duration:.2f}s")
         if utt.duration < self.min_utterance_s:
             return _refuse("too_short", TOO_SHORT)
-        assert self.scorer is not None and self.authorized is not None
         try:
-            score = self.scorer.score_against(utt.pcm, self.authorized)
+            scores = self._score(utt)
         except Exception:  # pylint: disable=broad-exception-caught  # fail closed
             log.warning("⚠️  voice check failed", exc_info=True)
             return _refuse("model_failure")
-        if score is None:
+        if scores is None:
             return _refuse("no_profile")
+        score, best_negative = scores
         if scored is not None:
             scored.append((utt, score))
         notes[-1] += f" {score:.2f}"
@@ -303,7 +316,24 @@ class Authoriser:
             notes[-1] += f" {kind}"
         if score < self.threshold:
             return _refuse("other_speaker")
+        if self.margin is not None and best_negative is not None:
+            notes[-1] += f" margin {score - best_negative:.2f}"
+            if score - best_negative < self.margin:
+                return _refuse("other_speaker")
         return None
+
+    def _score(self, utt: Utterance) -> tuple[float, float | None] | None:
+        """(score, best negative score or None); the negatives only with the margin rule on."""
+        assert self.scorer is not None and self.authorized is not None
+        detail = getattr(self.scorer, "score_detail", None)
+        if self.margin is not None and callable(detail):
+            result = detail(utt.pcm, self.authorized)  # pylint: disable=not-callable
+            if result is None:
+                return None
+            score, best = result
+            return float(score), None if best is None else float(best)
+        score = self.scorer.score_against(utt.pcm, self.authorized)
+        return None if score is None else (float(score), None)
 
     def _profile_kind(self) -> str | None:
         kind_of = getattr(self.scorer, "profile_kind", None)
@@ -329,6 +359,21 @@ def _env_float(env: Mapping[str, str], name: str, default: float) -> float:
     if not np.isfinite(value) or value < 0:
         log.warning("⚠️  %s=%r is not a number ≥ 0 — using %.2f", name, raw, default)
         return default
+    return value
+
+
+def _env_margin(env: Mapping[str, str]) -> float | None:
+    """``MAC_VOICE_AUTH_MARGIN`` as a finite float; None when unset, empty or invalid."""
+    raw = env.get(AUTH_MARGIN_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not np.isfinite(value):
+        log.warning("⚠️  %s=%r is not a number — margin rule off", AUTH_MARGIN_ENV, raw)
+        return None
     return value
 
 

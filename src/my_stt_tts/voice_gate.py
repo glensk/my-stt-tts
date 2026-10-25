@@ -15,6 +15,11 @@ from sentences recorded through the same VoiceProcessingIO path a call uses. The
 never sees them; :meth:`VoiceGate.score_against` (the bridge's in-call check) prefers one
 over the wake profile, because a raw-mic wake profile scores in-call speech too low.
 
+Negative clips for the bridge's margin rule (tp#1235) live in ``enroll/negatives/call.npy``
+(one L2 embedding per row: in-call clips labelled ``other`` plus synthetic voices, written
+by ``scripts/calibrate_voice.py -a``). :meth:`VoiceGate.score_detail` returns a clip's score
+against a person's profile together with its best score against those negatives.
+
 Threshold 0.35 (cosine) from Albert's data, 2026-10-09: his held-out clips 0.41–0.76,
 five synthetic voices ≤ 0.23. Real family voices may sit closer than synthetic ones —
 re-check with their recordings.
@@ -41,6 +46,7 @@ log = logging.getLogger("my_stt_tts.voice_gate")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_DIR = REPO_ROOT / "enroll"
 CALL_SUBDIR = "call"  # enroll/call/<name>.npy: call-domain profiles (scripts/enroll_call.py)
+NEGATIVES_FILE = Path("negatives") / "call.npy"  # under the profile dir (calibrate_voice.py)
 WAKE_CLIPS = REPO_ROOT / "debug" / "recordings" / "wake"
 THRESHOLD = 0.35
 OUTLIER_COS = 0.2  # a clip this far from the others' mean is not the person (or no voice)
@@ -131,6 +137,17 @@ def enrolled_speakers(clips_dir: Path = WAKE_CLIPS) -> list[str]:
     return sorted(names)
 
 
+def load_negatives(path: Path) -> np.ndarray | None:
+    """The negative embeddings (rows, L2-normalised); None when there is no usable file."""
+    try:
+        rows = np.atleast_2d(np.load(path).astype(np.float32))
+    except (OSError, ValueError):
+        return None
+    if rows.size == 0:
+        return None
+    return rows / (np.linalg.norm(rows, axis=1, keepdims=True) + 1e-9)
+
+
 def _load_profiles(directory: Path) -> dict[str, np.ndarray]:
     """``{name: L2 centroid}`` for every ``*.npy`` directly in ``directory`` (none if absent)."""
     return {p.stem: _l2(np.load(p).astype(np.float32)) for p in sorted(directory.glob("*.npy"))}
@@ -150,6 +167,8 @@ class VoiceGate:  # pylint: disable=too-many-instance-attributes  # profiles + l
         self.threshold = threshold
         self.profiles = _load_profiles(profile_dir)  # wake gate (non-recursive: no call/)
         self.call_profiles = _load_profiles(profile_dir / CALL_SUBDIR)
+        #: Negative clips for the margin rule (``enroll/negatives/call.npy``), or None.
+        self.negatives = load_negatives(profile_dir / NEGATIVES_FILE)
         self._embed = embed
         self._notify = notify or mac_banner
         #: True once the speaker model failed to load: every wake fire is refused.
@@ -244,3 +263,24 @@ class VoiceGate:  # pylint: disable=too-many-instance-attributes  # profiles + l
         if clip.size < 4000:
             return None
         return float(_l2(self._embed(clip)) @ profile)
+
+    def score_detail(
+        self, audio: Any, name: str, *, timeout: float = 5.0
+    ) -> tuple[float, float | None] | None:
+        """(score against ``name``'s profile, best score against the negatives or None).
+
+        The same rules as :meth:`score_against` (None when it cannot be judged); one
+        embedding serves both numbers. The second is None when there are no negatives.
+        """
+        profile = self.call_profiles.get(name)
+        if profile is None:
+            profile = self.profiles.get(name)
+        if profile is None or not self._ready.wait(timeout) or self._embed is None:
+            return None
+        clip = np.asarray(audio, dtype=np.float32).ravel()
+        if clip.size < 4000:
+            return None
+        emb = _l2(self._embed(clip))
+        negatives = self.negatives
+        best = None if negatives is None else float(np.max(negatives @ emb))
+        return float(emb @ profile), best
