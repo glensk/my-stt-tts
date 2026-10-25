@@ -72,8 +72,8 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   after, then the wake word reopens it; "pause"/"wait"), `wait_hint.py` (spoken "One moment."
   when a client tool is slow).
 - Voice recognises only Albert (tp#1235; README section "Making voice recognise only you") →
-  `voice_profiles.py` (kept enrollment takes under `enroll/<who>/<stamp>/`, rebuild of the call
-  - wake profiles, 0600 files, `.env` reads), `interference.py` (`CallCapture`: refused /
+  `voice_profiles.py` (kept enrollment takes under `enroll/<who>/<stamp>/`, rebuild of the
+  call and wake profiles, 0600 files, `.env` reads), `interference.py` (`CallCapture`: refused /
   agent-skipped / sampled in-call utterances → `debug/recordings/interference/YYYY-MM/`, 90-day
   expiry, labels `albert` / `other`), `voice_calibration.py` (pure threshold + margin choice);
   the margin rule itself is `Authoriser.margin` + `VoiceGate.score_detail` against
