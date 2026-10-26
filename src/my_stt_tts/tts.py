@@ -403,8 +403,9 @@ class CloudTTS:
             self._client = OpenAI(api_key=self.api_key or "not-needed", base_url=self.base_url)
         return self._client
 
-    def render(self, text: str) -> tuple[np.ndarray | None, int | None]:
+    def render(self, text: str, lang: str | None = None) -> tuple[np.ndarray | None, int | None]:
         """Render ``text`` to PCM via the cloud endpoint (WAV response → float32)."""
+        del lang  # the seam passes it; this backend has one voice for every language
         client = self._ensure()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             out = handle.name
@@ -455,11 +456,11 @@ class TTSRouter:
         text = text.strip()
         if not text:
             return np.zeros(0, dtype=np.float32), self.cfg.sample_rate
+        lang = lang or detect_language(text, self.cfg.default_language)
         if self._cloud is not None:
-            pcm, sr = self._cloud.render(text)
+            pcm, sr = self._cloud.render(text, lang=lang)
             if pcm is not None and sr is not None:
                 return pcm, sr
-        lang = lang or detect_language(text, self.cfg.default_language)
         engine, voice = select_voice(self.cfg, lang)
         if (
             engine == "piper"
@@ -542,11 +543,11 @@ class TTSRouter:
         text = text.strip()
         if not text:
             return Playback()
+        lang = lang or detect_language(text, self.cfg.default_language)
         if self._cloud is not None:
-            playback = self._play_cloud(text)
+            playback = self._play_cloud(text, lang)
             if playback is not None:
                 return playback
-        lang = lang or detect_language(text, self.cfg.default_language)
         engine, voice = select_voice(self.cfg, lang)
         if (
             engine == "piper"
@@ -559,14 +560,14 @@ class TTSRouter:
         )
         return self._play_say(text, voice=say_voice)
 
-    def _play_cloud(self, text: str) -> Playback | None:
+    def _play_cloud(self, text: str, lang: str | None = None) -> Playback | None:
         """Render via the cloud TTS and play the WAV with the cancellable player.
 
         Returns ``None`` (so the caller falls back to local TTS) when the cloud
         render fails — never raises, so a transient API error can't break the loop.
         """
         assert self._cloud is not None
-        pcm, sr = self._cloud.render(text)
+        pcm, sr = self._cloud.render(text, lang=lang)
         if pcm is None or sr is None or not pcm.size:
             return None
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:

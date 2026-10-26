@@ -467,7 +467,8 @@ STT_BACKENDS = ("local", "whispercpp", "faster-whisper", "cloud", "openai", "dee
 #   cloud / openai   — an OpenAI-compatible speech endpoint (e.g. OpenAI TTS)
 #   elevenlabs       — ElevenLabs neural TTS (real adapter; key-gated)
 #   cartesia         — Cartesia Sonic neural TTS (real adapter; key-gated)
-TTS_BACKENDS = ("local", "cloud", "openai", "elevenlabs", "cartesia")
+#   google           — Google Cloud Text-to-Speech, Chirp 3 HD / Neural2 (key-gated)
+TTS_BACKENDS = ("local", "cloud", "openai", "elevenlabs", "cartesia", "google")
 
 # Barge-in safety modes (see Config.barge_in). Without acoustic echo cancellation
 # (AEC) an open speaker bleeds into the mic, so interruption is opt-in:
@@ -1163,6 +1164,8 @@ class Config:
     cartesia_model: str = "sonic-2"
     cartesia_voice_id: str = ""  # required for Cartesia (available() is false without it)
     cartesia_api_key: str | None = None
+    google_tts_api_key: str | None = None
+    google_tts_voices: dict[str, str] = field(default_factory=dict)  # lang -> voice name
 
     # --- Cross-platform / off-Mac brain (G8): a Linux box can be the central brain
     # with Mac/ESP32 satellites. ``platform`` auto-detects the OS; ``playback`` and
@@ -1327,6 +1330,12 @@ class Config:
             cartesia_model=env.get("CARTESIA_MODEL", "sonic-2"),
             cartesia_voice_id=env.get("CARTESIA_VOICE_ID", ""),
             cartesia_api_key=env.get("CARTESIA_API_KEY") or None,
+            google_tts_api_key=env.get("GOOGLE_TTS_API_KEY") or None,
+            google_tts_voices={
+                lang: env[f"GOOGLE_TTS_VOICE_{lang.upper()}"]
+                for lang in ("de", "en", "fr")
+                if env.get(f"GOOGLE_TTS_VOICE_{lang.upper()}")
+            },
             platform=env.get("PLATFORM", "auto"),
             playback_backend=env.get("PLAYBACK_BACKEND", "auto"),
             whispercpp_model=env.get("WHISPERCPP_MODEL", "large-v3-turbo"),

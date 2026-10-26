@@ -327,6 +327,19 @@ The models line of each conversation then reads `LLM claude-haiku-5-5 via Claude
 and the cost line's `LLM $` is what ElevenLabs no longer bills. Code:
 [`claude_llm.py`](src/my_stt_tts/claude_llm.py).
 
+**Google voice (`TTS_BACKEND=google`).** Google Cloud Text-to-Speech is one more cloud voice for
+the local pipeline (`python -m my_stt_tts`): Chirp 3 HD by default (`de-DE-Chirp3-HD-Kore`,
+`en-US-Chirp3-HD-Charon`, `fr-FR-Chirp3-HD-Leda`; USD 30 per million characters, Neural2 voices
+USD 16 via `GOOGLE_TTS_VOICE_DE/EN/FR`). The router detects the language once per reply (the
+`lang` extra), so all clauses of one reply keep one voice. The key is a Google Cloud API key
+restricted to the Text-to-Speech API, sent in a header and injected with
+`secret-run -e GOOGLE_TTS_API_KEY=google-tts-api -- …`; without it the router falls back to
+Piper / `say`. A silent check that writes a WAV and plays nothing:
+`uv run python -m my_stt_tts.tts_cloud -b google -t 'Guten Abend.' -l de -o de.wav`.
+It does **not** change what `./mac-voice` costs: an ElevenLabs agent always speaks with its
+own voice, billed per call minute; the Google voice there needs the agent in text-only mode
+plus speech-to-text on the Mac (tp#1286 G4, not built).
+
 **Hands-free: the daemon.** `./mac-voice -d` (or `-I` to install it as a login LaunchAgent)
 owns the mic: while idle it listens for "voice on" (custom phrase via sherpa KWS,
 `MAC_VOICE_WAKE`) or "hey jarvis" (openWakeWord, threshold `MAC_VOICE_WAKE_THRESHOLD`=0.75);

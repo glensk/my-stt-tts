@@ -337,7 +337,7 @@ def test_synth_pcm_prefers_cloud_when_active():
     router = TTSRouter(Config(tts_backend="cloud", tts_cloud_api_key="sk-test"))
 
     class _CloudStub:
-        def render(self, text: str):
+        def render(self, text: str, lang: str | None = None):
             return np.full(16, 0.2, dtype=np.float32), 24000
 
     router._cloud = _CloudStub()  # type: ignore[assignment]

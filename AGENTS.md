@@ -64,6 +64,8 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
 - Tool / function calling (R2-7) → `tools.py` (`ToolRegistry`, example tools); the
   provider round-trip is in `brain.py` (`_stream_anthropic_tools`/`_stream_openai_tools`).
   Optional cloud backends: `stt.CloudTranscriber` + `tts.CloudTTS` (local-first, key-gated).
+  Cloud voices behind the `render(text, lang)` seam → `tts_cloud.py` (ElevenLabs, Cartesia,
+  `GoogleTTS` for `TTS_BACKEND=google`, tp#1286; `python -m my_stt_tts.tts_cloud` writes a test WAV).
 - ElevenLabs daemon (`./mac-voice`) → `eleven_voice.py` (`VoiceSession`, CLI, client tools
   on a real `ClientTools`, `[system notice]` sending), `voice_control.py` (`VoiceDaemon`,
   wake listener, control socket, ready sound, `daemon_main` builds the bridge, `WakeKit`),

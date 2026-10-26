@@ -239,10 +239,20 @@ def _register_builtins(reg: ServiceRegistry) -> None:
             api_key=getattr(cfg, "cartesia_api_key", None),
         )
 
+    def _google_tts(cfg: Config) -> Any:
+        from .tts_cloud import GoogleTTS  # pylint: disable=import-outside-toplevel  # lazy
+
+        return GoogleTTS(
+            voices=getattr(cfg, "google_tts_voices", None),
+            default_language=getattr(cfg, "default_language", "en"),
+            api_key=getattr(cfg, "google_tts_api_key", None),
+        )
+
     reg.register("tts", "cloud", _openai_tts)
     reg.register("tts", "openai", _openai_tts)
     reg.register("tts", "elevenlabs", _elevenlabs_tts)
     reg.register("tts", "cartesia", _cartesia_tts)
+    reg.register("tts", "google", _google_tts)
 
     # --- LLM (documented for completeness; Brain selects via provider switch) ---
     def _llm(_cfg: Config) -> Any:

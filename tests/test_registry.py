@@ -375,7 +375,7 @@ def test_ttsrouter_synth_pcm_uses_cloud_render(monkeypatch):
     cfg.elevenlabs_api_key = "el-key"
     router = TTSRouter(cfg)
     fake_pcm = np.full(100, 0.1, dtype=np.float32)
-    monkeypatch.setattr(router._cloud, "render", lambda text: (fake_pcm, 22050))
+    monkeypatch.setattr(router._cloud, "render", lambda text, lang=None: (fake_pcm, 22050))
     pcm, sr = router.synth_pcm("hello")
     assert sr == 22050
     assert np.allclose(pcm, fake_pcm)
