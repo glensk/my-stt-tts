@@ -41,6 +41,11 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   never imported in-process** — this keeps the project Apache-2.0. See
   [PLAN.md](PLAN.md) §8.
 - Keep STT / LLM / TTS backends behind their pluggable interfaces.
+- The public README is owned by the README-designer role with its own "fanciness" checker
+  loop; route README styling there (spec 2026-06-19: customer-facing "speak to your agent",
+  feature list at the top, details folded, control-room link first, GitHub-safe HTML).
+- Every `quickstart.sh` run writes `logs/quickstart-<ts>.log` and `logs/events-<ts>.jsonl`
+  (`MSTT_EVENT_LOG`); read the newest of both before wake-word or audio work.
 
 ## Where things live
 
