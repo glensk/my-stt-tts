@@ -653,6 +653,9 @@ def run(args: argparse.Namespace, deps: Deps) -> int:
 def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
+    from my_stt_tts.sops_reexec import ensure_env
+
+    ensure_env(__file__, base=1)  # the repo's .env.sops → environment (tp#1386)
     if not NAME_RE.fullmatch(args.who):
         print(f"❌ name must be letters, digits, '_' or '-': {args.who!r}", file=sys.stderr)
         return 2

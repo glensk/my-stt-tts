@@ -32,7 +32,7 @@ Desired configuration:
   ``<!-- mac-voice bridge end -->``, replaced idempotently; the rest of the prompt is
   never touched.
 
-Secrets: the API key comes from the repo ``.env`` (``eleven_voice._load_env``) and is never
+Secrets: the API key comes from the repo ``.env.sops`` (via ``sops-env-run``) and is never
 printed or stored; the backup drops secret-like keys and redacts token-shaped values.
 
 Exit codes: 0 done (or nothing to change), 1 failed and rolled back, 2 usage / missing
@@ -916,13 +916,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ no such backup: {args.restore}")
         return 2
 
-    from my_stt_tts.eleven_voice import _load_env  # pylint: disable=import-outside-toplevel
+    from my_stt_tts.sops_reexec import ensure_env  # pylint: disable=import-outside-toplevel
 
-    _load_env()
+    ensure_env(__file__, base=1)  # the repo's .env.sops → environment (tp#1386)
     key = os.environ.get("ELEVENLABS_API_KEY")
     agent_id = args.agent_id or os.environ.get("ELEVENLABS_AGENT_ID")
     if not key or not agent_id:
-        print("❌ ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID missing (repo .env)")
+        print("❌ ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID missing (repo .env.sops)")
         return 2
     apply = args.apply or (args.restore is not None and not args.dry_run)
     return run(Api(key), agent_id, apply=apply, restore=args.restore, backup_dir=args.backup_dir)

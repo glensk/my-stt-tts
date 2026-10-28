@@ -3295,6 +3295,9 @@ def _mpv_preflight_gate(cfg: Config) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     """Validate config, build components, run the chosen loop. Returns exit code."""
     args = _parse_args(argv)
+    from .sops_reexec import ensure_env  # pylint: disable=import-outside-toplevel
+
+    ensure_env(__file__, base=2)  # the repo's .env.sops → environment (tp#1386)
     if args.list_voices:
         print("English voice presets (use --voice <name>):")
         print(list_voice_presets())

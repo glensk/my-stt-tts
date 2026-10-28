@@ -19,7 +19,7 @@ Audio modes (``-m``):
 * ``headphones`` — raw mic + plain playback, full duplex; only safe with headphones.
 
 Needs the ``elevenlabs`` + ``audio`` extras and ``ELEVENLABS_API_KEY`` /
-``ELEVENLABS_AGENT_ID`` in the repo's ``.env``.
+``ELEVENLABS_AGENT_ID`` in the repo's ``.env.sops`` (read through ``sops-env-run``).
 """
 
 from __future__ import annotations
@@ -290,10 +290,12 @@ def stamp(text: str) -> None:
 
 
 def _load_env() -> None:
-    """Load the repo's ``.env`` (two levels above ``src/my_stt_tts``) if present."""
-    from dotenv import load_dotenv
+    """Make the repo's ``.env.sops`` keys available (tp#1386).
 
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    ``main()`` (and every script ``main``) re-execs through ``sops-env-run``, so the
+    keys are already in the environment; no plaintext ``.env`` is read any more.
+    Kept as the one hook tests patch.
+    """
 
 
 def _device(value: str | None) -> int | str | None:
@@ -754,7 +756,7 @@ class VoiceSession:  # pylint: disable=too-many-instance-attributes  # one call'
 
 
 def credentials(agent_id: str | None = None) -> tuple[str, str] | None:
-    """``(agent_id, api_key)`` from the arguments / repo ``.env``, or None when missing."""
+    """``(agent_id, api_key)`` from the arguments / environment, or None when missing."""
     _load_env()
     api_key = os.environ.get("ELEVENLABS_API_KEY")
     agent = agent_id or os.environ.get("ELEVENLABS_AGENT_ID")
@@ -848,7 +850,7 @@ def _backend(
 ) -> tuple[str, str] | int:
     """The credentials for the chosen LLM backend, or an exit code (``-C`` / a failure)."""
     if creds is None:
-        print("❌ ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID must be set (repo .env).")
+        print("❌ ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID must be set (repo .env.sops).")
         return 2
     if args.claude_setup:
         return setup_main(*creds, argv)
@@ -941,6 +943,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     daemon.add_argument("-W", "--no-wake", action="store_true", help="daemon without wake word")
     args = parser.parse_args(argv)
+    from .sops_reexec import ensure_env  # pylint: disable=import-outside-toplevel
+
+    ensure_env(__file__, base=2)  # the repo's .env.sops → environment (tp#1386)
 
     handler = logging.StreamHandler()
     handler.setFormatter(EmojiFormatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))

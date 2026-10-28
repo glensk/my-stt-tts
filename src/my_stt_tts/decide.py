@@ -1418,13 +1418,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.serve:
         return child_serve()
-    with contextlib.suppress(ImportError):
-        from dotenv import load_dotenv  # pylint: disable=import-outside-toplevel
+    from .sops_reexec import ensure_env  # pylint: disable=import-outside-toplevel
 
-        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+    ensure_env(__file__, base=2)  # the repo's .env.sops → environment (tp#1386)
     client = build_client()
     if client is None:
-        print(f"❌ decide by voice is not configured: set {CLIENT_ID_ENVS[0]} in .env")
+        print(f"❌ decide by voice is not configured: set {CLIENT_ID_ENVS[0]} in .env.sops")
         return 2
     desk = DecideDesk(client, focus=args.focus)
     try:

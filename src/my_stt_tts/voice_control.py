@@ -576,7 +576,7 @@ def wake_listener_factory(gate: Any = None) -> WakeKit | None:
         from .config import Config
         from .wake import make_wake_detector
 
-        cfg = Config.from_env(REPO_ROOT / ".env")
+        cfg = Config.from_env()
         if not Path(cfg.wake_model_path).is_absolute():
             cfg.wake_model_path = str(REPO_ROOT / cfg.wake_model_path)
         if not Path(cfg.kws_model_dir).is_absolute():

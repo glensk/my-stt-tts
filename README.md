@@ -255,7 +255,7 @@ something self-hosted? Point it there in one line.
 
 <br>
 
-The brain is **provider-agnostic** over an OpenAI-compatible interface. Select it in `.env`
+The brain is **provider-agnostic** over an OpenAI-compatible interface. Select it in `.env.sops`
 (see [`.env.example`](.env.example)):
 
 | Variable         | Example                     | Meaning                                                                |
@@ -284,7 +284,7 @@ browser is what lets the agent later call local functions on this Mac.
 <br>
 
 One-time: `uv sync --inexact --extra elevenlabs`, then put `ELEVENLABS_API_KEY` and
-`ELEVENLABS_AGENT_ID` into `.env`. The SDK talks to the agent's **published** version, so publish
+`ELEVENLABS_AGENT_ID` into `.env.sops`. The SDK talks to the agent's **published** version, so publish
 dashboard changes before testing them here.
 
 | Command                     | Meaning                                                                           |
@@ -298,7 +298,7 @@ Ctrl-C ends the conversation. Code: [`eleven_voice.py`](src/my_stt_tts/eleven_vo
 
 **LLM on the Claude API credits: `-B claude`.** By default the agent's own LLM runs and
 ElevenLabs bills it in credits (about 40 % of a call's credits; the rest is the per-minute
-voice part). `-B claude` (or `MAC_VOICE_LLM_BACKEND=claude` in `.env`, so the LaunchAgent
+voice part). `-B claude` (or `MAC_VOICE_LLM_BACKEND=claude` in `.env.sops`, so the LaunchAgent
 picks it up) moves only the LLM to Albert's private Console org and its monthly API
 credits; speech-to-text, the voice and turn-taking stay on ElevenLabs, because the
 Anthropic API has neither speech-to-text nor text-to-speech. It works through ElevenLabs'
@@ -504,7 +504,7 @@ stay quiet; problems are spoken. Design and acceptance record: `PLAN_claude-brid
 
 ### Flags
 
-Opt-in, in `.env` (read by `./mac-voice -d`); `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`
+Opt-in, in `.env.sops` (read by `./mac-voice -d`); `ELEVENLABS_API_KEY` and `ELEVENLABS_AGENT_ID`
 must be set as for `./mac-voice`.
 
 | Variable                         | Example                             | Meaning                                                                       |
@@ -643,7 +643,7 @@ unlabelled ones are deleted after 90 days.
 
 ```bash
 scripts/calibrate_voice.py       # dry run: score spread, how the current values do, a recommendation
-scripts/calibrate_voice.py -a    # write it to .env, then restart mac-voice (the command is printed)
+scripts/calibrate_voice.py -a    # write it to .env.sops, then restart mac-voice (the command is printed)
 ```
 
 It scores the enrollment takes (each leave-one-out), the clips labelled `albert` and `other`, and
@@ -773,7 +773,7 @@ offered by voice. Answers carry `channel: voice` in the hub.
 - **Auth.** The `decide-cli` Cloudflare Access service token, which the hub lists for answers
   and as the only caller allowed `channel: voice`. Every call therefore goes through
   Cloudflare, also at home (the direct LAN path would be refused with `channel_not_allowed`).
-  The client id comes from `DECIDE_VOICE_CF_CLIENT_ID` in `.env` (not secret). The secret is
+  The client id comes from `DECIDE_VOICE_CF_CLIENT_ID` in `.env.sops` (not secret). The secret is
   `DECIDE_CLI_CF_CLIENT_SECRET` when the process already has it; otherwise the requests run in
   ONE child under `secret-run -e DECIDE_CLI_CF_CLIENT_SECRET=decide-cli-cf-service-token`
   (`python -m my_stt_tts.decide -S`, one JSON request per line), so the value never enters

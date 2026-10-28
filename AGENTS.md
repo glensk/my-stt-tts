@@ -19,7 +19,11 @@ but any OpenAI-compatible provider (OpenAI, Ollama, vLLM, local) works.
 - **Native deps come from wheels where possible** (`sounddevice` bundles PortAudio;
   `imageio-ffmpeg`/`static-ffmpeg` bundle ffmpeg; `pywhispercpp` bundles
   whisper.cpp). Use Homebrew only as a fallback when no wheel exists.
-- **Secrets** live in `.env` (never commit). See `.env.example`.
+- **Secrets and settings** live in `.env.sops` (dotenv SOPS, committed; tp#1386). Every
+  `main()` re-execs through `sops-env-run` (vendored `src/my_stt_tts/sops_reexec.py`, a copy of
+  mydotfiles `bin/sops_reexec.py` — never edit the copy), so values reach the environment only;
+  no plaintext `.env` exists or is read. `ELEVENLABS_API_KEY` is written by `credctl.py derive
+  elevenlabs-api` only. See `.env.example`.
 
 ## Build / test / lint
 
@@ -80,13 +84,13 @@ pre-commit run --all-files        # ruff + gitleaks secret scan
   when a client tool is slow).
 - Voice recognises only Albert (tp#1235; README section "Making voice recognise only you") →
   `voice_profiles.py` (kept enrollment takes under `enroll/<who>/<stamp>/`, rebuild of the
-  call and wake profiles, 0600 files, `.env` reads), `interference.py` (`CallCapture`: refused /
+  call and wake profiles, 0600 files, settings reads/writes (`.env.sops` via `sops set`)), `interference.py` (`CallCapture`: refused /
   agent-skipped / sampled in-call utterances → `debug/recordings/interference/YYYY-MM/`, 90-day
   expiry, labels `albert` / `other`), `voice_calibration.py` (pure threshold + margin choice);
   the margin rule itself is `Authoriser.margin` + `VoiceGate.score_detail` against
   `enroll/negatives/call.npy`. Scripts: `scripts/enroll_voice.py` (guided 25-sentence
   enrollment), `scripts/label_voice_clips.py`, `scripts/calibrate_voice.py` (dry run; `-a`
-  writes `.env`).
+  writes `.env.sops` with `sops set`).
 - mac-voice LLM backend (`-B elevenlabs|claude`, tp#1097) → `claude_llm.py`: the Claude
   twin agent (ElevenLabs custom LLM → Anthropic's OpenAI-compatible endpoint), `-C` setup
   (key via `secret-run` item `anthropic-api-private-elevenlabs`), re-sync on every `-B claude` start.

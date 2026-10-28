@@ -1260,8 +1260,13 @@ class Config:
 
     @classmethod
     def from_env(cls, dotenv_path: str | os.PathLike[str] | None = None) -> Config:
-        """Build a Config from environment variables (loading ``.env`` first)."""
-        load_dotenv(dotenv_path, override=False)
+        """Build a Config from environment variables.
+
+        The repo's keys come in through ``sops-env-run`` (``.env.sops``, tp#1386); an
+        explicit plaintext *dotenv_path* (tests) is still loaded, never searched for.
+        """
+        if dotenv_path is not None:
+            load_dotenv(dotenv_path, override=False)
         env = os.environ
         cfg = cls(
             llm_provider=env.get("LLM_PROVIDER", "anthropic"),

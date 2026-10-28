@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import wave
@@ -54,7 +55,10 @@ NEGATIVES_SUBDIR = "negatives"  # enroll/negatives/: never a person's profile (*
 MIN_TAKE_SPEECH_S = 1.0
 #: At least this many usable takes before a profile is (re)built.
 MIN_PROFILE_TAKES = 3
-ENV_FILE = REPO_ROOT / ".env"
+#: The repo's settings + secrets: dotenv SOPS, read through ``sops-env-run`` (tp#1386).
+ENV_FILE = REPO_ROOT / ".env.sops"
+#: sops for the calibration writes (non-secret keys only).
+SOPS = os.environ.get("MY_STT_TTS_SOPS") or shutil.which("sops") or "/opt/homebrew/bin/sops"
 
 
 # -- private files ---------------------------------------------------------------------------
@@ -366,10 +370,16 @@ def load_profile(path: Path) -> np.ndarray | None:
 
 # -- .env values -----------------------------------------------------------------------------
 def env_value(key: str, env_file: Path = ENV_FILE, env: Mapping[str, str] | None = None) -> str:
-    """``key`` from the process environment, else from the repo ``.env`` (only that key)."""
+    """``key`` from the process environment, else from a PLAINTEXT dotenv *env_file*.
+
+    A SOPS file (``*.sops``) is never parsed here: its keys reach the environment
+    through ``sops-env-run`` (tp#1386).
+    """
     env = os.environ if env is None else env
     if env.get(key, "").strip():
         return env[key].strip()
+    if env_file.name.endswith(".sops"):
+        return ""
     from dotenv import dotenv_values  # pylint: disable=import-outside-toplevel
 
     value = dotenv_values(env_file).get(key) if env_file.is_file() else None
@@ -389,6 +399,33 @@ def env_float(
     except ValueError:
         return default
     return value if np.isfinite(value) and value >= 0 else default
+
+
+def _sops(env_file: Path, op: str, key: str, stdin: bytes | None = None) -> None:
+    """One ``sops set|unset`` of *key* in the dotenv SOPS *env_file* (raises on failure)."""
+    argv = [SOPS, op] + (["--value-stdin"] if op == "set" else [])
+    argv += ["--input-type", "dotenv", "--output-type", "dotenv", str(env_file), f'["{key}"]']
+    subprocess.run(argv, input=stdin, capture_output=True, check=True)
+
+
+def env_set(env_file: Path, key: str, value: str) -> None:
+    """Set the NON-SECRET *key* in *env_file* (``sops set`` for a ``*.sops`` file)."""
+    if env_file.name.endswith(".sops"):
+        _sops(env_file, "set", key, json.dumps(value).encode())
+        return
+    from dotenv import set_key  # pylint: disable=import-outside-toplevel
+
+    set_key(str(env_file), key, value, quote_mode="never")
+
+
+def env_unset(env_file: Path, key: str) -> None:
+    """Remove *key* from *env_file* (``sops unset`` for a ``*.sops`` file)."""
+    if env_file.name.endswith(".sops"):
+        _sops(env_file, "unset", key)
+        return
+    from dotenv import unset_key  # pylint: disable=import-outside-toplevel
+
+    unset_key(str(env_file), key)
 
 
 __all__ = [

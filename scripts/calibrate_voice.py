@@ -410,21 +410,19 @@ def current_settings(env_file: Path) -> tuple[float, float | None, float]:
 def apply(
     env_file: Path, root: Path, rec: vc.Recommendation, matrix: np.ndarray | None
 ) -> list[str]:
-    """Write the recommendation; the lines saying what changed."""
-    from dotenv import set_key, unset_key
-
+    """Write the recommendation; the lines saying what changed (``sops set`` on .env.sops)."""
     lines = []
-    set_key(str(env_file), bridge.AUTH_THRESHOLD_ENV, f"{rec.threshold:.2f}", quote_mode="never")
+    vp.env_set(env_file, bridge.AUTH_THRESHOLD_ENV, f"{rec.threshold:.2f}")
     lines.append(f"✅ {bridge.AUTH_THRESHOLD_ENV}={rec.threshold:.2f} in {env_file}")
     if rec.margin is not None and matrix is not None:
         target = root / NEGATIVES_FILE
         vp.save_profile(target, matrix)
-        set_key(str(env_file), bridge.AUTH_MARGIN_ENV, f"{rec.margin:.2f}", quote_mode="never")
+        vp.env_set(env_file, bridge.AUTH_MARGIN_ENV, f"{rec.margin:.2f}")
         lines.append(
             f"✅ {bridge.AUTH_MARGIN_ENV}={rec.margin:.2f}, {len(matrix)} negatives in {target}"
         )
     elif vp.env_value(bridge.AUTH_MARGIN_ENV, env_file, env={}):
-        unset_key(str(env_file), bridge.AUTH_MARGIN_ENV)
+        vp.env_unset(env_file, bridge.AUTH_MARGIN_ENV)
         lines.append(f"✅ {bridge.AUTH_MARGIN_ENV} removed (margin rule off)")
     return lines
 
@@ -514,6 +512,9 @@ def run(args: argparse.Namespace, deps: Deps) -> int:  # pylint: disable=too-man
 def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
     """CLI entry point."""
     args = build_parser().parse_args(argv)
+    from my_stt_tts.sops_reexec import ensure_env
+
+    ensure_env(__file__, base=1)  # the repo's .env.sops → environment (tp#1386)
     if not 0.5 <= args.target <= 1.0 or args.min_others < 1:
         print("❌ --target must be 0.5–1.0 and --min-others ≥ 1", file=sys.stderr)
         return 2
