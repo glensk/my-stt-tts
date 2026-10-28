@@ -1,0 +1,6 @@
+# SOPS creation rules (tp#1386): the repo's settings file .env.sops is a dotenv
+# SOPS file encrypted to the Mac's age recipient only (no nixos recipient: it is
+# read on the Mac, by sops-env-run). Secrets in it are written by credctl.
+creation_rules:
+  - path_regex: \.env\.sops$
+    age: age1548w6gdstcjv3q62rpwrp3uqn64yl086glalf48lkj0x76r0qglqh0la0a

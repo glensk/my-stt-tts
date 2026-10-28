@@ -29,6 +29,9 @@ env/
 .env.*
 !.env.example
 !.env.template
+# the dotenv SOPS file IS committed (ciphertext; tp#1386)
+!.env.sops
+!*.sops
 !.env_template
 !.env.sample
 *.log
