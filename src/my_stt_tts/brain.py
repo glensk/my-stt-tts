@@ -13,7 +13,9 @@ keeps a session id for multi-turn continuity. It
 is deliberately STRIPPED and ISOLATED from your general Claude use
 (``--system-prompt`` replaces the agentic prompt with prompts/system_prompt.md,
 ``--setting-sources ""`` skips ~/.claude & ~/.llm-shared & hooks, ``--tools ""``
-disables tools, runs in a non-git scratch dir) — ~8x faster, ~280x cheaper, and
+disables tools, ``--safe-mode`` + an empty strict MCP config + no slash commands
+drop CLAUDE.md/plugins/hooks, runs in a non-git scratch dir; the session file is kept
+for ``--resume``) — ~8x faster, ~280x cheaper, and
 unable to touch this repo.
 
 The ``codex-cli`` provider is the OpenAI equivalent: it shells out to the OpenAI
@@ -476,6 +478,11 @@ class Brain:  # pylint: disable=too-many-instance-attributes
             "",  # skip ~/.claude/CLAUDE.md, ~/.llm-shared, hooks
             "--tools",
             "",  # no tools: minimal context, ~8x faster, project-isolated
+            "--safe-mode",  # tp#1462: no CLAUDE.md, plugins, hooks, agents (keeps session)
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+            "--disable-slash-commands",
         ]
         if self._session_id is None:
             self._session_id = str(uuid.uuid4())

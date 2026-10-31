@@ -2,6 +2,7 @@
 # pylint: disable=missing-function-docstring,protected-access
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -10,6 +11,7 @@ import pytest
 from my_stt_tts.agent import AgentResult, dispatch_to_agent
 from my_stt_tts.brain import Brain, LLMError, should_use_deep
 from my_stt_tts.config import Config
+from my_stt_tts.mac_operator import operator_argv
 from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, match_speaker
 from my_stt_tts.tts import detect_language, select_voice
 
@@ -98,6 +100,63 @@ def test_claude_cli_session_then_resume():
     assert rows[0]["model"] == "claude-haiku-test"
     assert rows[0]["tokens_in"] == 7
     assert rows[0]["tokens_out"] == 2
+
+
+def _voice_argv(brain, text, model="haiku"):
+    completed = MagicMock(returncode=0, stdout=json.dumps({"result": "hi", "is_error": False}))
+    with (
+        patch("my_stt_tts.brain.shutil.which", return_value="/usr/bin/claude"),
+        patch("my_stt_tts.brain.subprocess.run", return_value=completed) as run,
+    ):
+        assert "".join(brain._stream_claude_cli(model, text)) == "hi"
+    return run.call_args.args[0]
+
+
+def test_claude_cli_safe_mode_argv_pinned_with_persistence_exception():
+    """tp#1462 B7: safe mode on both calls; session persistence kept for --resume."""
+    brain = Brain(Config(llm_provider="claude-cli", llm_model="haiku"), recorder=lambda _r: None)
+    first = _voice_argv(brain, "hello")
+    sid = brain._session_id
+    assert sid is not None
+    tail = ["--tools", "", "--safe-mode", "--strict-mcp-config", "--mcp-config"]
+    tail += ['{"mcpServers":{}}', "--disable-slash-commands"]
+    system_prompt = first[first.index("--system-prompt") + 1]
+    expected_head = [
+        "claude",
+        "-p",
+        "hello",
+        "--model",
+        "haiku",
+        "--output-format",
+        "json",
+        "--system-prompt",
+        system_prompt,
+        "--setting-sources",
+        "",
+    ]
+    assert first == [*expected_head, *tail, "--session-id", sid]
+    second = _voice_argv(brain, "again")
+    assert second == [*expected_head[:2], "again", *expected_head[3:], *tail, "--resume", sid]
+    for argv in (first, second):
+        assert "--no-session-persistence" not in argv  # D4: resume needs the session file
+        assert argv[argv.index("--tools") + 2].startswith("--")  # never a positional after it
+
+
+def test_agent_dispatch_argv_stays_unchanged_without_safe_mode():
+    """D7: the full MCP-capable agent is intentionally NOT put in safe mode."""
+    completed = MagicMock(returncode=0, stdout=json.dumps({"result": "ok", "is_error": False}))
+    with (
+        patch("my_stt_tts.agent.shutil.which", return_value="/usr/bin/claude"),
+        patch("my_stt_tts.agent.subprocess.run", return_value=completed) as run,
+    ):
+        dispatch_to_agent("do it", workspace="/tmp/ws", recorder=lambda _r: None)
+    argv = run.call_args.args[0]
+    assert "--safe-mode" not in argv
+    assert "--disable-slash-commands" not in argv
+
+
+def test_mac_operator_argv_has_no_safe_mode():
+    assert "--safe-mode" not in operator_argv(Path("/tmp/broker.json"), claude=Path("claude"))
 
 
 def test_claude_cli_error_propagates():
