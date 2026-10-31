@@ -12,7 +12,7 @@ from my_stt_tts.agent import AgentResult, dispatch_to_agent
 from my_stt_tts.brain import Brain, LLMError, should_use_deep
 from my_stt_tts.config import Config
 from my_stt_tts.mac_operator import operator_argv
-from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, match_speaker
+from my_stt_tts.speaker_id import AMBIGUOUS, UNKNOWN, calibrate_threshold, match_speaker
 from my_stt_tts.tts import detect_language, select_voice
 
 
@@ -233,7 +233,7 @@ def test_plain_turn_routes_through_ai_prompt_with_stdin(
     ]
     assert run.call_args.kwargs["input"].find("hello routed world") >= 0
     assert run.call_args.kwargs["input"].find(brain.cfg.system_prompt.strip()) >= 0
-    assert rows == []  # ai owns the ledger row for routed calls
+    assert not rows  # ai owns the ledger row for routed calls
 
 
 def test_agent_dispatch_records_claude_json_envelope(monkeypatch):
@@ -345,8 +345,6 @@ def test_agent_disabled_without_workspace():
 
 
 def test_calibrate_threshold_recommends_reasonable_value():
-    from my_stt_tts.speaker_id import calibrate_threshold
-
     centroids = {"alice": np.array([1.0, 0.0, 0.0]), "bob": np.array([0.0, 1.0, 0.0])}
     labeled = {
         "alice": [np.array([0.95, 0.1, 0.0]), np.array([0.9, 0.2, 0.0])],
